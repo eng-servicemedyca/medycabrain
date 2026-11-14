@@ -1,7 +1,7 @@
 ---
 id: 2026-11-14-pipeline-in-casa
 titolo: Raccolta di Instagram senza Apify (PR 1 di "pipeline in casa")
-stato: revisione
+stato: pronto
 ramo: feat/pipeline-in-casa
 pr: ""
 ticket: ""
@@ -662,6 +662,37 @@ sul messaggio di yt-dlp; niente in doc né in `~/brain`); i fallimenti restano
 `failed`; download senza regressioni per reel vecchi e link del cliente;
 pagina Stato regge `budget`/`collection_paused_until` a `null`; documentazione
 nello stesso commit, mancano solo N2, N3, N4.
+### Secondo giro (revisione su 66a209e)
+
+*(Testo del revisore, incollato dal capo in versione ridotta.)*
+
+**Verdetto: PASSA.** Nessun bloccante. Due commit sul ramo (66a209e, b25776b),
+niente su `main`, nessun segreto, niente della PR 2. Il revisore non ha
+rilanciato i 277 test (li ha eseguiti il collaudo).
+
+- **B1 chiuso**: il 5 è nel codice, in `02-pipeline.md`, `it.json`, drawio;
+  nessun «10» residuo, nessun passo manuale.
+- **N1** `_better_count` (`downloader_agent.py:228`): i like nascosti restano
+  `None`, mai valori negativi o più bassi.
+- **N2** `NullsLastOrdering`: solo per visualizzazioni, like e commenti; gli
+  altri ordinamenti e la paginazione invariati.
+- **A** `AccountNotFound`: resta `failed`, conta tra i non letti; i blocchi
+  veri restano `blocked` e contano per lo stop dopo 3.
+- **B** senza proxy lo stadio fallisce, non è fatale, gli stadi dopo girano.
+- **C** frasi semplici per tipo; dettaglio nel log e in `last_error`, senza
+  proxy nei messaggi.
+
+**Non bloccanti, lasciati aperti (limiti noti):**
+
+- **N7.** Un reel vecchio ancora `pending`, con like nascosti salvati a 0 o -1
+  da Apify, può ricevere il «3» finto di yt-dlp. Pochi reel.
+- **N8.** In `run()`, quando una pagina arriva senza dati mentre altri account
+  si leggono, `last_error` diventa `not_found` e perde il motivo originale
+  (resta nel log). Se Instagram cambiasse la pagina solo per alcuni account,
+  sarebbero etichettati «nome non trovato».
+- **N9.** La frase per il cliente quando nessun account è letto si sceglie dal
+  primo errore, non dal più frequente.
+
 ## 5. Collaudo           (collaudatore)
 
 **Verdetto: PASSA**, con 4 difetti non bloccanti (A-D, in fondo) e un elenco di cose non provate. Collaudo del 14/11/2026 sul ramo `feat/pipeline-in-casa` (b25776b). Tutto su una copia a lato: Postgres 16 temporaneo (porta 55441), `runserver` su 8041 e 8043, frontend del ramo servito su 8042 e 8044 (file statici + proxy). Dati e file scritti in una cartella di prova, non in `BEC/data` né `BEC/media`. Il sito vero (9093), il suo database, `BEC/.env`, `FEC/dist`, crontab e servizi non sono stati toccati: a fine collaudo porte 8041-8044 e 55441 libere, 9093 risponde 200, `git status` pulito, `logs/pipeline.log` ancora a 26472 righe.
@@ -755,6 +786,67 @@ Screenshot nella cartella di prova (`.../scratchpad/col/shots/`): `errore-380`, 
 - **Proprietà in collaborazione reale**: solo simulata con la pagina vera.
 - **Pagina Stato in produzione (`:9093`)**: non guardata (il rilascio non è avvenuto; ho usato il frontend del ramo). Mi manca anche il giudizio visivo definitivo di Giuseppe: indirizzo da aprire dopo il rilascio `http://<sito>:9093/stato`, gesto: guardare il riquadro «Raccolta» in fondo a «Coda di lavorazione», prima e dopo «Aggiorna ora».
 - Ollama non usato.
+### Secondo giro (collaudo su 66a209e, 14/11/2026)
+
+**Verdetto: PASSA**, con 2 note non bloccanti (E, F). Stessa copia a lato di prima (Postgres 16 su 55441, backend 8041/8043, frontend 8042/8044), rifatta da zero. Produzione, `.env`, `FEC/dist`, crontab, servizi e Ollama non toccati; a fine prova porte libere, 9093 risponde 200, `git status` pulito, `logs/pipeline.log` ancora a 26472 righe. La password vera del proxy e il suo host: 0 occorrenze in tutti gli output (`real password occurrences: 0 | real proxy host occurrences: 0`).
+
+**1. Suite, migrazioni, tipi, build**
+```
+makemigrations --check --dry-run -> No changes detected
+test core --noinput              -> Ran 277 tests in 38.979s   OK
+tsc -b                           -> tsc=0
+vite build --outDir (a lato)     -> built in 30.01s   (FEC/dist non toccata)
+```
+
+**2. Tetto a 5** (medyca.menopausa, manupausa, menopausa.serena, db vuoto, due giri veri)
+```
+giro 1: medyca 4 video 4 new | manupausa 3 video 1 new, 2 rinviati | serena 5 video 0 new, 5 rinviati
+        scrape done — new_reels 5, deferred 7, APIFY CALLS: 0
+giro 2: medyca 0 new | manupausa 2 new | serena 3 new, 2 rinviati
+        scrape done — new_reels 5, deferred 2, APIFY CALLS: 0
+```
+Al massimo 5 per giro, Medyca per prima, i rimandati entrano al giro dopo. Richieste solo a `instagram.com/<utente>/embed/`.
+
+**3. Difetto A** (account `elena,palliotto` e `zzq_nonesiste_collaudo_91`)
+- `elena,palliotto`: `not_found: «elena,palliotto» non è un nome Instagram valido`, riconosciuto senza richiesta (nessuna URL a Instagram per quel nome), `consecutive_failures` sale, niente `error: error:`, niente «doc_id rotated».
+- Il nome inesistente ma ben formato, **insieme a Medyca letta**: `not_found: pagina senza dati mentre gli altri account si leggono`; stadio `done`, `failed_accounts: 1`.
+- Solo `elena,palliotto`: stadio `failed`, «Non ho trovato nessuno degli account: controlla i nomi nella lista.»
+- Nota E (non bloccante): il nome inesistente ben formato **da solo** (nessun altro account letto nel giro) resta `schema_changed: pagina embed senza contextJSON`, perché la distinzione si fa solo se altri account si leggono. È dichiarato nel disegno del fix; in produzione ci sono sempre altri account.
+
+**4. Difetto B** (senza proxy)
+```
+scrape FAILED: ClientError('La raccolta è sospesa: manca la connessione (proxy) per leggere Instagram. Serve chi gestisce il server.')
+stage_runs: failed | stessa frase
+$ run_pipeline --only scrape,download --limit 1   (senza proxy)
+✗ scrape FAILED ...   ▶ agent: download   ✓ download done (downloaded 1, failed 0)   ✗ failed steps: scrape
+```
+Lo stadio fallisce con la frase semplice e gli stadi dopo partono lo stesso. Pagina Stato (`senzaproxy-380`, guardato): «Raccolta sospesa: manca il proxy» e sotto in rosso «Ultima lettura ... non riuscita: La raccolta è sospesa...»: non dice più «tutto in ordine».
+
+**5. Difetto C** (riquadro «Raccolta», 380 e 1280 px, screenshot guardati: `nome-380`, `proxyirraggiungibile-1280`, `senzaproxy-380`; letti dal testo gli altri; nessun errore di console, nessuno scroll orizzontale, nessun «apify»)
+- Nome sbagliato: «Non ho trovato nessuno degli account: controlla i nomi nella lista.»
+- Proxy con password sbagliata (407) e proxy irraggiungibile: entrambi «Non riesco a raggiungere Instagram dal server. Controlla che la connessione (proxy) funzioni e riprova.»
+- Niente più testo curl. Il dettaglio resta in `last_error` e nel log (che contiene ancora `curl: (7) ...`, ma non l'indirizzo del proxy).
+- Nota F (non bloccante): il tipo dell'errore dello stadio si prende dal **primo** account fallito. Con un nome sbagliato e un proxy rotto insieme, se il nome sbagliato viene per primo il cliente leggerebbe «controlla i nomi» invece di «proxy». Provato: con 2 account (nome sbagliato e Medyca) e proxy rotto la frase giusta è uscita solo perché Medyca (owned) viene letta per prima. In produzione Medyca è prima, quindi di solito va bene.
+
+**6. N1** (download vero di 2 reel di Medyca)
+```
+Dfor_3UxXDk done like None comm 4 views None dur 84.127007
+Dfh27oyx418 done like None comm 0 views None dur 70.985011
+```
+`like_count` resta `None` (prima era 3); i commenti sono scritti, la durata è letta.
+
+**7. N2** (lista reel, API e UI; ho messo a mano 500 e 90000 visualizzazioni su 2 reel nel db a lato)
+```
+ordering=-view_count : [(.., 90000), (.., 500), None, None, None, ...]    <- i NULL in fondo
+ordering=view_count  : [500, 90000, None, ...]                            <- NULL in fondo anche in crescente
+ordering=-like_count : [151, 85(None views), 78, 1, 1, 0, None...]        <- NULL in fondo
+```
+UI (`/competitor/library`, menù «Ordina» → «Più visti», richiesta `ordering=-view_count`, 1280 e 380 px, screenshot `lib-380` guardato): per primi ▶ 90k e ▶ 500, poi i reel senza numero (▶ —). I «top» del tema e le miniature dei temi: non c'erano cluster nel db a lato; li copre solo il test (nella suite verde), non li ho visti nella UI.
+
+**Non provato in questo giro**
+- «Top» del tema e mappa Second Brain nella UI (nessun cluster a lato): solo test.
+- Il tipo di errore con un nome sbagliato che viene per primo e proxy rotto (nota F): non corretto, solo osservato a livello di logica.
+- Resta tutto ciò che il primo giro non aveva potuto provare (yt-dlp dal proxy di riserva, stadi dopo `download` con modelli esterni, 23 account, collaborazione reale, pagina in produzione).
 ## 6. Rilascio           (rilasciatore)
 ## Registro delle decisioni
 
@@ -796,3 +888,7 @@ Screenshot nella cartella di prova (`.../scratchpad/col/shots/`): `errore-380`, 
   9. Si correggono in questo giro anche N1, N2, N3, N4 e i difetti A, B, C del
      collaudo. N5, N6 e D si scrivono tra i limiti noti / cose da guardare al
      primo giro, senza codice.
+- 2026-11-14 - **Secondo giro: revisione passa, collaudo passa** (277 test).
+  Il capo apre la PR. N7, N8, N9 e le note E, F del collaudo restano aperti
+  come limiti noti, non corretti in questa PR. Decisione ancora di Giuseppe:
+  `elena,palliotto` (correggere il nome o disattivare l'account).
