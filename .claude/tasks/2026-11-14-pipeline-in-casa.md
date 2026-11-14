@@ -517,8 +517,8 @@ Solo la PR 1 (raccolta senza Apify). Niente della PR 2.
 - **`scraper_agent.py`**: `run()` sceglie in un punto: Graph se configurata, poi
   `embed` se c'è il proxy, altrimenti "sospeso". **Apify non è più chiamato**
   (codice e funzioni restano, spente). Medyca (`owned`) letta per prima. Pausa
-  5-10 s tra account (`embed_delay_s`). Tetto di 10 reel nuovi per giro
-  (`embed_max_new_per_run`, i più recenti prima). 3 account bloccati di fila fermano
+  5-10 s tra account (`embed_delay_s`). Tetto di 5 reel nuovi per giro
+  (`embed_max_new_per_run`, i più recenti prima; era 10, vedi «Secondo giro»). 3 account bloccati di fila fermano
   il giro. `gap_possible` e `deferred` in `scrape_state` e nella nota dello stadio.
   **Se nessun account è stato letto lo stadio fallisce** (`ClientError` "Instagram
   non risponde...") invece di chiudersi `done`.
@@ -537,6 +537,22 @@ Solo la PR 1 (raccolta senza Apify). Niente della PR 2.
   `07-content-lineage.md`, `.claude/architecture-summary.md`, drawio (le due
   viste), pagina `Documentazione` (testi in `it.json`: raccolta, limiti, visualizzazioni).
   `CLAUDE.md` non nomina Apify: non toccato. Brain: `apis/instagram-embed-profile.md`.
+
+### Secondo giro (dopo revisione e collaudo)
+
+Commit nuovo sul ramo, `b25776b` non riscritto. Cosa ho cambiato:
+
+- **B1**: `embed_max_new_per_run` ora **5** nel codice (`scraper_agent.run()`, docstring, `_scrape_one`), in `02-pipeline.md`, `it.json`, drawio e in questo file. Tolto dal «da fare in produzione» il passo "decidere il tetto". Nuovo test del default (6 post nuovi: 5 entrano, 1 rinviato).
+- **N1**: `_better_count` nel download: scarta negativi e `None`, non scrive mai un valore più basso di quello che c'è, e **non scrive mai i «mi piace» di yt-dlp se il reel ha i like nascosti** (`like_count is None`). Prova (una, `extract_info(download=False)` su due reel di Medyca): `like_count 3` su **tutti e due** (`Dfor_3UxXDk` 3, `Dfh27oyx418` 3) mentre i commenti sono 4 e 0, su un account da 3083 follower che nasconde i like. Giudizio: **non è un numero credibile** (costante uguale su reel diversi), quindi per i like nascosti resta `None`. Scritto nei limiti.
+- **N2**: `nulls_last` per `view_count` nella lista reel (nuova `NullsLastOrdering`, anche per like e commenti), nelle miniature dei temi e nei 5 «top» della mappa Second Brain (`core/views.py`). **Download non cambiato, di proposito**: lì i NULL per primi sono giusti (sono i reel nuovi; con `nulls_last` finirebbero dietro ogni vecchio reel con un numero). Scritto nel commento e nei limiti. Test: lista ordinata per `-view_count` e mappa Second Brain (il reel senza numero non entra nei 5 top).
+- **A**: nuova `AccountNotFound`. Un nome che non è un username Instagram (`^[A-Za-z0-9._]{1,30}$`, quindi `elena,palliotto`) o un 404 = `not_found`, senza richiesta e senza secondo tentativo. Una pagina senza dati mentre altri account si sono letti nello stesso giro = `not_found` (nome sbagliato), non «Instagram ha cambiato la pagina». Tolto il log «doc_id rotated»; `last_error` ha il suo tipo **una volta sola** (`not_found: …`, niente `error: error:`).
+- **B**: senza proxy lo stadio ora **fallisce** con «La raccolta è sospesa: manca la connessione (proxy)…» invece di chiudersi `done` con la frase solo nel valore di ritorno. Così la pagina Stato non dice più «sospesa» e «tutto in ordine» insieme.
+- **C**: se nessun account è letto, l'errore dello stadio è una frase breve per tipo (`_CLIENT_REASON`: rifiutato, pagina cambiata, nome non trovato, non raggiungo Instagram dal proxy). Niente testo curl nel riquadro; il dettaglio resta nel log e in `last_error`.
+- **Documentazione**: N3 (peso zero dei reel nuovi di Medyca), N4 (tabella delle impostazioni `embed_delay_s`, `embed_max_new_per_run`, `impersonate`), N5 (vecchio reel in collaborazione può tornare al proprietario vero), N6 (reel cancellato/privato fa il tentativo dal proxy), D («possibile buco» atteso al primo giro) in `02-pipeline.md`; N3 e «nome non trovato» anche nella pagina `Documentazione` (`it.json`).
+
+Output vero: `manage.py test core` (Postgres a lato) -> `Ran 277 tests in 33.400s OK` (erano 267: 10 nuovi); `npx tsc --noEmit -p tsconfig.json` -> exit 0.
+
+Differenza dal disegno / dalla richiesta: per **B** ho scelto di far fallire lo stadio (non la nota), perché è la via che non può mentire in nessun punto della pagina; costa che una macchina senza proxy mostri rosso invece di grigio, ed è giusto: la raccolta non gira.
 
 ### Prove (esito vero)
 
@@ -562,13 +578,7 @@ Solo la PR 1 (raccolta senza Apify). Niente della PR 2.
 
 ### Differenze dal disegno
 
-- **Tetto per giro** (decisione 7): il disegno chiedeva "un tetto o equivalente".
-  Scelta più semplice: `embed_max_new_per_run` in `scraper_config`, default **10**
-  reel nuovi per giro, i più recenti. Non è "niente recupero": al primo giro entrano
-  10 reel nuovi, al successivo altri 10, finché i vecchi restano tra gli ultimi 6
-  dell'account. Per **tenere chiuso il buco fino alla PR 2** il rilasciatore può
-  scrivere `embed_max_new_per_run = {"value": 3}` (o 0) in `scraper_config` al
-  rilascio: nessun codice da cambiare. Decisione per il capo.
+- **Tetto per giro**: `embed_max_new_per_run` in `scraper_config`, i più recenti prima. Al primo giro era 10; dopo la revisione è **5** (decisione 8, che sostituisce la 7): il buco rientra piano, senza passo manuale al rilascio.
 - **Fermo dopo 3 blocchi di fila** (non nel disegno): evita di chiedere 20 volte a
   un IP già rifiutato.
 - **Stadio `failed` se nessun account è stato letto** (il disegno diceva "la nota
@@ -600,16 +610,151 @@ Solo la PR 1 (raccolta senza Apify). Niente della PR 2.
 1. Nessuna variabile obbligatoria: `IG_PROXY` vuoto usa `YTDLP_PROXY`, già nel `.env`.
 2. Riavviare i servizi (backend per views/pipeline; rebuild del frontend per
    `CollectionBox`).
-3. Decidere il tetto del primo giro: lasciare 10, oppure
-   `ScraperConfig` `embed_max_new_per_run` = `{"value": 3}` per non recuperare il
-   buco prima della PR 2 (decisione 7). Nessuna migrazione.
-4. Da togliere dal `.env` quando Giuseppe dice sì (non ora): `APIFY_TOKEN`.
-5. Un giro a mano (`Aggiorna ora`) e guardare `/stato`: «Raccolta: lettura diretta dal
-   server» + esito. Atteso: 22 account letti, `elena,palliotto` fallito
-   (il nome va corretto o l'account disattivato: serve una decisione di Giuseppe).
+3. Da togliere dal `.env` quando Giuseppe dice sì (non ora): `APIFY_TOKEN`.
+4. Un giro a mano (`Aggiorna ora`) e guardare `/stato`: «Raccolta: lettura diretta dal
+   server» + esito. Atteso: 22 account letti, `elena,palliotto` fallito come «non trovato»
+   (il nome va corretto o l'account disattivato: serve una decisione di Giuseppe). Guardare anche i reel vecchi
+   in collaborazione che tornano al proprietario vero (N5).
 
 ## 4. Revisione          (revisore)
+
+*(Testo del revisore, primo giro, incollato dal capo: il revisore non scrive file. Versione ridotta; nessun rilievo tolto.)*
+
+**Verdetto: NON PASSA, per un solo punto bloccante (B1).** Un solo commit sul
+ramo (b25776b), niente su `main`, nessun segreto nel diff, niente della PR 2.
+Il revisore non ha potuto lanciare i 267 test (li ha eseguiti il collaudo).
+
+**Bloccante**
+
+- **B1. Il default di `embed_max_new_per_run` (10) contraddice la decisione 7.**
+  `scraper_agent.py`, `run()`: `cap = [int(_cfg("embed_max_new_per_run", 10))]`;
+  la stessa cifra in `02-pipeline.md` e `it.json`. Con 10 a giro i circa 61
+  reel del buco rientrano in 3-4 giorni, prima della PR 2; quello che Groq non
+  prende cade sul 3b locale e fallisce per timeout. Oggi la protezione è solo
+  un passo manuale del rilascio scritto come «decidere».
+
+**Non bloccanti**
+
+- **N1.** `downloader_agent.py` righe 282-286: il `like_count` di yt-dlp
+  sovrascrive il `None` messo apposta per i «mi piace» nascosti. Se yt-dlp
+  desse 0 o -1, finirebbe nel database (con -1 `raw_engagement` sottrae 5).
+  Scartare negativi e verificare il valore reale su Medyca.
+- **N2.** I NULL di `view_count` vanno per primi in `ORDER BY -view_count`:
+  `core/views.py:1501` (i 5 «top» per tema, stampati «0 view»), `:686`
+  (miniature dei temi), `:485` (ordinamento scelto dall'utente). Rimedio:
+  `F("view_count").desc(nulls_last=True)`. Non scritto nei limiti.
+- **N3.** Medyca nasconde i «mi piace» e l'embed non dà visualizzazioni: i suoi
+  reel nuovi hanno peso esattamente 0. Va scritto tra i limiti noti.
+- **N4.** `embed_delay_s` ed `embed_max_new_per_run` mancano dalla
+  documentazione di configurazione.
+- **N5.** `_upsert_reel` riga 118: un reel vecchio di collaborazione lasciato
+  da Apify sotto l'account sbagliato torna al proprietario vero al primo giro
+  (può passare da `owned` a `competitor` o viceversa). Direzione giusta, ma è
+  una variazione visibile: da guardare al primo giro.
+- **N6.** `_ytdlp_fetch` tratta come blocco ogni errore con "login", "rate",
+  "429": un reel cancellato o privato fa partire il tentativo dal proxy (pochi
+  KB). Ramo provato solo con mock.
+
+**Gli 8 punti chiesti dal capo**: owned/competitor tiene (nome richiesto contro
+`contextJSON` e `owner.username`, in minuscolo; `owner` mancante = scartato;
+test di giro completo); segreti tengono (`scrub` su ogni eccezione di rete e
+sul messaggio di yt-dlp; niente in doc né in `~/brain`); i fallimenti restano
+`failed`; download senza regressioni per reel vecchi e link del cliente;
+pagina Stato regge `budget`/`collection_paused_until` a `null`; documentazione
+nello stesso commit, mancano solo N2, N3, N4.
 ## 5. Collaudo           (collaudatore)
+
+**Verdetto: PASSA**, con 4 difetti non bloccanti (A-D, in fondo) e un elenco di cose non provate. Collaudo del 14/11/2026 sul ramo `feat/pipeline-in-casa` (b25776b). Tutto su una copia a lato: Postgres 16 temporaneo (porta 55441), `runserver` su 8041 e 8043, frontend del ramo servito su 8042 e 8044 (file statici + proxy). Dati e file scritti in una cartella di prova, non in `BEC/data` né `BEC/media`. Il sito vero (9093), il suo database, `BEC/.env`, `FEC/dist`, crontab e servizi non sono stati toccati: a fine collaudo porte 8041-8044 e 55441 libere, 9093 risponde 200, `git status` pulito, `logs/pipeline.log` ancora a 26472 righe.
+
+### 1. Suite, migrazioni, tipi, build
+
+```
+$ python manage.py makemigrations --check --dry-run   ->  No changes detected
+$ python manage.py check                              ->  System check identified no issues (0 silenced).
+$ python manage.py test core --noinput                ->  Ran 267 tests in 40.047s   OK
+$ npx tsc -b                                          ->  tsc=0
+$ npx vite build --outDir <scratchpad>/dist           ->  ✓ built in 35.62s   (git status pulito: FEC/dist non toccata)
+```
+
+### 2. Un giro vero dello stadio `scrape` (3 account: Medyca + 2 competitor, db a lato)
+
+Con `run_pipeline --only scrape`, Instagram vero attraverso il proxy:
+
+```
+@medyca.menopausa (embed): 4 video, 4 new, possibile buco
+@manupausa (embed): 3 video, 3 new, possibile buco
+@menopausa.serena (embed): 5 video, 3 new, 2 rinviati, possibile buco
+✓ scrape done in 18.5s — {'accounts': 3, 'new_reels': 10, 'failed_accounts': 0, ... 'deferred': 2}
+APIFY CALLS: 0        (apify_provider.fetch_reels sostituito da un contatore)
+URLS: instagram.com/<utente>/embed/  x3   (tutte le richieste curl_cffi del giro: nessun altro host)
+```
+- Tetto per giro **rispettato**: 10 reel nuovi (4+3+3), 2 rinviati. Medyca letta per prima. Un secondo giro ha poi preso i 2 rinviati (`'menopausa.serena': 2`, `deferred: 0`): il tetto non perde niente.
+- Reel con l'account giusto, `owner_type` giusto (owned per Medyca, competitor per gli altri). Medyca: `like_count None` (nascosti), `comment_count` 4/0/2/1. Le date vanno dal 28/10 al 12/11: coerenti.
+- `scrape_state` scritto: `{'deferred': 0, 'provider': 'embed', 'last_error': '', 'gap_possible': True, 'consecutive_failures': 0}`.
+- `stage_runs`: `status done`, `note 'possibile buco (6 post tutti nuovi) su 3 account; 2 reel rimandati al giro dopo (tetto per giro)'`, `total 3 done 3 failed 0`, unità `account`.
+- `grep -ci apify BEC/logs/pipeline.log` = 3316: sono tutte righe storiche; il log di produzione non è cresciuto (26472 righe prima e dopo).
+
+### 3. Download vero (`run_pipeline --only download --limit 2`, due reel di Medyca)
+
+```
+✓ download done in 21.2s — {'downloaded': 2, 'failed': 0, 'skipped': 0, 'stopped_early': False, 'deferred': 0}
+Dfor_3UxXDk  done  duration_s 84.127  (ffprobe dell'mp3: 84.204 s)   like_count 3  comment_count 4  view_count None
+Dfh27oyx418  done  duration_s 70.985  (ffprobe dell'mp3: 71.064 s)   like_count 3  comment_count 0  view_count None
+```
+mp3 da 346 KB e 298 KB, miniature jpg scritte. Durata letta dal file e coerente con l'audio. Nota: yt-dlp ha dato `like_count 3` a Medyca, che nell'embed è nascosto (`None`): il valore viene riempito dal download, come da sviluppo. `view_count` resta `None`, come dichiarato. Il download dalle richieste curl_cffi visibili è andato a `instagram.com` (`get_ruling_for_content`, `api/graphql`: la vecchia strada di dettaglio che esisteva già) e ai CDN, nessun Apify.
+
+### 4. Casi di fallimento (2 account: `elena,palliotto` e `zzq_nonesiste_collaudo_91`)
+
+| Caso | Esito |
+|---|---|
+| Nome sbagliato / inesistente | per entrambi: 2 tentativi, `last_error 'schema_changed: pagina embed senza contextJSON'`, `consecutive_failures 1`. Stadio `failed`: «Instagram non risponde: nessun account letto (2 falliti). Primo errore: ...», `note '2 account non letti'`, `done 0 failed 2` |
+| Nessun proxy (`YTDLP_PROXY=""`) | `✓ scrape done ... 'note': 'sospeso: nessuna fonte configurata (serve IG_PROXY oppure IG_GRAPH_TOKEN)'`, 0 richieste a Instagram. Vedi difetto B |
+| Proxy con password sbagliata | `curl: (7) CONNECT tunnel failed, response 407`, 2 tentativi per account, stadio `failed`, account `consecutive_failures` sale |
+| Proxy irraggiungibile (127.0.0.1:9) | `Failed to connect ... over proxy 127.0.0.1 ... Could not connect to server`, stadio `failed` con messaggio leggibile |
+
+Perdita della password: su tutti i 4 file di output dei giri (e le `last_error`/stage_runs letti dalla Stato) ho cercato la password vera e il nome-host vero del proxy (letti dal `.env` da uno script che stampa solo i conteggi): `real password occurrences: 0 | real proxy host occurrences: 0 | fake: 0`. Limite del test: gli errori curl non riportano l'indirizzo, quindi questa prova dice «nessuna fuga nei messaggi che curl produce», non esercita `scrub` a fondo (lo fanno i test unitari).
+
+### 5. Proprietà dei contenuti (simulata con la pagina vera)
+
+Ho preso la vera pagina embed di Medyca salvata, inserito un post `COLLAB000001` con proprietario `manupausa` sia nella pagina di Medyca sia in quella di manupausa, e lanciato `scraper_agent.run` due volte sul db a lato:
+
+```
+@medyca.menopausa: COLLAB000001 è di @manupausa (collaborazione?), scartato
+giro 1 -> proprietario: manupausa competitor | nuovi: 1
+giro 2 -> proprietario: manupausa competitor | nuovi: 0
+reel collab di medyca: 0
+```
+Resta del proprietario in entrambi i giri. (Simulato: non ho trovato una collaborazione reale.)
+
+### 6. Pagina Stato da utente vero (playwright-core con Chrome, 380 px e 1280 px, nessun errore di console, nessuno scroll orizzontale)
+
+Screenshot nella cartella di prova (`.../scratchpad/col/shots/`): `errore-380`, `errore-1280`, `vuoto-380`, `sospeso-380`, `sospeso-1280`, `ok-380`, `ok-1280`, `caricamento-380`. Guardati: `errore-380`, `errore-1280`, `sospeso-380`, `ok-380`, `caricamento-380`.
+- **OK**: «Raccolta: lettura diretta dal server» / «Ultima lettura (14 nov, 20:25): tutto in ordine», grigio, ordinato a 380 px.
+- **Vuoto**: «Raccolta: lettura diretta dal server» / «Nessuna lettura ancora registrata.»
+- **Errore**: riquadro in rosso con il messaggio: «Ultima lettura (14 nov, 20:21) non riuscita: Instagram non risponde: nessun account letto (2 falliti). Primo errore: ...». A 380 px il testo va a capo ed è leggibile ma lungo (vedi difetto C).
+- **Caricamento** (richiesta di Stato ritardata di 6 s): scheletro grigio, nessun errore, nessun salto.
+- **Sospeso**: «Raccolta sospesa: manca il proxy» (vedi difetto B).
+- `/apify/i` nel testo della pagina: **false** in tutti i casi. Nel sorgente FEC restano solo `addedBudgetPaused` in `it.json`, un commento in `lib/utils.ts` e un tipo in `endpoints.ts` (ramo morto, `collection_paused_until` sempre `null`), come dichiarato dallo sviluppatore. Il campo `budget` della risposta è `null`.
+
+### 7. Il resto della pipeline
+
+`git diff main..HEAD -- pipeline/dag.py pipeline/agents/ llm/` tocca solo `scraper_agent.py` e `downloader_agent.py`: `dag.py` e `llm/` non sono cambiati. `run_pipeline --dry-run` (no-op per tutti i nove stadi) passa. Un giro vero di `transcribe`/`enrich`/`embed`/`cluster` **non l'ho fatto** (vedi sotto).
+
+### Difetti trovati (non bloccanti)
+
+- **A. Messaggio doppio e fuorviante.** Un nome sbagliato o inesistente non dà 404 ma una pagina senza dati: il log dice `doc_id rotated on embed: pagina embed senza contextJSON — trying fallback` (testo del vecchio fornitore) e l'account riceve `schema_changed`, quindi un nome scritto male (`elena,palliotto`) è indistinguibile da «Instagram ha cambiato la pagina». Inoltre `last_error` e il messaggio dello stadio hanno `error: error: ...`. Da migliorare il testo, non il comportamento (resta `failed`).
+- **B. Raccolta sospesa = «tutto in ordine».** Senza proxy lo stadio chiude `done` con `stage_runs.note = ''` (la frase «sospeso: ...» sta solo nel valore di ritorno, non in `note`). La pagina Stato mostra allora «Raccolta sospesa: manca il proxy» e sotto, in rosso, «Ultima lettura ...: tutto in ordine»: contraddittorio (screenshot `sospeso-380`). Il disegno chiedeva la frase in chiaro; qui la frase non arriva in `stage_runs`. Va scritta nella `note` (o lo stadio `failed`).
+- **C. Messaggio di errore tecnico e lungo** nel riquadro «Raccolta» (errore curl con link a curl.se, taglio a 300 caratteri a metà frase). Per un cliente non ingegnere è rumoroso; un testo breve («non riesco a raggiungere Instagram dal proxy») sarebbe meglio, col dettaglio nel log.
+- **D. «Possibile buco» sul primo giro di un account vecchio.** `menopausa.serena` ha post di maggio ed è segnalato `possibile buco` perché tutti e 6 sono nuovi nel db a lato. In produzione i reel sono già noti, quindi lì non succede (nel secondo giro `gap_possible: []`); è un limite del primo giro di un account nuovo, già descritto nel disegno.
+
+### Cosa NON ho potuto provare (e perché)
+
+- **yt-dlp dal proxy di riserva** (ramo «il diretto è bloccato, riprovo dal proxy»): dal nuovo IP il diretto funziona, non c'era un blocco da provocare; resta coperto solo dai test con mock. Così pure la pulizia (`scrub`) di un errore reale di yt-dlp che nomini il proxy.
+- **Un giro di `transcribe`, `batch`, `enrich`, `embed`, `cluster`, `knowledge`** sui reel nuovi: chiamerebbero Groq/Anthropic/modelli esterni; il sistema di permessi mi ha anche rifiutato un `run_pipeline --only batch`. Resta da guardare il primo giro notturno vero: soprattutto che i reel con `view_count NULL` si comportino bene in trascrizione, analisi e classifiche (`core/weighting.py` e `ORDER BY view_count DESC`, che in Postgres mette i NULL per primi: dichiarato dallo sviluppatore).
+- **Tutti i 23 account**: ne ho letti 3 (+2 di prova per i fallimenti) per non caricare Instagram; il 22 su 23 dello sviluppatore non l'ho rifatto. Prezzo/traffico del proxy: non misurato.
+- **Proprietà in collaborazione reale**: solo simulata con la pagina vera.
+- **Pagina Stato in produzione (`:9093`)**: non guardata (il rilascio non è avvenuto; ho usato il frontend del ramo). Mi manca anche il giudizio visivo definitivo di Giuseppe: indirizzo da aprire dopo il rilascio `http://<sito>:9093/stato`, gesto: guardare il riquadro «Raccolta» in fondo a «Coda di lavorazione», prima e dopo «Aggiorna ora».
+- Ollama non usato.
 ## 6. Rilascio           (rilasciatore)
 ## Registro delle decisioni
 
@@ -639,3 +784,15 @@ Solo la PR 1 (raccolta senza Apify). Niente della PR 2.
   7. Recupero del buco di 12 giorni: non in automatico al primo giro. Si fa
      dopo la PR 2, perché senza le correzioni il locale fallirebbe e i
      contenuti resterebbero `failed`.
+- 2026-11-14 - **Primo giro: la revisione boccia (B1), il collaudo passa con 4
+  difetti non bloccanti (A-D).** Il capo rimanda allo sviluppatore. Scelte:
+  8. **Sostituisce la decisione 7.** Il tetto `embed_max_new_per_run` ha
+     default **5** nel codice, non 10. È il ritmo che la catena di oggi regge
+     già (3-5 reel a giro, 162 su 171 analizzati da Groq dal 14/10): il buco
+     rientra piano, circa 61 reel in una o due settimane, senza far cadere
+     lavoro sul modello locale prima della PR 2. Nessun passo manuale al
+     rilascio. Giuseppe è stato informato della scelta (proposta del capo: 5);
+     se dice un altro numero, si cambia l'impostazione in `scraper_config`.
+  9. Si correggono in questo giro anche N1, N2, N3, N4 e i difetti A, B, C del
+     collaudo. N5, N6 e D si scrivono tra i limiti noti / cose da guardare al
+     primo giro, senza codice.

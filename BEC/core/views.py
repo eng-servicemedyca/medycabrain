@@ -4,11 +4,13 @@ from pathlib import Path
 
 from django.contrib.auth import authenticate
 from django.contrib.postgres.search import SearchQuery, SearchVector
-from django.db.models import Count, Exists, OuterRef, Q, Subquery
+from django.db.models import Count, Exists, F, OuterRef, Q, Subquery
 from django.db.models.functions import Coalesce
+from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -479,9 +481,33 @@ class UploadedMediaViewSet(viewsets.ModelViewSet):
 
 # ── Reels ──────────────────────────────────────────────────────────────────────
 
+class NullsLastOrdering(OrderingFilter):
+    """OrderingFilter where an empty count always sorts LAST.
+
+    In PostgreSQL `ORDER BY x DESC` puts NULL first. Reels read from the embed
+    page have no `view_count`, so sorting by views would open with the reels
+    that have no number at all.
+    """
+
+    def filter_queryset(self, request, queryset, view):
+        ordering = self.get_ordering(request, queryset, view)
+        if not ordering:
+            return queryset
+        exprs = []
+        for field in ordering:
+            name = field.lstrip("-")
+            if name in ("view_count", "like_count", "comment_count"):
+                exprs.append(F(name).desc(nulls_last=True) if field.startswith("-")
+                             else F(name).asc(nulls_last=True))
+            else:
+                exprs.append(field)
+        return queryset.order_by(*exprs)
+
+
 class ReelViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     filterset_class = ReelFilter
+    filter_backends = [DjangoFilterBackend, NullsLastOrdering, SearchFilter]
     ordering_fields = ["posted_at", "view_count", "like_count", "comment_count"]
     ordering = ["-posted_at"]
 
@@ -683,7 +709,7 @@ class ClusterViewSet(viewsets.ReadOnlyModelViewSet):
             thumbs = {}
             rows = (models.ReelClusterAssignment.objects
                     .filter(cluster_id__in=ids).exclude(reel__thumbnail_file="")
-                    .order_by("-reel__view_count")
+                    .order_by(F("reel__view_count").desc(nulls_last=True))
                     .values_list("cluster_id", "reel__thumbnail_file"))
             for cid, f in rows:
                 bucket = thumbs.setdefault(cid, [])
@@ -1498,7 +1524,7 @@ class SecondBrainGraphView(APIView):
                             "reel__account__owner_type",
                             "reel__enrichment__primary_topic",
                             "reel__enrichment__summary_it")
-                      .order_by("cluster_id", "-reel__view_count")):
+                      .order_by("cluster_id", F("reel__view_count").desc(nulls_last=True))):
                 bucket = top_reels.setdefault(a.cluster_id, [])
                 if len(bucket) < 5:
                     bucket.append(a.reel)

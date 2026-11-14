@@ -225,6 +225,25 @@ def _media_duration(mp4: Path) -> float | None:
         return None
 
 
+def _better_count(attr: str, current, new):
+    """The count to keep: yt-dlp's only if it is sane and not worse than ours.
+
+    Never negative, never lower than what the row already holds. And NEVER a
+    like count for a reel whose likes are hidden (`current is None`: the embed
+    page said so on purpose): measured 2026-11-14, yt-dlp answers like_count=3
+    on two different reels of an account with 3000 followers that hides its
+    likes (same 3, while the comments differ), so it is not a real count and
+    would make the reel look weaker than a reel with no number at all.
+    """
+    if not isinstance(new, (int, float)) or new < 0:
+        return current
+    if attr == "like_count" and current is None:
+        return current
+    if current is not None and new < current:
+        return current
+    return new
+
+
 def _process_one(reel: Reel) -> bool:
     scratch = Path(settings.TMP_DIR)
     scratch.mkdir(parents=True, exist_ok=True)
@@ -280,10 +299,8 @@ def _process_one(reel: Reel) -> bool:
     # the file and yt-dlp know. Never overwrite a known value with a blank.
     if not reel.duration_s:
         reel.duration_s = _media_duration(mp4)
-    for attr, key in (("view_count", "view_count"), ("like_count", "like_count"),
-                      ("comment_count", "comment_count")):
-        if info.get(key) is not None:
-            setattr(reel, attr, info[key])
+    for attr in ("view_count", "like_count", "comment_count"):
+        setattr(reel, attr, _better_count(attr, getattr(reel, attr), info.get(attr)))
 
     mp4.unlink(missing_ok=True)
     reel.media_status = DONE
@@ -321,6 +338,9 @@ def run(ctx) -> dict:
         .select_related("account")
         .annotate(is_owned=Case(When(account__owner_type="owned", then=Value(0)),
                                 default=Value(1), output_field=IntegerField()))
+        # NULL views sort FIRST here, on purpose: reels from the embed page have
+        # no view count and are the NEW ones; nulls_last would park them behind
+        # every old reel that still has a number.
         .order_by("is_owned", "-view_count", "-posted_at")
     )
     # Instagram throttles media/info after a few hundred rapid calls: it starts

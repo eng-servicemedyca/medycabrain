@@ -144,9 +144,16 @@ class FetchTests(SimpleTestCase):
 
     def test_404_is_not_retried(self):
         p, s = self._session(self._resp(404))
-        with p, self.assertRaises(RuntimeError):
+        with p, self.assertRaises(embed_provider.AccountNotFound):
             embed_provider.fetch_account("a")
         self.assertEqual(s.get.call_count, 1)
+
+    def test_a_name_that_is_not_a_username_is_refused_without_a_request(self):
+        """`elena,palliotto`: la virgola non è un nome, e non serve chiedere."""
+        p, s = self._session()
+        with p, self.assertRaises(embed_provider.AccountNotFound):
+            embed_provider.fetch_account("elena,palliotto")
+        s.get.assert_not_called()
 
     def test_network_error_never_shows_the_proxy_password(self):
         def boom(*a, **kw):
@@ -184,6 +191,43 @@ class ProxySettingTests(SimpleTestCase):
         from core import link_ingest
         self.assertIs(link_ingest._scrub, scrub)
         self.assertNotIn("CRET", scrub("x http://u:S%40CRET@h:1 y", "http://u:S%40CRET@h:1"))
+
+
+class NullsLastTests(TestCase):
+    """I reel dell'embed non hanno visualizzazioni: in PostgreSQL i NULL, con
+    `DESC`, vanno per primi e le classifiche si aprirebbero con «0 view»."""
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+        from rest_framework.authtoken.models import Token
+        from rest_framework.test import APIClient
+        self.acc = _mk_account("a", "competitor")
+        self.new = Reel.objects.create(account=self.acc, shortcode="NEW", view_count=None)
+        self.old = Reel.objects.create(account=self.acc, shortcode="OLD", view_count=500)
+        self.mid = Reel.objects.create(account=self.acc, shortcode="MID", view_count=50)
+        u = User.objects.create_user("t", password="x")
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=u).key}")
+
+    def test_reel_list_sorted_by_views_puts_empty_last(self):
+        r = self.client.get("/api/v1/reels/?ordering=-view_count").json()
+        self.assertEqual([x["shortcode"] for x in r["results"]], ["OLD", "MID", "NEW"])
+
+    def test_top_reels_of_a_theme_do_not_open_with_empty_views(self):
+        from core.models import ClusterRun, ReelClusterAssignment, TopicCluster
+        run = ClusterRun.objects.create(scope="competitor", is_current=True)
+        cl = TopicCluster.objects.create(run=run, label_it="tema", size=6)
+        reels = [self.new, self.old, self.mid] + [
+            Reel.objects.create(account=self.acc, shortcode=f"X{i}", view_count=10 + i)
+            for i in range(3)]
+        for r in reels:
+            ReelClusterAssignment.objects.create(run=run, cluster=cl, reel=r)
+        r = self.client.get("/api/v1/second-brain/graph/")
+        self.assertEqual(r.status_code, 200)
+        ids = {n["id"] for n in r.json()["nodes"]}
+        # 6 reel, i 5 "top": quello senza numero resta fuori, non è il primo.
+        self.assertNotIn("reel:NEW", ids)
+        self.assertIn("reel:OLD", ids)
 
 
 def _mk_account(name, owner):
@@ -270,12 +314,58 @@ class ScraperRunTests(TestCase):
         self.assertEqual(res["failed_accounts"], 1)
         self.assertEqual(res["new_reels"], 1)
 
-    def test_every_account_failed_fails_the_stage_with_the_reason(self):
+    def test_every_account_failed_fails_the_stage_with_a_plain_sentence(self):
         from core.upload_workflow import ClientError
         pages = {"medyca.menopausa": IGBlocked("HTTP 429"), "rival": IGBlocked("HTTP 429")}
         with self._fetch(pages), self.assertRaises(ClientError) as cm:
             self._run()
-        self.assertIn("Instagram non risponde", str(cm.exception))
+        msg = str(cm.exception)
+        self.assertIn("Instagram ha rifiutato la lettura", msg)
+        # Il dettaglio tecnico non arriva al cliente: resta in last_error.
+        self.assertNotIn("429", msg)
+        self.mine.refresh_from_db()
+        self.assertEqual(self.mine.scrape_state["last_error"], "blocked: HTTP 429")  # una volta sola
+
+    def test_proxy_or_network_trouble_is_said_in_plain_words(self):
+        from core.upload_workflow import ClientError
+        boom = RuntimeError("Failed to perform, curl: (7) see https://curl.se/libcurl/")
+        pages = {"medyca.menopausa": boom, "rival": boom}
+        with self._fetch(pages), self.assertRaises(ClientError) as cm:
+            self._run()
+        self.assertIn("connessione (proxy)", str(cm.exception))
+        self.assertNotIn("curl", str(cm.exception))
+        self.mine.refresh_from_db()
+        self.assertTrue(self.mine.scrape_state["last_error"].startswith("error: "))
+        self.assertNotIn("error: error", self.mine.scrape_state["last_error"])
+
+    def test_a_wrong_name_is_not_called_a_changed_page(self):
+        """Gli altri account si leggono: questo ha un nome sbagliato."""
+        pages = {"medyca.menopausa": page("medyca.menopausa", []),
+                 "rival": embed_provider.IGSchemaChanged("pagina embed senza contextJSON")}
+        with self._fetch(pages):
+            res = self._run()
+        self.assertEqual(res["failed_accounts"], 1)
+        self.assertTrue(res["detail"]["rival"].startswith("not_found:"))
+        self.rival.refresh_from_db()
+        self.assertTrue(self.rival.scrape_state["last_error"].startswith("not_found:"))
+
+    def test_not_found_account_stays_failed_and_does_not_log_the_old_provider(self):
+        pages = {"medyca.menopausa": page("medyca.menopausa", []),
+                 "rival": embed_provider.AccountNotFound("HTTP 404")}
+        with self._fetch(pages), self.assertLogs("pipeline.agents.scraper_agent", "WARNING") as logs:
+            self._run()
+        self.assertNotIn("doc_id", "\n".join(logs.output))
+        self.rival.refresh_from_db()
+        self.assertEqual(self.rival.scrape_state["consecutive_failures"], 1)
+
+    def test_default_cap_is_five_new_reels_per_run(self):
+        """Decisione 8: il buco rientra piano, il ritmo che la catena regge."""
+        nodes = [node(f"D{i}", "rival", ts=1000 + i) for i in range(6)]
+        pages = {"medyca.menopausa": page("medyca.menopausa", []), "rival": page("rival", nodes)}
+        with self._fetch(pages):
+            res = self._run()
+        self.assertEqual(Reel.objects.count(), 5)
+        self.assertEqual(res["deferred"], 1)
 
     def test_three_blocks_in_a_row_stop_the_run(self):
         for n in ("c", "d"):
@@ -286,10 +376,13 @@ class ScraperRunTests(TestCase):
                 self._run()
         self.assertEqual(f.call_count, 3)   # il quarto non viene nemmeno chiesto
 
-    def test_without_proxy_the_stage_says_suspended_and_calls_nobody(self):
+    def test_without_proxy_the_stage_fails_saying_suspended_and_calls_nobody(self):
+        """Non "done": la pagina Stato direbbe "sospesa" e "tutto in ordine"."""
+        from core.upload_workflow import ClientError
         with override_settings(YTDLP_PROXY="", IG_PROXY=""), self._fetch({}) as f:
-            res = self._run()
-        self.assertIn("sospeso", res["note"])
+            with self.assertRaises(ClientError) as cm:
+                self._run()
+        self.assertIn("sospesa", str(cm.exception))
         f.assert_not_called()
 
     def test_apify_is_never_called(self):
@@ -348,6 +441,32 @@ class DownloaderTests(TestCase):
         with override_settings(YTDLP_PROXY="", IG_PROXY=""):
             with self.assertRaises(IGThrottled):
                 self._go(mock.Mock(side_effect=IGThrottled("login")))
+
+    def test_counts_from_yt_dlp_are_sane_and_never_worse(self):
+        b = self.d._better_count
+        self.assertEqual(b("view_count", None, 900), 900)
+        self.assertEqual(b("view_count", 1000, 900), 1000)       # mai peggio
+        self.assertEqual(b("comment_count", 4, -1), 4)           # mai negativo
+        self.assertEqual(b("comment_count", 4, None), 4)
+        self.assertEqual(b("comment_count", None, 5), 5)
+        self.assertEqual(b("like_count", 7, 9), 9)
+
+    def test_hidden_likes_stay_hidden_whatever_yt_dlp_says(self):
+        """Misurato: yt-dlp dà like_count=3 su due reel diversi di un account da
+        3000 follower che nasconde i like: non è un conteggio vero."""
+        self.reel.like_count = None
+        self.reel.save()
+        self._go(lambda r, m, proxy="": {"like_count": 3, "comment_count": 4})
+        self.reel.refresh_from_db()
+        self.assertIsNone(self.reel.like_count)
+        self.assertEqual(self.reel.comment_count, 4)
+
+    def test_a_negative_like_count_never_reaches_the_row(self):
+        self.reel.like_count = 10
+        self.reel.save()
+        self._go(lambda r, m, proxy="": {"like_count": -1})
+        self.reel.refresh_from_db()
+        self.assertEqual(self.reel.like_count, 10)
 
     def test_prefetch_is_gone(self):
         self.assertFalse(hasattr(self.d, "_prefetch_urls"))

@@ -54,6 +54,16 @@ logger = logging.getLogger(__name__)
 # 6 sono nuovi, ce ne sono probabilmente altri più vecchi che non vediamo.
 PAGE_SIZE = 6
 
+# Un username Instagram: lettere, numeri, punto, underscore, fino a 30. Una
+# virgola (`elena,palliotto`) non è un nome: Instagram risponde con una pagina
+# vuota che sembrerebbe "ha cambiato la pagina". Si riconosce prima, a costo zero.
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
+
+
+class AccountNotFound(Exception):
+    """The name is wrong or the account does not exist: a property of the
+    account, not of Instagram or the proxy. Not retried."""
+
 _BLOCK_STATUSES = {401, 403, 429}
 _CONTEXT_RE = re.compile(r'"contextJSON":("(?:[^"\\]|\\.)*")')
 
@@ -152,7 +162,7 @@ def _get(username: str, impersonate: str) -> str:
     if "/accounts/login" in str(getattr(resp, "url", "")):
         raise IGBlocked("rimandato al login")
     if resp.status_code == 404:
-        raise RuntimeError("account non trovato (404): il nome è giusto?")
+        raise AccountNotFound("HTTP 404 sulla pagina embed")
     if resp.status_code != 200:
         raise RuntimeError(f"HTTP {resp.status_code} sulla pagina embed")
     return resp.text
@@ -162,17 +172,19 @@ def fetch_account(username: str, impersonate: str = "chrome124"
                   ) -> tuple[ProfileMeta, list[ReelMeta], int]:
     """Legge un account. Un secondo tentativo, con un IP nuovo, e basta.
 
-    Un "404 account non trovato" non si ritenta: è una proprietà dell'account,
-    non del proxy (es. un nome scritto male nella lista).
+    Un nome non valido o un 404 (`AccountNotFound`) non si ritenta: è una
+    proprietà dell'account, non del proxy.
     """
+    if not _USERNAME_RE.match(username or ""):
+        raise AccountNotFound(f"«{username}» non è un nome Instagram valido")
     last: Exception | None = None
     for attempt in (1, 2):
         try:
             return parse_embed(_get(username, impersonate), username)
+        except AccountNotFound:
+            raise
         except (IGBlocked, IGSchemaChanged, RuntimeError) as exc:
             last = exc
-            if isinstance(exc, RuntimeError) and "404" in str(exc):
-                break
             logger.warning("[embed] @%s tentativo %s/2: %s", username, attempt, exc)
     assert last is not None
     raise last

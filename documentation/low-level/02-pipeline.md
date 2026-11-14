@@ -34,7 +34,7 @@ flowchart LR
 
 | # | Stage | Agent file | What it does | Sets next state |
 |---|---|---|---|---|
-| 1 | **scrape** | `scraper_agent.py` | For each active `TrackedAccount` (Medyca's own first): read the **public embed page** through the residential proxy (`embed_provider.py`, [below](#where-the-list-of-reels-comes-from)) — the last 6 posts, only the videos the account **owns** — dump raw JSON to `data/raw/{account}/{shortcode}.json`, upsert `Reel` rows. 5-10 s between accounts; at most `embed_max_new_per_run` (10) new reels per run; 3 blocked accounts in a row stop the run; **if every account failed the stage is `failed`** with the reason. Apify is **not called any more** (code kept, off). | `media_status=pending` |
+| 1 | **scrape** | `scraper_agent.py` | For each active `TrackedAccount` (Medyca's own first): read the **public embed page** through the residential proxy (`embed_provider.py`, [below](#where-the-list-of-reels-comes-from)) — the last 6 posts, only the videos the account **owns** — dump raw JSON to `data/raw/{account}/{shortcode}.json`, upsert `Reel` rows. 5-10 s between accounts; at most `embed_max_new_per_run` (5) new reels per run; 3 blocked accounts in a row stop the run; **if every account failed the stage is `failed`** with the reason. Apify is **not called any more** (code kept, off). | `media_status=pending` |
 | 2 | **download** | `downloader_agent.py` | For `media_status=pending`: get the mp4 (three sources, cheapest first — [below](#how-a-reels-video-actually-arrives)), ffmpeg-extract audio → `media/audio/{account}/{shortcode}.mp3`, save thumbnail → `media/thumbs/…`, delete the mp4. 3 attempts then `skipped`; a block defers the reel instead of charging it an attempt. | `media_status=done`, `transcribe_status=pending` |
 | 3 | **transcribe** | `transcriber_agent.py` | faster-whisper (local CPU, int8) over each mp3 → `Transcript`. Remote STT (`llm.client.transcribe_audio`) is used instead when `USE_REMOTE_STT`. Also processes `UploadedMedia`. | `transcribe_status=done`, `enrich_status=pending` |
 | 4 | **batch** | `batch_agent.py` | Analysis at **half price**, answered within 24h, for **three kinds of work**: `reel_enrich`, `doc_enrich`, `doc_arguments` (declared once in `batch_agent.KINDS`). **Collects** finished deliveries first (each answer written to the row its `custom_id` names), then **submits** everything still `pending`, marking it `batched` so it can never be sent twice. Skipped entirely when `BATCH_ENABLED=0` or no Anthropic key is set. | `batched`, then `done` on collect |
@@ -381,12 +381,32 @@ not `done` with 23 failures. The proxy address holds a password: every error pas
 through `proxy.scrub` and never reaches a log.
 
 **The gap after a long stop.** The first read after a stop can bring in many reels at once.
-`embed_max_new_per_run` (ScraperConfig, default 10) lets the 10 newest in and leaves the
+`embed_max_new_per_run` (ScraperConfig, default **5**: the pace the analysis chain already
+holds, 3-5 reels a run, so the hole closes slowly instead of dropping work on the local model
+before PR 2; decision 8) lets the 5 newest in and leaves the
 rest for the next read (it keeps being visible only while it is among the account's last 6
 posts). Medyca's account is read first so the cap never starves the client's own content.
 When all 6 posts read are new, `scrape_state.gap_possible` is set and the stage note says
 "possibile buco": older posts probably exist that we cannot see. We do not pretend to have
 them.
+
+**Settings** (`scraper_config`, key → `{"value": ...}`, editable in the admin; no migration):
+
+| Key | Default | What it does |
+|---|---|---|
+| `embed_delay_s` | 5 | pause between two accounts, `uniform(d, 2d)` = 5-10 s |
+| `embed_max_new_per_run` | 5 | most NEW reels let in per run, newest first; the rest waits for the next read. `0` = read but save nothing new |
+| `impersonate` | `chrome124` | browser fingerprint of the request |
+
+**What the client reads when it fails.** The stage error is one plain sentence per kind
+(`_CLIENT_REASON` in `scraper_agent.py`): Instagram refused, page changed, name not found,
+cannot reach Instagram from the server. The technical detail stays in the log and in
+`scrape_state.last_error` (written once, with its kind: `blocked:`, `schema_changed:`,
+`not_found:`, `error:`). A name that is not a valid username (`elena,palliotto`) or a 404 is
+`not_found` without a request; a page without data while OTHER accounts were just read fine is
+also `not_found` (a wrong name), not "Instagram changed the page". **Without a proxy the stage
+FAILS** ("La raccolta è sospesa: manca la connessione (proxy)…") instead of ending `done`, so
+the Stato box never says "sospesa" and "tutto in ordine" together.
 
 **Known limits (written the day they were known):**
 
@@ -398,6 +418,25 @@ them.
   only the likes part, so it looks weaker than the account's median. It touches rankings,
   strategy and the download order (`view_count` desc: NULLs sort first in PostgreSQL, so
   new reels are downloaded before old ones).
+- **Medyca's new reels weigh zero.** Medyca hides its likes (the page says 0 with
+  `like_and_view_counts_disabled`, stored as `None`) and the page gives no views, so
+  `core/weighting.py` has nothing to count. yt-dlp does return `like_count=3` on two different
+  Medyca reels (same 3, comments 4 and 0, an account with 3000 followers): measured
+  2026-11-14, judged **not a real count**, so for a reel with hidden likes the download never
+  writes yt-dlp's like count. A count from yt-dlp is also never negative and never lower than
+  what the row already holds.
+- **Sorting.** In PostgreSQL `DESC` puts NULL first. The reel list, a theme's 3 thumbnails and
+  the 5 "top" reels of the Second Brain map now use `nulls_last`: reels with no views end last.
+  The **download order is the opposite on purpose** (NULL first = new reels first).
+- **First run: old collaboration reels can change side.** A reel Apify had stored under the
+  wrong account (a collaboration) goes back to its real owner at the first read
+  (`_upsert_reel` re-assigns it), so it can move between `owned` and `competitor`. The direction
+  is the right one, but it is a visible change: check it after the first run.
+- **A reel that is deleted or private** contains words that look like a block ("login"), so
+  the download retries once through the proxy (a few KB) before giving up. Only covered by
+  tests with mocks.
+- **"Possibile buco" on the first read of an old account.** All 6 posts are new for a database
+  that does not know them yet: the flag is expected the first time, not an alarm.
 - **An undocumented public page.** Instagram can change or close it any day. When it does the
   stage says so and nothing is collected; there is no second route ready.
 - **Videos only**, as before. The deeper route (12 reels per page, the query a logged-out
@@ -405,9 +444,9 @@ them.
 - **Proxy traffic.** About 245 KB per account read, 23 accounts, 2 reads a day: about 11 MB a
   day (a measure of one page, the rest is arithmetic). The price per GB at IPRoyal was not
   verified.
-- **A wrong account name fails every night.** `elena,palliotto` (a comma, not a dot) gets a page
-  without data (`IGSchemaChanged`, measured 2026-11-14) each run: a known failure, it stays `failed`
-  and counts in "account non letti". Four accounts read fine but showed 0 videos in their last 6
+- **A wrong account name fails every night.** `elena,palliotto` (a comma, not a dot) is `not_found`
+  at each run, without any request: a known failure, it stays `failed` and counts in "account
+  non letti" until the name is corrected or the account deactivated. Four accounts read fine but showed 0 videos in their last 6
   posts (photos/carousels): not a fault, only no reels to take.
 
 The next sections describe the Apify route and its budget. They are **kept as history**:

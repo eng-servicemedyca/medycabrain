@@ -22,7 +22,7 @@ Instagram account, no cookie. Per account:
 
 Rules of the run:
   * a pause of `embed_delay_s` (5-10 s) between accounts;
-  * at most `embed_max_new_per_run` NEW reels per run (default 10, newest
+  * at most `embed_max_new_per_run` NEW reels per run (default 5, newest
     first): the first read after a long stop would otherwise bring in dozens at
     once and flood the analysis. What is left over is not lost if it is still
     within the 6 posts of the next read;
@@ -431,11 +431,13 @@ def run(ctx) -> dict:
     else:
         logger.warning("[scraper] nessuna fonte configurata (né IG_PROXY/YTDLP_PROXY "
                        "né IG_GRAPH_TOKEN): raccolta sospesa")
-        return {"accounts": 0, "new_reels": 0,
-                "note": "sospeso: nessuna fonte configurata "
-                        "(serve IG_PROXY oppure IG_GRAPH_TOKEN)"}
+        # Failed, not "done with a note": a stage that closes "done" reads as a
+        # quiet night, and the Stato box would say "sospesa" and "tutto in
+        # ordine" at once. The sentence is the one the page shows.
+        raise ClientError("La raccolta è sospesa: manca la connessione (proxy) per "
+                          "leggere Instagram. Serve chi gestisce il server.")
     budget = [int(_cfg("global_request_budget", 40))]
-    cap = [int(_cfg("embed_max_new_per_run", 10))]
+    cap = [int(_cfg("embed_max_new_per_run", 5))]
     delay = float(_cfg("embed_delay_s", 5))
     # Medyca's own account first: if the cap or a block stops the run, it is
     # the competitors that wait, never the client's own content.
@@ -446,6 +448,8 @@ def run(ctx) -> dict:
     total_new = 0
     per_account = {}
     gaps, deferred_total = [], 0
+    failed, errors = [], {}
+    read_ok = 0
     blocked_streak = 0
     blocked_stop = False
     # No model works here: the bar counts accounts, the page says "nessun modello".
@@ -465,9 +469,14 @@ def run(ctx) -> dict:
             time.sleep(random.uniform(delay, delay * 2))
         first = False
         new_count, err = _scrape_one(account, provider_order, budget, cap)
-        per_account[account.username] = new_count if err is None else f"error: {err}"
+        # An account whose page is empty while others were just read fine is a
+        # wrong or missing name, not "Instagram changed the page".
+        if err and err.startswith("schema_changed") and read_ok:
+            err = "not_found: pagina senza dati mentre gli altri account si leggono"
+        per_account[account.username] = new_count if err is None else err
         progress.item_done("done" if err is None else "failed")
         if err is None:
+            read_ok += 1
             blocked_streak = 0
             total_new += new_count
             if account.scrape_state.get("gap_possible"):
@@ -478,6 +487,8 @@ def run(ctx) -> dict:
                                     "last_error": ""}
             account.save(update_fields=["last_scraped_at", "scrape_state"])
         else:
+            failed.append(account.username)
+            errors[account.username] = err
             blocked_streak = blocked_streak + 1 if err.startswith("blocked") else 0
             if blocked_streak >= 3 and provider_order == ["embed"]:
                 blocked_stop = True
@@ -488,9 +499,7 @@ def run(ctx) -> dict:
                                     "consecutive_failures": fails, "last_error": err}
             account.save(update_fields=["scrape_state"])
 
-    failed = [u for u, v in per_account.items() if isinstance(v, str) and v.startswith("error")]
-    read = len(per_account) - len(failed) - sum(
-        1 for v in per_account.values() if isinstance(v, str) and v.startswith("skipped"))
+    read = read_ok
     notes = []
     if gaps:
         notes.append(f"possibile buco (6 post tutti nuovi) su {len(gaps)} account")
@@ -502,22 +511,29 @@ def run(ctx) -> dict:
         progress.note("; ".join(notes))
     if read == 0 and failed:
         # Nothing was read at all: a stage that finishes "done" here reads as a
-        # quiet night. It failed, and the sentence says why.
-        first_err = per_account[failed[0]]
-        raise ClientError("Instagram non risponde: nessun account letto "
-                          f"({len(failed)} falliti). Primo errore: {first_err}"[:300])
+        # quiet night. It failed, and the sentence says why (detail in the log
+        # and in each account's `last_error`).
+        kind = errors[failed[0]].split(":", 1)[0]
+        raise ClientError(_CLIENT_REASON.get(kind, _CLIENT_REASON["error"]))
     return {"accounts": len(per_account), "new_reels": total_new,
             "failed_accounts": len(failed), "gap_possible": gaps,
             "deferred": deferred_total, "detail": per_account}
 
 
 def _scrape_one(account, provider_order, budget, cap=None):
-    """Try providers in order. Returns (new_count, error_str|None)."""
+    """Try providers in order. Returns (new_count, error_str|None).
+
+    The error string starts with its kind (`blocked:`, `schema_changed:`,
+    `not_found:`, `no_session:`, `error:`), once: `run()` turns the kind into a
+    sentence for the client, and the detail stays in the log and `last_error`.
+    """
+    from scraper import embed_provider
+
     last_err = None
     for provider in provider_order:
         try:
             if provider == "embed":
-                n, _ = _scrape_account_embed(account, cap if cap is not None else [10])
+                n, _ = _scrape_account_embed(account, cap if cap is not None else [5])
             elif provider == "graph":
                 n, complete = _scrape_account_graph(account, budget)
             elif provider == "graphql":
@@ -528,8 +544,11 @@ def _scrape_one(account, provider_order, budget, cap=None):
                 continue
             account.scrape_state = {**account.scrape_state, "provider": provider}
             return n, None
+        except embed_provider.AccountNotFound as exc:
+            logger.warning("[scraper] @%s non trovato: %s", account.username, exc)
+            return 0, f"not_found: {exc}"
         except IGSchemaChanged as exc:
-            logger.error("[scraper] @%s doc_id rotated on %s: %s — trying fallback",
+            logger.error("[scraper] @%s pagina senza i dati attesi su %s: %s",
                          account.username, provider, exc)
             last_err = f"schema_changed: {exc}"
             continue
@@ -544,3 +563,17 @@ def _scrape_one(account, provider_order, budget, cap=None):
             last_err = f"error: {exc!r}"
             continue
     return 0, last_err
+
+
+# What the client reads in the Stato box when no account could be read: one
+# short sentence per kind of failure — what happened and what to do. The
+# technical detail stays in the log and in `scrape_state.last_error`.
+_CLIENT_REASON = {
+    "blocked": "Instagram ha rifiutato la lettura. Riprova più tardi: se continua, "
+               "la connessione del server verso Instagram potrebbe non funzionare.",
+    "schema_changed": "Instagram ha cambiato la pagina che leggiamo: la raccolta "
+                      "resta ferma finché non la adattiamo.",
+    "not_found": "Non ho trovato nessuno degli account: controlla i nomi nella lista.",
+    "error": "Non riesco a raggiungere Instagram dal server. Controlla che la "
+             "connessione (proxy) funzioni e riprova.",
+}
