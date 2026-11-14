@@ -28,7 +28,7 @@
         <mxCell id="g_ing" value="INGESTION (agenti)" style="rounded=0;fillColor=none;strokeColor=#B0BEC5;dashed=1;verticalAlign=top;align=left;fontColor=#607D8B;fontStyle=2;spacingLeft=8;" vertex="1" parent="1">
           <mxGeometry x="40" y="160" width="800" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="scraper" value="ScraperAgent&#10;curl_cffi GraphQL (doc_id) + topsearch resolver&#10;fallback: instaloader" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2C4984;strokeColor=#1A3A6D;fontColor=#FFFFFF;" vertex="1" parent="1">
+        <mxCell id="scraper" value="ScraperAgent&#10;pagina embed pubblica via proxy IT (ultimi 6 post)&#10;Apify spento dal 14/11/2026" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2C4984;strokeColor=#1A3A6D;fontColor=#FFFFFF;" vertex="1" parent="1">
           <mxGeometry x="60" y="190" width="440" height="52" as="geometry" />
         </mxCell>
         <mxCell id="blogagent" value="ingest_blog&#10;requests + trafilatura → Markdown" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2C4984;strokeColor=#1A3A6D;fontColor=#FFFFFF;" vertex="1" parent="1">

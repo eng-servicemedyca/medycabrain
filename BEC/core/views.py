@@ -124,21 +124,39 @@ class _RemovableMixin:
 
 
 def _collection_paused_until():
-    """The date Instagram collection resumes, if the budget is spent now.
+    """Always None since collection stopped depending on Apify.
 
-    Adding an account while the Apify budget is exhausted works, but nothing
-    is collected until the cycle renews. The form has to say so at the moment
-    it is used (the figure is cached 5 minutes inside apify_budget).
+    It used to say when the Apify budget renewed. Reading from the server has
+    no monthly ceiling, so adding an account never pauses anything. The key
+    stays in the answer so the form keeps working unchanged.
     """
-    from scraper import apify_budget
-
-    try:
-        b = apify_budget.spend()
-    except Exception:  # noqa: BLE001 — a budget lookup never blocks adding an account
-        return None
-    if b and b.get("available_usd", 1) <= 0:
-        return b.get("cycle_end")
     return None
+
+
+def _collection_status():
+    """How Instagram is read now, and how the last read went (page Stato).
+
+    Replaces the Apify budget box: there is no money ceiling to show. The
+    outcome comes from the last finished `scrape` stage, so a read that failed
+    is written in the page and not only in a log.
+    """
+    from scraper import embed_provider, graph_client
+
+    if graph_client.configured():
+        mode, label = "graph", "Raccolta: API ufficiale di Meta"
+    elif embed_provider.configured():
+        mode, label = "embed", "Raccolta: lettura diretta dal server"
+    else:
+        mode, label = "suspended", "Raccolta sospesa: manca il proxy"
+    last = (models.StageRun.objects.filter(stage="scrape", status__in=["done", "failed"])
+            .order_by("-id").first())
+    return {
+        "mode": mode, "label": label,
+        "last": None if last is None else {
+            "at": last.finished_at, "status": last.status,
+            "note": last.note, "error": last.error,
+        },
+    }
 
 
 class AccountViewSet(_RemovableMixin, viewsets.ModelViewSet):
@@ -1280,15 +1298,12 @@ class PipelineStatusView(APIView):
             "cluster_run": models.ClusterRun.objects.aggregate(m=Max("created_at"))["m"],
         }
 
-        from scraper import apify_budget
-
         return Response({
             "operations": ops.snapshot(),
-            # What collection has cost this cycle. On a $5 plan this is not a
-            # detail: the page that starts a run must show what a run spends.
-            # Cached 5 minutes inside apify_budget — this endpoint is polled
-            # every 5 seconds per open tab.
-            "budget": apify_budget.spend(),
+            # Apify's budget box is gone with Apify: `budget` stays null so an
+            # old page does not break, and `collection` says how it reads now.
+            "budget": None,
+            "collection": _collection_status(),
             # How much is left and how long it should take — the question a
             # percentage cannot answer. See core/queue_eta.py.
             "queue": queue_eta.snapshot(),

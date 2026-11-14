@@ -100,10 +100,10 @@
         <mxCell id="l_b1" value="1 · INGESTION" style="rounded=0;fillColor=none;strokeColor=#D5E3F2;dashed=1;verticalAlign=top;align=left;fontColor=#52688A;fontStyle=2;spacingLeft=10;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="40" y="90" width="380" height="330" as="geometry" />
         </mxCell>
-        <mxCell id="l_scr" value="scraper_agent.py&#10;elenco reel via Apify (nessun account IG nostro)&#10;profondita adattiva per account&#10;tetto di spesa \$4/ciclo (apify_budget.py)&#10;IG anonimo = 401 require_login · yt-dlp non elenca" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A6FAC;fontColor=#2C4984;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;arcSize=12;" vertex="1" parent="1">
+        <mxCell id="l_scr" value="scraper_agent.py&#10;embed_provider.py: pagina embed pubblica via proxy IT (nessun account IG, niente Apify)&#10;ultimi 6 post; solo video il cui proprietario e l'account&#10;max 10 reel nuovi per giro; 3 blocchi di fila = stop; tutti falliti = stadio failed&#10;senza visualizzazioni sui reel nuovi" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A6FAC;fontColor=#2C4984;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;arcSize=12;" vertex="1" parent="1">
           <mxGeometry x="60" y="122" width="340" height="86" as="geometry" />
         </mxCell>
-        <mxCell id="l_dl" value="downloader_agent.py&#10;Apify elenca, YT-DLP SCARICA (gratis, anonimo)&#10;url CDN in cache (oe=) &#8594; yt-dlp sul permalink&#10;prefetch Apify limitato a 30 (era known+60 = \$0,48/account)&#10;video + thumbnail su disco" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A6FAC;fontColor=#2C4984;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;arcSize=12;" vertex="1" parent="1">
+        <mxCell id="l_dl" value="downloader_agent.py&#10;il server elenca, YT-DLP SCARICA (gratis, anonimo)&#10;yt-dlp diretto sul permalink; se Instagram blocca, un tentativo dal proxy&#10;durata letta dal file (ffprobe)&#10;video + thumbnail su disco" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A6FAC;fontColor=#2C4984;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;arcSize=12;" vertex="1" parent="1">
           <mxGeometry x="60" y="214" width="340" height="84" as="geometry" />
         </mxCell>
         <mxCell id="l_blog" value="blogscrape_agent.py&#10;agente di scoperta (sitemap/feed/LLM)&#10;link_ingest.py&#10;video da link: YouTube+Vimeo, oEmbed + yt-dlp (proxy residenziale IT, senza cookie); pagine web come articoli&#10;→ KnowledgeDocument con owner e is_inspiration" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A6FAC;fontColor=#2C4984;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;arcSize=12;" vertex="1" parent="1">
@@ -228,7 +228,7 @@
         <mxCell id="n_cron" value="⏰ Avvio automatico&#10;3 volte al giorno&#10;(oppure lo avvii tu)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=18;fillColor=#FFFFFF;strokeColor=#C93B42;strokeWidth=2;fontColor=#2C4984;fontSize=12;align=left;spacingLeft=10;verticalAlign=middle;" vertex="1" parent="1">
           <mxGeometry x="40" y="200" width="200" height="66" as="geometry" />
         </mxCell>
-        <mxCell id="n_ig" value="📸 Instagram&#10;reel Medyca + competitor&#10;(elenco via Apify)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=18;fillColor=#EEF5FD;strokeColor=#D5E3F2;strokeWidth=2;fontColor=#2C4984;fontSize=12;align=left;spacingLeft=10;verticalAlign=middle;" vertex="1" parent="1">
+        <mxCell id="n_ig" value="📸 Instagram&#10;reel Medyca + competitor&#10;(pagina pubblica letta dal server)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=18;fillColor=#EEF5FD;strokeColor=#D5E3F2;strokeWidth=2;fontColor=#2C4984;fontSize=12;align=left;spacingLeft=10;verticalAlign=middle;" vertex="1" parent="1">
           <mxGeometry x="280" y="90" width="200" height="66" as="geometry" />
         </mxCell>
         <mxCell id="n_blog" value="📄 Blog medyca.it&#10;articoli pubblicati" style="rounded=1;whiteSpace=wrap;html=1;arcSize=18;fillColor=#EEF5FD;strokeColor=#D5E3F2;strokeWidth=2;fontColor=#2C4984;fontSize=12;align=left;spacingLeft=10;verticalAlign=middle;" vertex="1" parent="1">

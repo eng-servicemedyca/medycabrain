@@ -10,7 +10,7 @@ non installa i modelli pesanti.
 from unittest import mock
 
 from django.contrib.auth.models import User
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
@@ -179,12 +179,14 @@ class AccountTests(AuthedTestCase):
         r = self.client.get("/api/v1/accounts/?page_size=100").json()
         self.assertEqual(len(r["results"]), 30)
 
-    def test_budget_spent_is_announced_on_creation(self):
-        with mock.patch("scraper.apify_budget.spend",
-                        return_value={"available_usd": 0.0, "cycle_end": "2026-11-26T00:00:00Z"}):
+    def test_adding_an_account_never_says_collection_is_paused(self):
+        """Senza Apify non c'è più un tetto di spesa che sospende la raccolta,
+        e la creazione non deve nemmeno chiamarlo."""
+        with mock.patch("scraper.apify_budget.spend") as spend:
             r = self._add("nuovo")
         self.assertEqual(r.status_code, 201)
-        self.assertEqual(r.json()["collection_paused_until"], "2026-11-26T00:00:00Z")
+        self.assertIsNone(r.json()["collection_paused_until"])
+        spend.assert_not_called()
 
 
 class CustomTopicTests(AuthedTestCase):
@@ -294,11 +296,21 @@ class StatusViewTests(AuthedTestCase):
         models.TrackedAccount.objects.create(username="vivo")
         models.TrackedAccount.objects.create(username="tolto", is_active=False,
                                              removed_at="2026-11-01T00:00:00Z")
+        models.StageRun.objects.create(
+            run_id="r1", stage="scrape", status="failed",
+            error="Instagram non risponde: nessun account letto")
         with mock.patch("core.ops.snapshot", return_value={}), \
-             mock.patch("scraper.apify_budget.spend", return_value=None):
+             mock.patch("scraper.apify_budget.spend") as spend, \
+             override_settings(YTDLP_PROXY="http://u:p@h:1", IG_PROXY=""):
             r = self.client.get("/api/v1/ops/status/")
         self.assertEqual(r.status_code, 200)
         data = r.json()
+        # Il riquadro del tetto Apify non c'è più: dice come si legge e com'è andata.
+        spend.assert_not_called()
+        self.assertIsNone(data["budget"])
+        self.assertEqual(data["collection"]["mode"], "embed")
+        self.assertEqual(data["collection"]["last"]["status"], "failed")
+        self.assertIn("Instagram non risponde", data["collection"]["last"]["error"])
         self.assertEqual(data["last_pipeline_job"]["status"], "done")
         self.assertEqual([a["username"] for a in data["accounts"]], ["vivo"])
         self.assertIn("blocked", data["queue"])
