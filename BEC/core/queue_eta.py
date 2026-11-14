@@ -24,7 +24,7 @@ Two numbers, both measured rather than guessed:
 Known limits, so nobody reads more into the estimate than it holds:
 
 - **Download is the unreliable one.** Measured between 9 and 77 s/reel across
-  runs, because the cost depends on how many urls Apify pre-filled (a cached
+  runs, because the cost depends on whether the reel carries a url (Apify pre-filled them until 2026-11; now yt-dlp fetches each reel; a cached
   CDN url is a plain fast fetch) and on whether Instagram starts throttling
   mid-run — in which case the run stops early and the rest waits for the next
   one. The estimate is the recent average, not a promise.

@@ -39,11 +39,12 @@ collects finished deliveries; `enrich` is the live fallback for whatever the bat
 not take. Remote models are a priority chain declared in `.env` (`LLM_ENDPOINTS`), each
 provider with its own key and dialect, and a dead provider is skipped rather than taking
 the whole remote layer down with it.
-**Collection is split in two on purpose**: Apify *lists* an account's reels (Instagram answers
-`401 require_login` to anyone anonymous, and yt-dlp's profile extractor is `_WORKING = False`),
-and yt-dlp *downloads* each reel anonymously and free. No Instagram account of ours is involved.
-Apify is billed per result on a $5/cycle plan, so `scraper/apify_budget.py` enforces a $4.00
-ceiling, adaptive per-account depth, and a cap on the downloader's url prefetch.
+**Collection is split in two on purpose** (since 2026-11-14, Apify is off): the server *lists*
+an account's reels by reading its public **embed page** through the residential proxy
+(`scraper/embed_provider.py`: last 6 posts, only videos the account owns, no views), and yt-dlp
+*downloads* each reel anonymously (direct first, proxy only if blocked). No Instagram account of
+ours is involved. A run is capped (`embed_max_new_per_run`), and if every account fails the stage
+is `failed`. The Apify code stays in the repository, switched off (history in `02-pipeline.md`).
 Idempotent via per-row status columns; failures stay `failed` (retry is explicit). Runs nightly
 via host cron, **and on demand** — `POST /api/v1/ops/run/` queues a `Job(kind="pipeline")`
 (`core/pipeline_run.py`), one run at a time. `core/queue_eta.py` says how much is left and how

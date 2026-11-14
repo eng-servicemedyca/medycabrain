@@ -94,16 +94,17 @@ import os
 import re
 import subprocess
 import tempfile
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
-from urllib.parse import (parse_qsl, quote, unquote, urlencode, urlparse,
-                          urlsplit, urlunparse)
+from urllib.parse import (parse_qsl, quote, urlencode, urlparse,
+                          urlunparse)
 from urllib.request import Request as _Req
 from urllib.request import urlopen
 
 from django.conf import settings
+
+from scraper.proxy import scrub, ytdlp_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -345,37 +346,10 @@ def _main_ytdlp_binary() -> str:
     return str(Path(settings.BASE_DIR) / "venv" / "bin" / "yt-dlp")
 
 
-def _scrub(text: str, proxy: str) -> str:
-    """`text` with every trace of the proxy address replaced by "<proxy>".
-
-    Run it on the WHOLE stderr, before any cut: cutting first can leave a
-    fragment of the address (or of the password) at the edge that no longer
-    matches the full URL. The password is also removed on its own, raw,
-    decoded and URL-quoted, because yt-dlp may print it apart from the URL.
-    """
-    if not proxy or not text:
-        return text
-    secrets = [proxy]
-    try:
-        pw = urlsplit(proxy).password
-    except ValueError:
-        pw = None
-    if pw:
-        secrets += [pw, unquote(pw), quote(pw, safe=""), quote(pw)]
-    # Longest first: the full address must go before the password inside it.
-    for secret in sorted(set(filter(None, secrets)), key=len, reverse=True):
-        text = text.replace(secret, "<proxy>")
-    return text
-
-
-def _proxy() -> str:
-    """The proxy address for ONE download, or "" when none is configured.
-
-    `{session}` becomes a fresh id: the provider keeps one exit IP per id, so
-    a download keeps its IP from start to end and a retry gets a new one.
-    """
-    raw = (getattr(settings, "YTDLP_PROXY", "") or "").strip()
-    return raw.replace("{session}", uuid.uuid4().hex[:8]) if raw else ""
+# Copia unica in scraper/proxy.py (la usa anche la raccolta di Instagram).
+# I nomi `_proxy`/`_scrub` restano qui: i test e fetch_audio li usano così.
+_scrub = scrub
+_proxy = ytdlp_proxy
 
 
 @dataclass(frozen=True)
