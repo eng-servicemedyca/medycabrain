@@ -1,9 +1,9 @@
 ---
 id: 2026-11-13-processi-locali
 titolo: Pagina "Processi locali" - cosa fa l'LLM locale e quanto costa in tempo
-stato: pronto
+stato: rilasciato
 ramo: feat/processi-locali
-pr: ""
+pr: "20"
 ticket: ""
 ---
 
@@ -1068,7 +1068,42 @@ WARNING llm.usage [usage] avanzamento non registrato: OperationalError('connecti
 - **Dati reali in volume** (tempo dell'endpoint con migliaia di righe) e **la pagina contro il backend di produzione** (non esiste ancora la migrazione lì, per ordine).
 - Il «giudizio visivo» finale è di Giuseppe (vedi sopra).
 - Nota d'ambiente: ho usato l'Ollama vero del VDS (porta 11434): ho caricato prima il 7b poi il 3b; ora è caricato il 3b. Nessun'altra modifica al servizio.
-## 6. Rilascio           (rilasciatore)
+## 6. Rilascio           (capo, al posto del rilasciatore)
+
+Rilasciato il 14/11/2026 dopo il merge della PR #20 (`39bbf53`). Il
+rilasciatore ha fatto solo i controlli di sola lettura e si è rifiutato di
+eseguire: l'OK di Giuseppe gli arrivava dal capo e non da Giuseppe in persona.
+I passi li ha eseguiti il capo, con la conferma di Giuseppe («Sì, tutti e tre»
+e «Sì, aggiungila» per il cron).
+
+- **Prima**: `main` pulito su `39bbf53`, nessun `run_pipeline` in corso,
+  database fermo a `0025`.
+- **Migrazione** (10:50): `Applying core.0026_llmcall_stagerun... OK`.
+- **Frontend** (10:51): `npm run build`, `✓ built in 28.20s`, in `dist/assets`
+  c'è `Progress-BbS3hDyd.js`.
+- **Cron**: aggiunta la riga `0 4 * * * ... manage.py prune_llm_calls`; le due
+  righe della pipeline non sono state toccate.
+- **Riavvio del backend**: `sudo` chiede la password e il capo non ce l'ha.
+  L'ha fatto Giuseppe a mano alle 18:21. `collectstatic` non lanciato (nessun
+  file statico nuovo).
+- **Dopo**: i due servizi `active`; `/` e `/avanzamento` 200;
+  `/api/v1/ops/progress/` e `/api/v1/ops/llm/` 401 senza login, un indirizzo
+  inesistente sotto `ops/` 404 (quindi le rotte nuove sono caricate).
+
+**Primo giro vero** (cron delle 14:15, prima del riavvio ma con le tabelle già
+create): 7 righe in `stage_runs`, tutte `done`, nessun avviso «avanzamento non
+registrato» nel log. `llm_calls` è vuota: il giro non ha avuto niente da
+analizzare.
+
+**Scoperto durante il rilascio**: lo scraper non porta più niente. Apify
+risponde `401 user-or-token-not-found` per tutti i 23 account dal giro del
+12/11 alle 14:15; prima, almeno dall'11/11, si fermava per budget finito.
+Lo stadio `scrape` risulta `done` con 23 falliti su 23.
+
+**Non verificato**: la pagina con un login vero a 380 px sul sito live; un
+giro con contenuti nuovi (chiamate vere a Ollama registrate in `llm_calls`,
+ore di Whisper, blocco «In consegna»).
+
 ## Registro delle decisioni
 
 - 2026-11-13 - Abbandono di Anthropic API / Apify fuori da questo lavoro: prima
