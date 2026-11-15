@@ -33,12 +33,11 @@ Four inputs → derived layers → themes. See `documentation/low-level/01-data-
 
 `pipeline/dag.py` (which also owns the stage list, via `build_steps()`), entry
 `core/management/commands/run_pipeline.py`, one agent per stage:
-`scrape → download → transcribe → batch → enrich → embed → blogscrape → knowledge → cluster`.
-`batch` hands the analysis to the Anthropic Batch API (half price, answers within 24h) and
-collects finished deliveries; `enrich` is the live fallback for whatever the batch could
-not take. Remote models are a priority chain declared in `.env` (`LLM_ENDPOINTS`), each
-provider with its own key and dialect, and a dead provider is skipped rather than taking
-the whole remote layer down with it.
+`scrape → download → transcribe → enrich → embed → blogscrape → knowledge → cluster`
+(eight stages; the old `batch` stage, which handed the analysis to the Anthropic Batch API, was
+removed 2026-11-15 — `dag.HISTORY_ORDER` keeps it only to draw old rounds). Models are a
+two-link chain: **Groq** (declared in `.env` as `LLM_ENDPOINTS=groq`) and then the **local
+Ollama model** as the backstop. No Anthropic, no reseller gateway, no HuggingFace.
 **Collection is split in two on purpose** (since 2026-11-14, Apify is off): the server *lists*
 an account's reels by reading its public **embed page** through the residential proxy
 (`scraper/embed_provider.py`: last 6 posts, only videos the account owns, no views), and yt-dlp

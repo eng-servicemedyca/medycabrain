@@ -1,12 +1,12 @@
 """
 pipeline/agents/enrich_agent.py
 ===============================
-EnrichAgent — one HF LLM call per reel with enrich_status='pending':
+EnrichAgent — one LLM call per reel with enrich_status='pending':
 extracts summary_it, topics, hook, target audience, content_format.
 
 Then extracts standalone arguments/claims (layer-2) for reels with
 argument_status='pending'. Both stages are idempotent and skip gracefully
-when HF_API_TOKEN is absent (pipeline continues, like SPI enrichment).
+when no model can answer (pipeline continues).
 
 Both stages run several reels at once (ENRICH_WORKERS, default 5). The cost
 of a reel is ~17s of waiting for the model to answer, not local computation:
@@ -179,8 +179,7 @@ ENRICH_MAX_TOKENS = 2000
 
 def build_enrich_prompt(reel: Reel) -> tuple[str, str, str] | None:
     """(system, user, evidence) for one reel, or None when there is nothing
-    worth asking. Shared by the live path and the batch path so the two can
-    never drift into asking different questions of the same material.
+    worth asking. Kept apart from the call so the question has one definition.
     """
     evidence, transcript_text = classify_evidence(reel)
     if evidence == "insufficient":
@@ -197,9 +196,8 @@ def build_enrich_prompt(reel: Reel) -> tuple[str, str, str] | None:
 def write_enrichment(reel: Reel, data: dict, evidence: str, model_name: str) -> None:
     """Turn one model answer into the Enrichment row.
 
-    Extracted from _enrich_one so a batch result, which arrives hours later
-    and without the model in context, is stored by exactly the same rules —
-    same canonicalisation, same truncation, same guard on the hook.
+    Same canonicalisation, same truncation, same guard on the hook for every
+    answer, whoever wrote it.
     """
     # The model occasionally wraps the object in an array ([{...}]) — 10 of
     # ~150 answers on the 2026-09-13 run. The content is fine; only the
@@ -320,7 +318,8 @@ def _extract_arguments(reel: Reel) -> int:
 
 def run(ctx) -> dict:
     if not client.available():
-        return {"skipped": True, "note": "HF_API_TOKEN not set"}
+        return {"skipped": True,
+                "note": "nessun modello disponibile (Groq senza chiave, Ollama spento)"}
 
     # Stage A: enrichment. Include silent reels (transcription SKIPPED) —
     # they still have captions worth enriching.

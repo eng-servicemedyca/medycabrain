@@ -254,18 +254,28 @@ class QueueBlockedTests(TestCase):
 
 
 class RunHistoryTests(SimpleTestCase):
-    def test_stage_list_comes_from_the_pipeline_and_knows_batch(self):
+    def test_the_pipeline_has_eight_stages_and_batch_is_only_history(self):
+        from pipeline.dag import HISTORY_ORDER, STAGE_NAMES, build_steps
+        self.assertEqual(len(STAGE_NAMES), 8)
+        self.assertNotIn("batch", STAGE_NAMES)
+        self.assertEqual([s.name for s in build_steps()], list(STAGE_NAMES))
+        # old rounds still draw: the retired stage keeps a label and a place
         self.assertIn("batch", ops.STAGE_LABELS)
-        self.assertEqual(list(ops.STAGE_NAMES), list(ops.STAGE_NAMES))
+        self.assertEqual([s for s in HISTORY_ORDER if s != "batch"], list(STAGE_NAMES))
 
-    def test_a_run_with_batch_is_one_run(self):
+    def test_old_and_new_runs_are_each_one_run(self):
+        # A log written before the batch stage was removed (nine stages) and one
+        # written after (eight) must both read as one run per night.
         import tempfile
         from pathlib import Path
 
+        from pipeline.dag import HISTORY_ORDER, STAGE_NAMES
+
         log = []
-        for run_ts in ("2026-11-04 03:30:00", "2026-11-05 03:30:00"):
+        for run_ts, stages in (("2026-11-04 03:30:00", HISTORY_ORDER),
+                               ("2026-11-05 03:30:00", STAGE_NAMES)):
             day = run_ts[:10]
-            for i, stage in enumerate(ops.STAGE_NAMES):
+            for i, stage in enumerate(stages):
                 log.append(f"[{day} 03:{30 + i:02d}:00 UTC] ▶ agent: {stage}")
                 log.append(f"[{day} 03:{30 + i:02d}:30 UTC] ✓ {stage} done in 30.0s — {{}}")
         with tempfile.TemporaryDirectory() as tmp:
@@ -274,7 +284,8 @@ class RunHistoryTests(SimpleTestCase):
             with self.settings(BASE_DIR=tmp):
                 runs = ops.run_history()
         self.assertEqual(len(runs), 2)
-        self.assertEqual(len(runs[0]["stages"]), len(ops.STAGE_NAMES))
+        self.assertEqual(len(runs[0]["stages"]), len(STAGE_NAMES))
+        self.assertEqual(len(runs[1]["stages"]), len(HISTORY_ORDER))
 
     def test_schedule_text_is_italian_whatever_the_crontab_comment_says(self):
         cron = ("# medycabrain — midday top-up (new reels, skip recluster)\n"

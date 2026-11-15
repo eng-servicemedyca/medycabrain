@@ -3,10 +3,10 @@ core/progress_report.py
 =======================
 What `GET /api/v1/ops/progress/` and `GET /api/v1/ops/llm/` answer. Read-only
 (apart from closing ghost rows, see `llm.usage.close_ghosts`): the numbers come
-from `stage_runs`, `llm_calls`, `jobs` and `batch_runs`, written by
+from `stage_runs`, `llm_calls` and `jobs`, written by
 `core/progress.py` and `llm/usage.py`.
 
-`progress_snapshot()` is polled every 2 seconds by an open page, so it is six
+`progress_snapshot()` is polled every 2 seconds by an open page, so it is five
 indexed reads, plus one more for every local process with a call already writing
 (`_typical_tokens`), and nothing else: no system commands, no log parsing
 (`ops.snapshot()` measures 303-566 ms because it does both). The one exception
@@ -34,7 +34,7 @@ from django.utils import timezone
 
 from core import models, ops
 from llm import usage
-from pipeline.dag import STAGE_LABELS, STAGE_NAMES
+from pipeline.dag import HISTORY_ORDER, STAGE_LABELS
 
 MIN_ITEMS_FOR_SPEED = 3
 MAX_ITEMS_SHOWN = 5
@@ -47,6 +47,7 @@ _prev_cache: dict = {"at": 0.0, "value": {}}
 
 # Who does the work of a stage, as a code the page turns into words. Stages
 # that call a model say so from their calls (`llm_*`); these are the fixed ones.
+# `batch` is the retired delivery stage: old rounds still have a row for it.
 _STAGE_WHO = {"scrape": "none", "download": "none", "blogscrape": "none",
               "batch": "batch", "embed": "embed", "cluster": "cluster",
               "transcribe": "stt", "enrich": "llm", "knowledge": "llm"}
@@ -171,8 +172,8 @@ def _local_speed_by_stage_run(ids: list[int]) -> dict[int, float]:
 def _round_dict(rows: list[models.StageRun], now, calls_by_stage: dict, tps: dict,
                 typical: dict, active: bool) -> dict:
     stages = [_stage_dict(s, now, calls_by_stage.get(s.id, []), tps.get(s.id), typical)
-              for s in sorted(rows, key=lambda r: STAGE_NAMES.index(r.stage)
-                              if r.stage in STAGE_NAMES else 99)]
+              for s in sorted(rows, key=lambda r: HISTORY_ORDER.index(r.stage)
+                              if r.stage in HISTORY_ORDER else 99)]
     first = min((s["started_at"] for s in stages if s["started_at"]), default=None)
     last = max((s["finished_at"] for s in stages if s["finished_at"]), default=None)
     head = rows[0]
@@ -230,13 +231,6 @@ def progress_snapshot() -> dict:
             for j in models.Job.objects.filter(status__in=("queued", "running"))
             .exclude(kind="pipeline")]
 
-    batches = [{"id": b.id, "kind": b.kind, "kind_label": b.get_kind_display(),
-                "items": len(b.items or []), "status": b.status, "model": b.model,
-                "submitted_at": b.submitted_at,
-                "expected_by": b.submitted_at + timedelta(hours=24),
-                "counts": b.counts or {}}
-               for b in models.BatchRun.objects.filter(status__in=("submitted", "ended"))]
-
     return {
         "now": now, "running": active or bool(jobs) or bool(loose),
         "rounds": rounds,
@@ -244,7 +238,7 @@ def progress_snapshot() -> dict:
         # command's. Shown as loose lines, never hidden.
         "other_calls": [dict(_item_dict(c, now, typical), process_label=process_label(c.process))
                         for c in loose[:MAX_ITEMS_SHOWN]],
-        "jobs": jobs, "batches": batches,
+        "jobs": jobs,
     }
 
 

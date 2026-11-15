@@ -75,8 +75,7 @@ DOC_MAX_TOKENS = 2000
 
 
 def build_doc_enrich_prompt(doc: KnowledgeDocument) -> tuple[str, str]:
-    """(system, user) for one article. Shared by the live path and the batch,
-    so the two can never ask different questions of the same article."""
+    """(system, user) for one article."""
     who = doc.source.name if doc.source else "Medyca"
     ownership = (" (un CONCORRENTE di Medyca)" if doc.owner_type == "competitor"
                  else " (il blog di Medyca stessa)")
@@ -86,8 +85,7 @@ def build_doc_enrich_prompt(doc: KnowledgeDocument) -> tuple[str, str]:
 
 
 def write_doc_enrich(doc: KnowledgeDocument, data) -> None:
-    """Store one analysis. Extracted so a batch answer, arriving hours later,
-    is written by exactly the same rules as a live one."""
+    """Store one analysis."""
     from pipeline.agents.enrich_agent import canonical_topic, pick_primary_topic
 
     # The model occasionally wraps the object in an array; the content is

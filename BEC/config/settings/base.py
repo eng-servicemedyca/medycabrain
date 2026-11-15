@@ -143,9 +143,8 @@ RAW_DUMP_DIR.mkdir(parents=True, exist_ok=True)
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── LLM / Whisper / embeddings ─────────────────────────────────────────────────
-HF_API_TOKEN = os.environ.get("HF_API_TOKEN", "")
-HF_LLM_MODEL = os.environ.get("HF_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct")
-# Local-first: Ollama runs a quantized Qwen2.5-7B (zero cost, good Italian).
+# The local backstop: Ollama runs a quantized Qwen2.5-7B (Apache 2.0, zero cost,
+# good Italian). The 3B is NOT usable for a client: its licence is non-commercial.
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct-q4_K_M")
 # Threads for generation. Ollama defaults to every core (18 here) and on this
@@ -153,16 +152,13 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct-q4_K_M")
 # Q4_K_M does 0.2-0.8 tok/s at 18 threads, 1.4-1.9 at 12, 3.8-4.0 at 6, 2.9-3.2
 # at 4. 0 = do not send the option (let Ollama decide). Re-measure on new hardware.
 OLLAMA_NUM_THREAD = int(os.environ.get("OLLAMA_NUM_THREAD", "6"))
-# Provider order: try each until one answers. Default local-only; HF is
-# dormant (add ",hf" to call it — e.g. after refilling credits).
 # Fast remote provider (OpenAI-compatible): Groq / Cerebras / OpenRouter /
 # DeepSeek / Together. ~100-300 tok/s vs ~1-3 tok/s for a 7B on this CPU, so
 # it is tried FIRST whenever a key is present. Ollama stays as the offline
 # backstop. Set FAST_LLM_API_KEY in .env to activate.
-# The LLM layer is provider-agnostic: any OpenAI-compatible endpoint works
-# (Groq, OpenAI, Anthropic-compatible gateways, OpenRouter, a self-hosted
-# proxy). Nothing below names a vendor — swapping provider is a config change,
-# never a code change.
+# The LLM layer speaks one dialect, OpenAI-compatible (Groq today). Nothing
+# below names a vendor — swapping provider is a config change, never a code
+# change. Anthropic and the reseller gateway were removed 2026-11-15.
 #
 # Two models, because the two workloads have opposite needs:
 #   BULK      hundreds of structured-extraction calls; cheap and fast wins
@@ -209,15 +205,15 @@ STT_BASE_URL = os.environ.get("FAST_LLM_BASE_URL", "https://api.groq.com/openai/
 STT_API_KEY = os.environ.get("FAST_LLM_API_KEY", "")
 
 # ── The remote-provider chain ───────────────────────────────────────────────
-# Several providers in priority order, each with its OWN base url, key, dialect
-# and model names. One provider is not enough: a free tier dies (a daily cap, a
-# depleted balance) and the whole platform silently drops to the local 3B model
-# — which is what happened until 2026-09-13, when 61 of 1066 enrichments were
-# produced by qwen2.5:3b instead of the configured model, invisibly.
+# Several providers in priority order, each with its OWN base url, key
+# and model names. Several providers can still be declared (a free tier dies on
+# a daily cap or a dead key, and the platform used to drop to the local model
+# invisibly: 61 of 1066 enrichments on 2026-09-13), but in production the list
+# is just `groq`; the local model is the second link, see llm/client.py.
 #
 # Declared in .env as:
-#     LLM_ENDPOINTS=anthropic,groq
-#     LLM_ANTHROPIC_BASE_URL=... _API_KEY=... _MODEL_ANALYSIS=... _MODEL_BULK=...
+#     LLM_ENDPOINTS=groq
+#     LLM_GROQ_BASE_URL=... _API_KEY=... _MODEL_ANALYSIS=... _MODEL_BULK=...
 #     LLM_GROQ_...                _MODEL_CHAIN=...  (same-provider fallbacks)
 # Order IS priority. A provider that rejects the key or has no balance is
 # skipped for the rest of the process; the next one answers.
@@ -233,16 +229,10 @@ def _llm_endpoints() -> list[dict]:
         reasoning = os.environ.get(p + "MODEL_REASONING", "").strip() or bulk
         analysis = os.environ.get(p + "MODEL_ANALYSIS", "").strip() or reasoning
         chain = [m.strip() for m in os.environ.get(p + "MODEL_CHAIN", "").split(",") if m.strip()]
-        # Anthropic's own API is not OpenAI-compatible (different path, header
-        # and response shape), so the dialect travels with the endpoint.
-        dialect = os.environ.get(p + "DIALECT", "").strip().lower()
-        if not dialect:
-            dialect = "anthropic" if "api.anthropic.com" in url else "openai"
         out.append({
             "name": name,
             "base_url": url,
             "api_key": os.environ.get(p + "API_KEY", "").strip(),
-            "dialect": dialect,
             "models": {"bulk": bulk, "reasoning": reasoning, "analysis": analysis},
             # Same-provider fallbacks: free tiers cap tokens per model per day,
             # so a sibling model on the same key still has its own budget.
@@ -257,19 +247,11 @@ if not FAST_ENDPOINTS and FAST_LLM_API_KEY:
     # works, as a single endpoint built from the old variable names.
     FAST_ENDPOINTS = [{
         "name": "fast", "base_url": FAST_LLM_BASE_URL, "api_key": FAST_LLM_API_KEY,
-        "dialect": "openai",
         "models": {"bulk": FAST_LLM_MODEL_BULK, "reasoning": FAST_LLM_MODEL,
                    "analysis": LLM_MODEL_REASONING_3 or LLM_MODEL_REASONING_2
                    or LLM_MODEL_REASONING or FAST_LLM_MODEL},
         "chain": FAST_LLM_MODEL_CHAIN,
     }]
-
-# ── Batch: the same models at half price, answers within 24h ────────────────
-# The nightly bulk work does not need an answer in 3 seconds, and the Batch
-# API charges 50% for exactly that trade. See BEC/llm/batch.py.
-BATCH_ENABLED = os.environ.get("BATCH_ENABLED", "1") == "1"
-BATCH_MODEL = os.environ.get("BATCH_MODEL", "claude-sonnet-5")
-BATCH_MAX_REQUESTS = int(os.environ.get("BATCH_MAX_REQUESTS", "2000"))
 
 # ── Video presi da un link (YouTube, Vimeo) ────────────────────────────────
 # yt-dlp scarica l'audio, ma **nessuno dei due fornitori lo dà in anonimo** da

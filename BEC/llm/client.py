@@ -1,13 +1,11 @@
 """
 llm/client.py
 =============
-LLM access with a provider fallback chain (default: HuggingFace Pro →
-local Ollama). HF gives the best Italian quality; Ollama is the zero-cost
-local backstop used when HF has no token or its credits are depleted
-(402 Payment Required).
-
-Modeled on the SPI _HuggingFaceExtractor for the HF side: InferenceClient
-.chat_completion + fence-stripping JSON parsing with retries.
+LLM access with a two-link chain: the remote provider (Groq, any
+OpenAI-compatible endpoint declared in `LLM_ENDPOINTS`) first, then the local
+Ollama model as the backstop. Nothing else is in the chain: no Anthropic, no
+reseller gateway, no HuggingFace (removed 2026-11-15 — the paid ones had been
+failing for weeks, and the client wants "Groq or local, full stop").
 
 Ollama is pinned to OLLAMA_NUM_THREAD threads (default 6): on this VDS more
 threads make generation slower, not faster (3.8-4.0 tok/s at 6, 0.2-0.8 at 18).
@@ -36,7 +34,6 @@ from llm import usage
 
 logger = logging.getLogger(__name__)
 
-_hf_client = None
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 # Which model actually served the last call. Callers record this instead of
@@ -80,37 +77,8 @@ class LLMModelMissing(LLMError):
 # Once a provider reports a bad key / depleted credits, skip it this process.
 # Per ENDPOINT, not global: when one gateway runs out of balance the next one
 # in the chain must still answer. A single flag here meant a dead gateway took
-# the whole remote layer down with it and everything fell to the local 3B.
-_hf_disabled = False
+# the whole remote layer down with it and everything fell to the local model.
 _fast_disabled: set[str] = set()
-
-
-def _get_hf_client():
-    global _hf_client
-    if _hf_client is None:
-        from huggingface_hub import InferenceClient
-
-        _hf_client = InferenceClient(model=settings.HF_LLM_MODEL, token=settings.HF_API_TOKEN)
-    return _hf_client
-
-
-def _hf_chat(system: str, user: str, max_tokens: int, temperature: float) -> str:
-    client = _get_hf_client()
-    try:
-        resp = client.chat_completion(
-            messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-            max_tokens=max_tokens, temperature=temperature,
-        )
-        u = getattr(resp, "usage", None)
-        usage.note_tokens(getattr(u, "prompt_tokens", None),
-                          getattr(u, "completion_tokens", None))
-        return resp.choices[0].message.content or ""
-    except Exception as exc:  # noqa: BLE001
-        msg = str(exc)
-        if "402" in msg or "Payment Required" in msg or "depleted" in msg:
-            raise LLMCreditError(msg) from exc
-        raise LLMError(msg) from exc
 
 
 def _ollama_chat(system: str, user: str, max_tokens: int, temperature: float,
@@ -245,71 +213,6 @@ def _prio_held(prio_path: str) -> bool:
         return True
     finally:
         os.close(fd)
-
-
-def _anthropic_chat(system: str, user: str, max_tokens: int, temperature: float,
-                    json_mode: bool = False, timeout: int = 300, model: str = "",
-                    endpoint: dict | None = None) -> str:
-    """Anthropic's own Messages API — NOT OpenAI-compatible.
-
-    Different path (/v1/messages), different auth header (x-api-key, not
-    Bearer), the system prompt as its own top-level field, and the answer in
-    content[].text. That is why it cannot ride on _fast_chat.
-
-    Only the synchronous path lives here. The bulk nightly work goes through
-    llm/batch.py instead: same models, half the price, answers within 24h.
-    """
-    import anthropic
-
-    endpoint = endpoint or {}
-    model = model or endpoint.get("models", {}).get("reasoning") or settings.BATCH_MODEL
-    client = anthropic.Anthropic(api_key=endpoint.get("api_key", ""),
-                                 timeout=float(timeout), max_retries=0)
-    if json_mode:
-        # No response_format on this API: the documented way to pin the shape
-        # is to ask for it. The callers' prompts already demand JSON; this
-        # only reinforces it.
-        system = system + "\n\nRispondi esclusivamente con un oggetto JSON valido."
-    _last_model.set(model)
-    try:
-        # No temperature/top_p: the sampling parameters were REMOVED on the
-        # current Claude models (Sonnet 5, Opus 5, 4.7+) and the SDK rejects
-        # the keyword outright. Determinism comes from the prompt instead.
-        msg = client.messages.create(
-            model=model, max_tokens=max_tokens, system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-    except anthropic.AuthenticationError as exc:
-        raise LLMCreditError(f"anthropic: chiave rifiutata — {exc}") from exc
-    except anthropic.PermissionDeniedError as exc:
-        raise LLMCreditError(f"anthropic: accesso negato — {exc}") from exc
-    except anthropic.NotFoundError as exc:
-        raise LLMModelMissing(f"anthropic non serve il modello {model!r}") from exc
-    except anthropic.RateLimitError as exc:
-        wait = 0.0
-        resp = getattr(exc, "response", None)
-        if resp is not None:
-            try:
-                wait = float(resp.headers.get("retry-after", "") or 0)
-            except ValueError:
-                wait = 0.0
-        raise LLMRateLimit(wait or 20.0) from exc
-    except anthropic.APIStatusError as exc:
-        # "credit balance is too low" is a spend problem, not a bug: treat it
-        # like a dead key so the chain moves on instead of retrying.
-        if "credit balance" in str(exc).lower():
-            raise LLMCreditError(f"anthropic: credito esaurito — {exc}") from exc
-        raise LLMError(str(exc)[:300]) from exc
-    if getattr(msg, "stop_reason", "") == "refusal":
-        raise LLMError("anthropic: richiesta rifiutata dai filtri di sicurezza")
-    if getattr(msg, "stop_reason", "") == "max_tokens":
-        # A truncated answer is not a shorter answer: JSON callers would fail
-        # with a parse error that hides the real cause.
-        raise LLMError(
-            f"anthropic: risposta troncata al tetto di {max_tokens} token")
-    u = getattr(msg, "usage", None)
-    usage.note_tokens(getattr(u, "input_tokens", None), getattr(u, "output_tokens", None))
-    return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
 
 
 def _fast_chat(system: str, user: str, max_tokens: int, temperature: float,
@@ -479,8 +382,6 @@ def _providers() -> list[tuple[str, dict | None]]:
         p = p.strip().lower()
         if p == "fast":
             order += [("fast", ep) for ep in _endpoints()]
-        elif p == "hf" and settings.HF_API_TOKEN and not _hf_disabled:
-            order.append(("hf", None))
         elif p == "ollama":
             order.append(("ollama", None))
     return order
@@ -495,7 +396,6 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
     prompts, never for free-text answers (it degrades prose quality).
     timeout applies to the Ollama call (long jobs pass a bigger value).
     """
-    global _hf_disabled, _fast_disabled
     providers = _providers()
     if not providers:
         raise LLMError("no LLM provider available (no key, Ollama disabled)")
@@ -529,26 +429,17 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
 
     def _call_alt(endpoint, alt_model: str) -> str:
         """Same endpoint, a sibling model — used when a daily cap is hit."""
-        fn = _anthropic_chat if endpoint.get("dialect") == "anthropic" else _fast_chat
-        return _recorded(endpoint["name"], alt_model, lambda: fn(
+        return _recorded(endpoint["name"], alt_model, lambda: _fast_chat(
             system, user, max_tokens, temperature, json_mode=json_mode,
             timeout=min(timeout, 300), model=alt_model, endpoint=endpoint))
 
     def _call(provider, endpoint=None):
         if provider == "fast":
             name = _model_on(endpoint) or endpoint.get("models", {}).get("reasoning", "")
-            if (endpoint or {}).get("dialect") == "anthropic":
-                return _recorded(endpoint["name"], name, lambda: _anthropic_chat(
-                    system, user, max_tokens, temperature,
-                    json_mode=json_mode, timeout=min(timeout, 300),
-                    model=_model_on(endpoint), endpoint=endpoint))
             return _recorded(endpoint["name"], name, lambda: _fast_chat(
                 system, user, max_tokens, temperature,
                 json_mode=json_mode, timeout=min(timeout, 120),
                 model=_model_on(endpoint), endpoint=endpoint))
-        if provider == "hf":
-            return _recorded("hf", settings.HF_LLM_MODEL,
-                             lambda: _hf_chat(system, user, max_tokens, temperature))
         # Local generation: take the single CPU slot, never run two at once.
         # The row is born BEFORE the wait: "in coda" is a state worth showing.
         rec = usage.begin("ollama", settings.OLLAMA_MODEL, is_local=True, waiting=True,
@@ -582,8 +473,6 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
                                label, exc)
                 if provider == "fast":
                     _fast_disabled.add(endpoint["name"])
-                else:
-                    _hf_disabled = True
                 last_err = exc
                 break
             except LLMRateLimit as exc:
@@ -655,15 +544,13 @@ def parse_json(raw: str):
 
 
 def available() -> bool:
-    """True if ANY provider can serve — remote endpoint, HF, or local Ollama.
+    """True if ANY provider can serve — a remote endpoint or local Ollama.
 
     The remote chain has to be checked first: without it this returned False
     whenever Ollama was unreachable, and the analysis stage skipped itself
     even though a paid, working provider was configured and answering.
     """
     if _endpoints():
-        return True
-    if settings.HF_API_TOKEN and not _hf_disabled:
         return True
     if "ollama" in [p.strip().lower() for p in settings.LLM_PROVIDER_ORDER]:
         try:

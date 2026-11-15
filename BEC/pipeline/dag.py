@@ -152,8 +152,16 @@ class DAG:
 # cron entrypoint (`manage.py run_pipeline`) and the run the client starts from
 # the interface (a `Job` of kind "pipeline") — and two copies of this list would
 # eventually disagree about what "the pipeline" is.
-STAGE_NAMES = ["scrape", "download", "transcribe", "batch", "enrich", "embed",
+STAGE_NAMES = ["scrape", "download", "transcribe", "enrich", "embed",
                "blogscrape", "knowledge", "cluster"]
+
+# The old `batch` stage (delivery to Anthropic's Batch API) is gone, but every
+# round run before 2026-11-15 still has a `batch` row in `stage_runs` and a
+# `batch` line in logs/pipeline.log. The Stato and Avanzamento pages draw those
+# rounds, so they need its name and its place in the order: without them a
+# finished old round would show a stage called "batch" at the very end.
+HISTORY_ORDER = ["scrape", "download", "transcribe", "batch", "enrich", "embed",
+                 "blogscrape", "knowledge", "cluster"]
 
 # What each stage is called on the client's screen. core/ops.py imports this
 # very dict: a copy there was missing `batch`, and the status page then showed
@@ -162,7 +170,7 @@ STAGE_LABELS = {
     "scrape": "Raccolta da Instagram",
     "download": "Download dei video",
     "transcribe": "Trascrizione audio",
-    "batch": "Analisi in blocco (consegna entro 24 h)",
+    "batch": "Analisi in blocco (non più in uso)",  # history only, see HISTORY_ORDER
     "enrich": "Analisi dei contenuti",
     "embed": "Indicizzazione per la ricerca",
     "blogscrape": "Scoperta articoli blog",
@@ -180,7 +188,7 @@ def build_steps() -> list[Step]:
     touches this file — pay for them.
     """
     from pipeline.agents import (
-        batch_agent, blogscrape_agent, cluster_agent, downloader_agent,
+        blogscrape_agent, cluster_agent, downloader_agent,
         embed_agent, enrich_agent, knowledge_agent, scraper_agent,
         transcriber_agent,
     )
@@ -189,12 +197,6 @@ def build_steps() -> list[Step]:
         Step("scrape", scraper_agent.run),
         Step("download", downloader_agent.run),
         Step("transcribe", transcriber_agent.run),
-        # Batch before enrich, and collect before submit inside it: answers
-        # that are ready land first, then everything still pending is handed
-        # over at half price. What the batch could not take (batch disabled,
-        # delivery refused) stays `pending` and `enrich` does it live tonight
-        # — so the live stage is now the fallback, not the main road.
-        Step("batch", batch_agent.run),
         Step("enrich", enrich_agent.run),
         Step("embed", embed_agent.run),
         Step("blogscrape", blogscrape_agent.run),

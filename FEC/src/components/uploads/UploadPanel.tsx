@@ -182,8 +182,6 @@ export function UploadPanel() {
       return <Badge className="bg-secondary/10 text-secondary">{t("uploads.working")}</Badge>;
     if (u.transcribe_status === "skipped")
       return <Badge className="bg-warning/10 text-warning">{t("uploads.withoutTranscript")}</Badge>;
-    if (u.transcribe_status === "batched")
-      return <Badge className="bg-secondary/10 text-secondary">{t("uploads.analysing")}</Badge>;
     if (u.transcribe_status === "failed")
       return (
         <span title={u.last_error}>

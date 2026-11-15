@@ -1,7 +1,7 @@
 ---
 id: 2026-11-14-analisi-in-casa
-titolo: Tutti i modelli sul VDS, nessun fornitore esterno (PR 2 di "pipeline in casa")
-stato: disegno
+titolo: Groq o modello locale, niente Anthropic, niente chat (PR 2 di "pipeline in casa")
+stato: approvato
 ramo: feat/analisi-in-casa
 pr: ""
 ticket: ""
@@ -484,6 +484,379 @@ citazioni; il blocco nginx esistente; il «Riprova» dei lavori e degli upload.
    dall'interruttore? Proposta: sì. Se lo togliamo subito, tornare indietro
    non è più un minuto.
 
+### Revisione del disegno (15/11): Groq o locale, niente Anthropic, niente chat
+
+**Questa sezione sostituisce tutto il disegno qui sopra.** Di quello restano
+validi solo i «Fatti misurati oggi» (1-19) e i fatti del primo file. Tutto il
+resto (interruttore `LOCAL_ONLY`, chat a flusso, Whisper in casa, tre PR,
+domande 1-6) è superato dalla decisione di Giuseppe del 15/11 (registro).
+
+Misure nuove: 15/11/2026 tra le 10:00 e le 10:40, tutte in sola lettura. Non ho
+fatto prove di velocità su Ollama: alle 10:07 era in corso un giro a mano
+(`jobs` 87) e il 7b era già caricato da qualcun altro (`/api/ps`). I tempi del
+7b qui sotto sono quindi **calcolati** dalle velocità già misurate (fatto 9),
+non cronometrati di nuovo.
+
+#### In sei righe
+
+1. **Si toglie**: la chat dentro l'app, lo stadio `batch`, tutto il codice che
+   parla con Anthropic, il rivenditore `flow`, il fornitore dormiente `hf`.
+   Quasi tutto è cancellare: circa 1.200 righe in meno.
+2. **Resta**: Groq come prima scelta (analisi e trascrizione), il modello locale
+   come riserva. Il connettore MCP resta com'è per il cliente.
+3. **Modello locale: il 7b già scaricato** (`qwen2.5:7b-instruct-q4_K_M`,
+   licenza Apache 2.0, verificata). Nessun download.
+4. **Perché oggi Groq "fallisce"**: non è spento. Mandiamo 5 richieste insieme
+   e superiamo il suo tetto al minuto. Bastava aspettare 20 secondi; invece il
+   codice ripiega sul modello locale. Con un filo solo e un po' di pazienza il
+   locale lavora quasi mai.
+5. **Con il 7b e il codice di oggi la riserva si romperebbe**: una risposta
+   media chiede 251 secondi e il codice la taglia a 240. Per questo le
+   correzioni vanno nella stessa PR del cambio di modello.
+6. **Una PR sola**, una migrazione, nessun cambio al crontab.
+
+#### Fatti nuovi (R1-R14)
+
+**Il giro del 15/11 alle 03:30** (`llm_calls`, 329 righe, tutte di quel giro)
+
+- R1. Groq: 287 chiamate, 118 riuscite e 169 fallite. **Tutte le 169 hanno lo
+  stesso errore: «rate limited, retry in N s», con N tra 1 e 21 secondi.**
+  È il tetto *al minuto*. Nessun errore di tetto giornaliero, nessun errore di
+  rete, nessuna chiave rifiutata.
+- R2. Il tetto pubblico di Groq gratuito per `openai/gpt-oss-120b` è 8.000
+  token al minuto e 200.000 al giorno (tabella sul sito di Groq; **il livello
+  del nostro conto non l'ho verificato**: si legge solo dalla console). Noi
+  abbiamo consumato 5.200 token al minuto di media durante `knowledge`, e
+  **170.240 token in un giro solo: l'85% del tetto giornaliero**.
+- R3. `enrich` e `knowledge` lavorano con **5 fili insieme** (`ENRICH_WORKERS`,
+  `enrich_agent.py` riga 46). `chat()` riprova 3 volte e poi passa al fornitore
+  dopo. Cinque fili che riprovano insieme si pestano i piedi: tre rifiuti di
+  fila e il contenuto finisce al modello locale.
+- R4. Modello locale (3b): 23 chiamate, tutte riuscite, nessuna tagliata. In
+  media **97 secondi** l'una (da 50 a 222), 37 minuti di macchina in tutto.
+  Leggeva 36-39 token al secondo, scriveva 7,2-7,5. Prompt medio 1.507 token,
+  risposta media 389, la più lunga 1.180.
+- R5. Le chiamate locali hanno fatto la coda: attesa media circa 160 secondi,
+  **massima 811, con il limite a 900** (`OLLAMA_LOCK_WAIT`). La più lunga è
+  durata 222 secondi **con il taglio a 240** (`chat()`, `timeout=240`). Il 3b
+  ce l'ha fatta per poco.
+- R6. Il locale ha toccato 5 reel su 10 e 12 articoli su 54. Ogni contenuto
+  chiede circa 2 chiamate (analisi + affermazioni): 126 chiamate riuscite per
+  64 contenuti, più 15 per i nomi dei temi.
+- R7. Anthropic: 5 chiamate, tutte «chiave rifiutata» (401). `flow`: 4, tutte
+  «saldo insufficiente» (403). Lo stadio `batch` ha provato a consegnare e ha
+  ricevuto 401. **L'ultima consegna riuscita è del 3 ottobre**: da 43 giorni
+  lo stadio non fa niente.
+- R8. Trascrizione su Groq Whisper: 10 su 10, 11 secondi in tutto.
+
+**Il codice**
+
+- R9. `batch_runs`: 26 righe, tutte `collected`, tra il 13/9 e il 3/10, 1.063
+  contenuti consegnati. **Zero righe nello stato `batched`** in `reels` e
+  `knowledge_documents`: niente è rimasto a metà.
+- R10. Il connettore MCP **usa un modello in un punto solo**: il riordino dei
+  risultati (`mcp_bridge/server.py` riga 209, `semantic_search(rerank=True)` →
+  `knowledge._rerank` → `chat_json`, modello «bulk», senza secondo tentativo).
+  Se il modello non risponde, restituisce l'ordine "per significato + parole":
+  non dà mai errore. Tutto il resto del connettore è lettura dal database.
+- R11. Licenze (`/api/show`): 7b Apache 2.0 (testo di 11.343 caratteri, nessun
+  «non-commercial»); 3b «Qwen Research License», non commerciale. Sulla
+  macchina ci sono solo questi due modelli. Il 7b pesa 4,7 GB.
+- R12. Ollama oggi apre il 7b con una finestra di 4.096 token (`/api/ps`): il
+  codice non la imposta. Un'analisi chiede fino a 1.836 token di prompt più
+  2.000 di risposta: ci sta per 260 token.
+- R13. Il silenzio ammesso verso Ollama è 120 secondi (`client.py` riga 141).
+  Il 7b, tra caricamento (96-123 s, fatto 12) e lettura del prompt (112 s),
+  resta zitto più di 200.
+- R14. Le funzioni interattive sono tutte lavori in sottofondo (`run_job`),
+  tranne la chat. Ultimo uso: strategia 27/7, piano 4/8, ideazione 24/7, bozza
+  blog 27/7 (fatto 15). Il piano editoriale chiede 3.600 token di risposta con
+  attesa massima 900 secondi (`editorial.py` riga 126).
+
+#### 1. Inventario: cosa nomina Anthropic e `flow`
+
+| Dove | Cosa c'è | Che fine fa |
+|---|---|---|
+| `BEC/llm/batch.py` (202 righe) | il client del Batch API | **si cancella** |
+| `BEC/pipeline/agents/batch_agent.py` (350) | consegna e ritiro | **si cancella** |
+| `BEC/core/management/commands/sonnet_batch.py` (157) | comando a mano | **si cancella** |
+| `BEC/pipeline/dag.py` | `batch` in `STAGE_NAMES`, `STAGE_LABELS`, `build_steps()` | esce dalla lista degli stadi (da 9 a 8). L'etichetta resta, segnata «non più in uso», perché i giri vecchi in `stage_runs` hanno ancora quel nome |
+| `BEC/llm/client.py` | `_anthropic_chat` (righe 250-312), i due rami `dialect == "anthropic"` in `chat()`, `_hf_chat` e `_get_hf_client`, il ramo `hf` in `_providers()` e `available()` | **si cancellano**. La testata del file (parla ancora di HuggingFace) si riscrive |
+| `BEC/config/settings/base.py` | `BATCH_ENABLED/MODEL/MAX_REQUESTS`, il dialetto `anthropic`, `HF_API_TOKEN`, `HF_LLM_MODEL`, i commenti che citano Anthropic | **si cancellano**. Il meccanismo `LLM_ENDPOINTS` resta: è quello che serve Groq |
+| `BEC/core/models.py` | `BatchRun`, lo stato `BATCHED` | vedi punto 2 |
+| `BEC/core/progress_report.py` (righe 233-247) | il blocco `batches` di `GET /ops/progress/` | **si cancella** |
+| `FEC/src/components/progress/BatchBlock.tsx`, `pages/Progress.tsx`, `api/progress.ts` | riquadro «In consegna» della pagina Avanzamento | **si cancella** |
+| `FEC/src/components/uploads/UploadPanel.tsx`, `api/uploads.ts` | lo stato `batched` di un upload | **si cancella** |
+| `FEC/src/components/ops/RunTimeline.tsx` | il colore dello stadio `batch` | **resta**: serve a disegnare i giri vecchi |
+| `FEC/src/i18n/it.json` | 6 righe su Anthropic/Sonnet, 11 su «in blocco» (pagina Avanzamento e pagina `Documentazione`: la tabella dei modelli dice 5 volte «Claude Sonnet 5») | si riscrivono: Groq, poi modello locale |
+| `BEC/requirements.txt` riga 30 | `anthropic==1.5.0` | **si cancella**. `requirements-ci.txt` non lo contiene. `huggingface_hub` resta: serve ai vettori |
+| `BEC/.env.example` | blocco Anthropic (5 righe), blocco Batch (5), `HF_*` | **si cancellano**; `LLM_ENDPOINTS=groq` |
+| Test | `test_progress.py` (7 righe su `BatchRun`), `test_sources_and_status.py` (2 prove su `batch`). Non esiste una prova di `batch_agent` | si adattano |
+| Documentazione | `02-pipeline.md` (13 righe su batch), `03-llm-and-embeddings.md` (18 su Anthropic, 12 su batch, la tabella dei fornitori con `aiapiflow`), `01-data-model.md` (8), `05-rest-api.md`, `06-frontend.md`, `07-content-lineage.md` | si riscrivono |
+| `docs/medycabrain-pipeline-cliente.drawio` | 6 etichette, su tutte e due le pagine («di notte, in blocco: costa la metà», «Sonnet 5 (a lotti)», «Opus 4.8») | si riscrivono |
+| `CLAUDE.md` (righe 10-13), `.claude/architecture-summary.md` (righe 36-41 e 59-63) | descrivono lo stadio `batch` e la chat | si aggiornano nella stessa PR; Giuseppe le legge nel diff |
+| `flow` | **nel codice non c'è niente**: esiste solo nel `.env` di produzione (5 righe `LLM_FLOW_*` e la voce in `LLM_ENDPOINTS`) e in `03-llm-and-embeddings.md` | si toglie dal `.env` al rilascio e dalla documentazione |
+| `mcp_bridge/server.py` righe 520-526 | commenti su «Origin: https://claude.ai» | **restano**: parlano del Claude del cliente che si collega, non di una nostra chiamata |
+| `.claude/rules/`, `08-agent-team.md` | Sonnet e Fable della squadra di agenti | **restano**: sono gli strumenti di lavoro, non la piattaforma |
+
+**Il connettore MCP non si rompe.** Dopo la modifica la ricerca usa
+`gpt-oss-20b` su Groq per il riordino (2-3 secondi, misura scritta in
+`knowledge.py`). Propongo che **il riordino non passi mai al modello locale**:
+se Groq rifiuta, si usa subito l'ordine "per significato + parole", che è già
+la riserva di oggi. Il motivo: sul 7b il riordino chiederebbe circa 1 minuto e
+45 (stima del disegno sopra) e farebbe la coda dietro la pipeline fino a 15
+minuti. Il cliente vedrebbe la ricerca bloccata. Serve un parametro nuovo in
+`chat()` («solo remoto»), una riga in `_rerank`.
+
+Catena dopo la modifica: **Groq (`gpt-oss-120b`, poi i fratelli della sua
+catena) → 7b locale.** Per riordino MCP e piano editoriale: **solo Groq.**
+
+#### 2. Lo stadio `batch` e la tabella `batch_runs`
+
+Lo stadio esce dal DAG. Non perde niente: è fermo dal 3/10 (R7) e nessuna riga
+è rimasta a metà (R9). Per la tabella, due strade:
+
+| | Cosa si fa | Rischio |
+|---|---|---|
+| **A. Si toglie** (proposta) | migrazione `0027`: cancella `batch_runs` e toglie `batched` dagli stati. Prima il rilasciatore salva le 26 righe in `BEC/logs/batch_runs-2026-11.json` | i dati non tornano indietro senza quel file. La migrazione deve **rifiutarsi di partire** se trova anche una sola riga `batched` (oggi sono zero) |
+| B. Resta in sola lettura | nessuna migrazione; il modello resta in `models.py`, nessuno ci scrive | nessun rischio sui dati; resta in casa un pezzo che parla di Anthropic, e fra sei mesi qualcuno si chiederà a cosa serve |
+
+Le 26 righe valgono poco: quale modello ha analizzato cosa è già scritto in
+`enrichments.llm_model` (947 Opus 5, 406 Sonnet 5, 138 gpt-oss-120b...).
+
+#### 3. La chat, e le altre funzioni che usano un modello
+
+**«La chat» è questo, e si toglie:**
+
+- `FEC/src/pages/KnowledgeBank.tsx` (402 righe), la rotta `/knowledge-bank` in
+  `App.tsx`, la voce «Chat sui contenuti» in `Sidebar.tsx`.
+- `askKnowledge` e i suoi tipi in `FEC/src/api/knowledge.ts` (il resto del file
+  resta: lo usano altre 5 pagine). `searchKnowledge` non lo chiama nessuno: via.
+- `KnowledgeAskView` in `views.py` e `knowledge/ask/` in `urls.py`.
+- In `core/knowledge.py`: `answer`, `_prepare`, `_sources_block`, `_mark_cited`,
+  `_reference_hits`, `_inventory_line`. Lo sviluppatore controlla con `grep`,
+  una per una, che non le usi nessun altro prima di cancellarle.
+- Le chiavi `kb.*` e `nav.knowledgeBank` in `it.json`.
+- Nessuna tabella: la chat non salvava niente. Nessuna migrazione.
+
+Due fili da non lasciare penzolare: `ContentDetail.tsx` riga 45 torna a
+`/knowledge-bank` quando si arriva da un link MCP (va cambiato in Home, e il
+testo «Torna alla chat sui contenuti» con lui); il campo «vai al contenuto»
+(`GoToContent`) vive solo dentro la pagina della chat e sparisce con lei.
+
+**Resta** `knowledge/search/` (`KnowledgeSearchView`): non usa nessun modello.
+**Resta** `semantic_search` con `_rerank`: è il motore del connettore MCP.
+
+**Le altre funzioni.** La lettura del capo regge per tutte tranne una.
+
+| Funzione | Dove | Risposta fino a | Proposta | Sul 7b (calcolato) |
+|---|---|---|---|---|
+| Analisi di reel e articoli, affermazioni | `enrich_agent`, `knowledge_agent` | 2.000 token | Groq → locale | 4-9 minuti a chiamata |
+| Nomi dei temi | `cluster_agent` | 300 | Groq → locale | circa 1,5 minuti |
+| Riconoscere gli articoli | `blog_discovery` | 700 | Groq → locale | 2-4 minuti |
+| Analisi di un upload | `upload_workflow` (usa `knowledge_agent`) | 2.000 | Groq → locale | 4-9 minuti |
+| Riordino ricerca MCP | `knowledge._rerank` | 2.000 | **solo Groq**, poi ordine semplice | non ci va |
+| Brief di strategia, bozza | `strategy.py` | 900, 1.200 | Groq → locale | 7-9 minuti; attesa massima 900 s: ci sta |
+| Ideazione | `ideation.py` | 1.200 | Groq → locale; attesa massima da 600 a 900 s | 7-9 minuti: oggi sarebbe al limite |
+| Bozze blog (3 passi) | `blog_workflow.py` | 1.200-1.600 | Groq → locale; attesa massima da 700 a 1.200 s | 8-11 minuti a passo |
+| **Piano editoriale** | `editorial.py` | 3.600 | **solo Groq.** Se Groq rifiuta, il lavoro fallisce subito con «Riprova più tardi» | **non regge**: 3.600 token a 2,8 al secondo sono 21 minuti più la lettura, contro un'attesa massima di 15. E un JSON così lungo dal 7b esce facilmente rotto |
+| Giudice di `eval_mcp` (comando a mano) | `eval_mcp.py` | 4.000 | solo Groq | non regge, come sopra |
+| Chat | `knowledge.answer` | 900 | **si toglie** | - |
+
+Una cosa non misurata: strategia, piano e bozze **non hanno mai girato su
+Groq**. Le ultime volte (luglio-agosto) rispondeva Claude tramite `flow`. La
+qualità della scrittura con `gpt-oss-120b` va guardata in collaudo, una prova
+per funzione.
+
+#### 4. La riserva locale
+
+**Modello: `qwen2.5:7b-instruct-q4_K_M`.** Già scaricato, Apache 2.0 (R11).
+Basta cambiare `OLLAMA_MODEL` nel `.env`: è già il valore predefinito nel
+codice. **Non propongo nessun download.**
+
+**Quanto dura una chiamata sul 7b** (calcolo, con i token veri di R4 e le
+velocità del fatto 9: legge 13,4 token al secondo, scrive 2,8):
+
+| | Legge | Scrive | Totale |
+|---|---|---|---|
+| Chiamata media (1.507 + 389 token) | 112 s | 139 s | **251 s, circa 4 minuti** |
+| La più lunga del 15/11 (1.180 token di risposta) | 112 s | 421 s | **533 s, circa 9 minuti** |
+| Prima chiamata, modello da caricare | | | + 96-123 s |
+
+Il 3b ne chiedeva 97 in media: il 7b è **2,6 volte più lento**.
+
+**Perché si romperebbe senza correzioni**: 251 secondi di media contro un
+taglio a 240 (R5); oltre 200 secondi di silenzio contro 120 ammessi (R13);
+cinque fili in coda da 4 minuti l'uno contro un'attesa massima di 15 minuti.
+Sono le stesse cause dei 310 falliti storici («risposta tagliata» 142, «attesa
+scaduta» 81).
+
+**Le correzioni, il minimo indispensabile** (tutte in `client.py` salvo dove
+dico altro):
+
+1. **Un filo solo**: `ENRICH_WORKERS` predefinito da 5 a 1. Serve al locale
+   (una chiamata alla volta) e serve a Groq (R3). Non rallenta: il limite è il
+   tetto al minuto di Groq, non il numero di fili. Attenzione per lo
+   sviluppatore: con un filo solo `_parallel` salta `_with_retry`, quindi la
+   pazienza sui limiti va spostata dove valga anche lì.
+2. **Sul tetto al minuto si aspetta, non si ripiega.** Oggi: 3 tentativi, poi
+   locale. Proposta: fino a 6 attese (ognuna lunga quanto dice Groq: mai più di
+   21 secondi il 15/11), poi locale. Aspettare 20 secondi costa 12 volte meno
+   di una chiamata da 4 minuti. Sul tetto *giornaliero* resta com'è: si passa
+   ai modelli fratelli su Groq, poi al locale.
+3. **Finestra**: `OLLAMA_NUM_CTX=8192` nel payload (R12). Memoria: 5,5 GB su 82
+   liberi (fatto 12).
+4. **Tempi**: silenzio ammesso da 120 a 600 secondi; tetto della risposta
+   locale 1.500 secondi per la pipeline (la più lunga calcolata è 533 + 123).
+5. **Una risposta tagliata è un errore con il suo nome**, non un testo a metà
+   restituito in silenzio: oggi finisce in un errore di JSON che nasconde la
+   causa.
+6. **Niente secondo tentativo su «occupato» e su «tagliata»** (fatto 17): oggi
+   può costare 45 minuti prima di fallire.
+7. **Il modello resta in memoria** (`keep_alive` 30 minuti): si risparmiano
+   96-123 secondi a ogni ripresa.
+8. **«Solo remoto»** per riordino MCP, piano editoriale, giudice (punti 1 e 3).
+9. **Tetto del locale per giro**: `PIPELINE_LOCAL_MAX_CALLS=40` (circa 2,8
+   ore). Superato, lo stadio si ferma dicendolo e ciò che non è stato provato
+   resta `pending` per il giro dopo. Senza, una notte con Groq spento
+   chiederebbe 9 ore e si accavallerebbe con il giro delle 14:15.
+10. **Un giro alla volta** (`run_pipeline.py`, `pipeline_run.py`): il cron che
+    parte mentre un altro giro lavora si rifiuta e lo scrive nel log. In
+    `run_pipeline.py` oggi non c'è nessun lucchetto (`grep` vuoto); quello dei
+    giri a mano c'è ma non vede il cron. Da verificare in sviluppo.
+
+**Ore-macchina della riserva, con il 7b**
+
+| Giro | Chiamate, token | Come il 15/11 (nessuna correzione al traffico) | Con le correzioni 1 e 2 | Groq spento del tutto |
+|---|---|---|---|---|
+| Tipico: 8 reel + 11 articoli | 38 chiamate, circa 62.000 token | 0-0,5 h | **0 h** (sta nel tetto giornaliero tre volte) | 2,7 h |
+| Grosso: 10 reel + 54 articoli | 141 chiamate, circa 230.000 token | **1,6 h** (23 chiamate per 251 s; con il 3b furono 0,6 h) | **0-1,3 h**: 0 se i modelli fratelli su Groq rispondono; 1,3 se non rispondono e i 30.000 token oltre il tetto giornaliero vanno al locale | 9,2 h, fermate a 2,8 dal tetto: il resto al giro dopo |
+
+Sono stime: i token sono misurati, la velocità del 7b viene da una prova sola
+(fatto 9) su una macchina i cui tempi cambiano anche del 70% (fatto 2). Dopo la
+prima settimana si sostituiscono con i numeri veri di `llm_calls`.
+
+Tempo di orologio su Groq, con il tetto al minuto: giro tipico 12 minuti, giro
+grosso 45 (misurato il 15/11: 49).
+
+#### 5. Una PR, e cosa si fa in produzione
+
+**Una PR sola**, sul ramo `feat/analisi-in-casa`, in tre commit leggibili uno
+per volta: (1) via Anthropic, `flow`, `hf` e lo stadio `batch`; (2) via la
+chat; (3) la riserva locale. Non la divido perché il cambio di modello senza
+le correzioni rompe la riserva, e togliere Anthropic e `flow` non cambia niente
+di ciò che succede oggi: sono già morti tutti e due (R7).
+
+File, oltre a quelli dell'inventario:
+
+| File | Perché |
+|---|---|
+| `BEC/llm/client.py` | correzioni 2-9; parametro «solo remoto» |
+| `BEC/pipeline/agents/enrich_agent.py`, `knowledge_agent.py` | un filo; il tetto lascia `pending`; via la nota vecchia «HF_API_TOKEN not set» |
+| `BEC/core/knowledge.py` | via la chat; `_rerank` solo remoto |
+| `BEC/core/editorial.py`, `ideation.py`, `blog_workflow.py`, `eval_mcp.py` | solo remoto o attese più lunghe (tabella al punto 3) |
+| `BEC/core/management/commands/run_pipeline.py`, `BEC/core/pipeline_run.py` | un giro alla volta |
+| `BEC/core/ops.py` | `models()` dice la catena vera: Groq, poi il nome del modello locale |
+| `BEC/core/migrations/0027_...py` | via `batch_runs` e lo stato `batched` (se Giuseppe sceglie A) |
+| `BEC/config/settings/base.py`, `BEC/.env.example` | `OLLAMA_NUM_CTX`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_PIPELINE_TIMEOUT`, `PIPELINE_LOCAL_MAX_CALLS` |
+| Test nuovi | la catena con `.env.example` è solo Groq + locale; `num_ctx` e `keep_alive` nel payload; tagliata = errore; niente secondo tentativo su «occupato»; «solo remoto» non chiama mai Ollama; sei attese sul tetto al minuto prima del locale; il tetto lascia `pending` e non `failed`; `knowledge/ask/` risponde 404; il DAG ha 8 stadi; la ricerca MCP restituisce risultati anche se Groq rifiuta |
+
+**Cosa si riusa**: `_ollama_slot` e il flusso di `_ollama_chat`; l'eccezione
+`LLMRateLimit` con il suo `retry_after` e `daily`; la catena dei modelli
+fratelli (`chain`); la riserva "ordine semplice" già scritta in `_rerank`;
+`ctx.limit` come stampo per il tetto; il «Riprova» dei lavori; `llm_calls` per
+verificare tutto dopo.
+
+**In produzione, al rilascio** (lo fa il rilasciatore, chiedendo conferma a
+ogni passo):
+
+1. Copia del `.env` in `BEC/.env.bak.20261115` (i file `.env.bak*` sono già
+   fuori da git).
+2. Nel `.env`: `LLM_ENDPOINTS=groq`; via le righe `LLM_ANTHROPIC_*` (5),
+   `BATCH_*` (2), `LLM_FLOW_*` (5), `HF_*` (2);
+   `OLLAMA_MODEL=qwen2.5:7b-instruct-q4_K_M`.
+3. Salvataggio delle 26 righe di `batch_runs` in un file, poi la migrazione.
+4. Build del frontend, riavvio dei **due** servizi: l'app e `medycabrain-mcp`
+   (il connettore è un processo a parte e carica lo stesso `client.py`).
+5. **Crontab: non cambia.** Le due righe non nominano `batch`.
+6. Controllo: una ricerca vera dal connettore MCP, un giro a mano, e
+   `llm_calls` deve mostrare solo `groq`, `whisper` e `ollama`.
+
+**Tornare indietro**: Giuseppe annulla la PR su GitHub; `migrate core 0026`
+(ricrea `batch_runs` vuota; le 26 righe sono nel file); si rimette il `.env`
+salvato; riavvio dei due servizi. Dieci minuti. Si torna a uno stato in cui
+Anthropic e `flow` fallivano comunque.
+
+#### Rischi
+
+- **Senza Anthropic, qualità e capacità dipendono da Groq gratuito e dal 7b.**
+  Groq può cambiare i tetti o ritirare un modello senza avviso (l'ha già fatto
+  due volte: nota in `~/brain`). Un giro grosso consuma da solo l'85% del tetto
+  giornaliero (R2): il giro delle 14:15 e le funzioni interattive dello stesso
+  giorno trovano poco. Quando Groq non basta lavora il 7b, che su 3 contenuti
+  ha dato temi più generici e citazioni inventate (fatto 18 del primo file). Il
+  controllo delle citazioni le scarta, ma i temi generici passano.
+- **Il corpus ha più mani**: 1.353 analisi di Claude, 204 di Groq, 13 del 3b.
+  Le nuove saranno di Groq e, ogni tanto, del 7b. `llm_model` lo registra.
+- **`owner_type`**: nessun valore nuovo, nessuna scrittura nuova. Il rischio
+  più grosso (la chat che attribuisce a Medyca una frase di un competitor)
+  **sparisce con la chat**.
+- **I falliti restano `failed`**: il tetto del locale e il «un giro alla
+  volta» lasciano `pending` solo ciò che non è stato provato. È il punto dove
+  è facile azzerare in silenzio: c'è un test apposta. Gli stati oggi `failed`
+  sugli articoli (34 analisi, 159 affermazioni) non si toccano.
+- **Credenziali**: ne escono tre (Anthropic, `flow`, HuggingFace), non ne
+  entra nessuna. Le chiavi vecchie restano nei due file `.env.bak*` sul server
+  e valide presso i fornitori finché Giuseppe non le revoca.
+- **Il connettore MCP**: cambia una riga del suo percorso (riordino solo
+  remoto). È la strada del cliente: il collaudo deve fare una ricerca vera,
+  prima e dopo, e confrontare.
+- **Il piano editoriale senza riserva**: se Groq rifiuta, fallisce. Lo dice
+  in chiaro, ma è una funzione in meno nei momenti di tetto.
+- **Storia dei giri**: la pagina Stato e Avanzamento disegnano anche i giri
+  vecchi, che hanno lo stadio `batch`. Se si toglie l'etichetta si vedono male:
+  per questo l'etichetta e il colore restano.
+- **Tempi del 7b calcolati, non cronometrati** su prompt di analisi. Il primo
+  giro vero dice se 1.500 secondi bastano.
+- **Chi apre un vecchio link a `/knowledge-bank`** finisce in Home (la rotta
+  di riserva c'è già).
+
+#### Cosa resta fuori
+
+- Whisper in casa, `LOCAL_ONLY`, chat a flusso, precedenza alle persone,
+  `eval_local`, giro alle 22:00: tutto il disegno vecchio.
+- Un modello locale più grande o diverso dal 7b (servirebbe un download).
+- Far riprovare i falliti (i 310 storici dei reel; sugli articoli 34 analisi
+  e 159 affermazioni): serve un ordine di Giuseppe, a parte.
+- Il recupero del buco di 12 giorni: dopo questo lavoro, come già deciso.
+- Passare a Groq a pagamento (domanda 3).
+- Il campo «vai al contenuto»: sparisce con la pagina della chat. I link del
+  connettore MCP aprono già il contenuto direttamente. Se serve, si rimette
+  altrove con un lavoro suo.
+- I blocchi di nginx per `knowledge/ask/`: restano, inutili e innocui (serve
+  `sudo` per toglierli).
+- Il codice di Apify spento: resta com'è.
+- Un elenco chiuso di fornitori ammessi nel codice: la catena la decide il
+  `.env`, che è in mano a Giuseppe. Un test controlla solo `.env.example`.
+
+#### Domande aperte per Giuseppe
+
+1. **La tabella `batch_runs` (26 righe di storia): la togliamo?** Proposta: sì,
+   con una migrazione, dopo averle salvate in un file. L'alternativa è lasciarla
+   ferma dov'è.
+2. **Piano editoriale e riordino della ricerca MCP «solo Groq», mai sul
+   locale: va bene?** Proposta: sì. Sul 7b il piano chiederebbe più di 20 minuti
+   e uscirebbe spesso rotto; la ricerca del cliente resterebbe bloccata per
+   minuti invece di rispondere subito con l'ordine semplice.
+3. **Groq resta gratuito?** Un giro grosso usa l'85% del tetto di un giorno.
+   Proposta: sì per ora, e fra due settimane guardiamo in `llm_calls` quante
+   chiamate sono finite sul 7b. Se sono molte, il conto a pagamento di Groq
+   alza i tetti: è una spesa, la decide Giuseppe.
+4. **Pulizia sul server al rilascio**: tolgo il 3b da Ollama (`ollama rm`, 1,9
+   GB, licenza non commerciale) e il pacchetto `anthropic` dall'ambiente?
+   Proposta: sì a tutti e due. La revoca delle chiavi di Anthropic e di `flow`
+   presso i fornitori la può fare solo Giuseppe.
+
 ## 3. Sviluppo           (sviluppatore)
 ## 4. Revisione          (revisore)
 ## 5. Collaudo           (collaudatore)
@@ -497,3 +870,47 @@ citazioni; il blocco nginx esistente; il «Riprova» dei lavori e degli upload.
 - 2026-11-14 - Rispetto al primo disegno cambia una proposta, e dico perché:
   il 3b non è più candidato (licenza «non commerciale», fatto 16), mentre
   prima lo indicavo come possibile scelta più veloce.
+- 2026-11-15 - **Giuseppe cambia la portata** dopo aver letto i numeri del
+  disegno (chat locale: circa 2 minuti a risposta). Parole sue:
+
+  > Puoi chiudere la chat, con il modello sotto, alla fine il mio cliente usa
+  > l'mcp quindi bene così. Rimovi le dipendenze delle api call di antrhophic.
+  > O groq o chiamate al modello locale, punto
+
+  Lettura del capo (interpretazione): «tutto locale» è superato. Il disegno
+  qui sopra **non si esegue** così com'è. La portata nuova è più piccola:
+  1. **La chat dentro l'app si chiude** (pagina e modello sotto). Il cliente
+     usa il connettore MCP.
+  2. **Via ogni dipendenza da Anthropic API**: lo stadio `batch`, il fornitore
+     `anthropic` nella catena, la chiave. Via anche `flow` (rivende modelli
+     Claude: è Anthropic per altra via, ed è contro la regola sulle
+     credenziali rivendute).
+  3. **La catena dei modelli resta di due anelli: Groq, poi il modello
+     locale.** Niente altro. Groq resta, quindi la trascrizione resta su Groq
+     Whisper e non serve Whisper in casa.
+  4. Dal disegno vecchio restano validi i fatti misurati e le correzioni che
+     fanno funzionare la riserva locale (finestra, tempi di attesa, un filo
+     solo, lucchetto "un giro alla volta") e la sostituzione del 3b per la
+     licenza non commerciale. Cadono: `LOCAL_ONLY`, chat a flusso, precedenza
+     alle persone, Whisper locale, le tre PR.
+  Fatto nuovo, giro del 15/11 alle 03:30 (`llm_calls`): Groq 118 chiamate
+  riuscite e 169 fallite; modello locale 3b 23 riuscite; Anthropic 5 e `flow`
+  4, tutte fallite. 10 reel e 54 articoli analizzati, zero falliti.
+  L'architetto riscrive il disegno in una sezione nuova in fondo alla sua.
+- 2026-11-15 - **Giuseppe approva la «Revisione del disegno (15/11)»** («Ok
+  puoi andare»), con le proposte sulle quattro domande. Scelte chiuse:
+  1. La tabella `batch_runs` si toglie con la migrazione `0027`, dopo aver
+     salvato le 26 righe in un file (fuori dal repo se contengono testo del
+     cliente; nel repo solo se sono puri numeri e date).
+  2. Piano editoriale, riordino della ricerca MCP e giudice di `eval_mcp`:
+     solo Groq, mai il locale. Se Groq rifiuta: il piano dice «riprova più
+     tardi», la ricerca usa l'ordine semplice.
+  3. Groq resta al livello gratuito. Fra due settimane (circa il 29/11) si
+     guarda in `llm_calls` quanto lavoro è finito sul 7b.
+  4. Al rilascio: `ollama rm` del 3b e via il pacchetto `anthropic`.
+  5. Si tolgono anche `flow` e `hf` dalla catena (aggiunta dell'architetto,
+     dentro «o Groq o locale, punto»).
+  6. Si toglie solo la chat; strategia, ideazione, bozze blog restano su
+     Groq → locale (lettura del capo, non contestata da Giuseppe).
+  Vale solo la sezione «Revisione del disegno (15/11)»; tutto il disegno sopra
+  è superato, tranne i fatti misurati.

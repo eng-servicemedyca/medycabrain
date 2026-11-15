@@ -7,7 +7,7 @@ Layer 1 (topics):
   - embed each enriched reel (local sentence-transformers, cached)
   - cluster with HDBSCAN; fall back to Agglomerative for tiny/degenerate
     corpora
-  - name each cluster in Italian via one HF LLM call from centroid-nearest
+  - name each cluster in Italian via one LLM call from centroid-nearest
     reels, reusing prior labels for stable clusters (centroid cosine >= 0.8)
 
 Layer 2 (arguments):
@@ -165,7 +165,7 @@ def _name_cluster(sample_texts: list[str]) -> dict:
     user = prompts.CLUSTER_NAME_USER_TEMPLATE.format(samples=samples)
     try:
         # Extra retries: naming runs right after the argument-extraction burst,
-        # so HF can be rate-limited here.
+        # so the provider can be rate-limited here.
         # Naming a theme is judgement, not extraction: it decides how the
         # whole Second Brain is organised.
         data = client.chat_json(prompts.CLUSTER_NAME_SYSTEM, user, max_tokens=300,

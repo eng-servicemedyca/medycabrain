@@ -34,7 +34,7 @@ from pathlib import Path
 from django.conf import settings
 
 # Light import on purpose: dag.py defers the heavy agent imports to build_steps().
-from pipeline.dag import STAGE_LABELS, STAGE_NAMES
+from pipeline.dag import HISTORY_ORDER, STAGE_LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +168,7 @@ def last_runs(limit_lines: int = 4000) -> list[dict]:
             "seconds": round(float(m.group("secs"))),
             "result": m.group("payload")[:160],
         }
-    order = list(STAGE_NAMES)
+    order = list(HISTORY_ORDER)  # includes the retired `batch`: old rounds have it
     return sorted(seen.values(), key=lambda r: order.index(r["stage"]) if r["stage"] in order else 99)
 
 
@@ -196,7 +196,7 @@ def run_history(limit_runs: int = 6, limit_lines: int = 12000) -> list[dict]:
     runs: list[dict] = []
     current: dict | None = None
     pending: dict[str, str] = {}
-    order = list(STAGE_NAMES)
+    order = list(HISTORY_ORDER)  # includes the retired `batch`: old rounds have it
     last_pos = len(order)  # forces the first start to open a run
 
     def _ts(raw: str) -> datetime | None:

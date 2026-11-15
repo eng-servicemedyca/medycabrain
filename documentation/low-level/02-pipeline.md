@@ -14,21 +14,28 @@ How raw content becomes searchable knowledge. This is the eight-stage nightly jo
 
 `pipeline/` is a plain Python package, **not** a Django app.
 
-## The nine stages, in order
+## The eight stages, in order
 
-`STAGE_NAMES` (in `run_pipeline.py`):
+`STAGE_NAMES` (in `pipeline/dag.py`):
 
 ```
-scrape → download → transcribe → batch → enrich → embed → blogscrape → knowledge → cluster
+scrape → download → transcribe → enrich → embed → blogscrape → knowledge → cluster
 ```
+
+> There used to be a ninth stage, `batch` (analysis delivered to Anthropic's Batch API, answers
+> within 24h). It was removed on 2026-11-15 together with every Anthropic call: it had done nothing
+> since 2026-10-03 (the key was rejected, 401). Old rounds still carry a `batch` row in
+> `stage_runs` and a `batch` line in `logs/pipeline.log`, so `dag.HISTORY_ORDER` and
+> `STAGE_LABELS["batch"]` stay, **for drawing history only**; `STAGE_NAMES` (what runs, what
+> `--only` accepts) no longer has it.
 
 ```mermaid
 flowchart LR
-    scrape --> download --> transcribe --> batch --> enrich --> embed --> cluster
+    scrape --> download --> transcribe --> enrich --> embed --> cluster
     blogscrape --> knowledge --> cluster
     classDef reel fill:#dbeafe,stroke:#3b82f6;
     classDef blog fill:#fef3c7,stroke:#f59e0b;
-    class scrape,download,transcribe,batch,enrich,embed reel;
+    class scrape,download,transcribe,enrich,embed reel;
     class blogscrape,knowledge blog;
 ```
 
@@ -37,12 +44,11 @@ flowchart LR
 | 1 | **scrape** | `scraper_agent.py` | For each active `TrackedAccount` (Medyca's own first): read the **public embed page** through the residential proxy (`embed_provider.py`, [below](#where-the-list-of-reels-comes-from)) — the last 6 posts, only the videos the account **owns** — dump raw JSON to `data/raw/{account}/{shortcode}.json`, upsert `Reel` rows. 5-10 s between accounts; at most `embed_max_new_per_run` (5) new reels per run; 3 blocked accounts in a row stop the run; **if every account failed the stage is `failed`** with the reason. Apify is **not called any more** (code kept, off). | `media_status=pending` |
 | 2 | **download** | `downloader_agent.py` | For `media_status=pending`: get the mp4 (three sources, cheapest first — [below](#how-a-reels-video-actually-arrives)), ffmpeg-extract audio → `media/audio/{account}/{shortcode}.mp3`, save thumbnail → `media/thumbs/…`, delete the mp4. 3 attempts then `skipped`; a block defers the reel instead of charging it an attempt. | `media_status=done`, `transcribe_status=pending` |
 | 3 | **transcribe** | `transcriber_agent.py` | faster-whisper (local CPU, int8) over each mp3 → `Transcript`. Remote STT (`llm.client.transcribe_audio`) is used instead when `USE_REMOTE_STT`. Also processes `UploadedMedia`. | `transcribe_status=done`, `enrich_status=pending` |
-| 4 | **batch** | `batch_agent.py` | Analysis at **half price**, answered within 24h, for **three kinds of work**: `reel_enrich`, `doc_enrich`, `doc_arguments` (declared once in `batch_agent.KINDS`). **Collects** finished deliveries first (each answer written to the row its `custom_id` names), then **submits** everything still `pending`, marking it `batched` so it can never be sent twice. Skipped entirely when `BATCH_ENABLED=0` or no Anthropic key is set. | `batched`, then `done` on collect |
-| 5 | **enrich** | `enrich_agent.py` | The **live fallback** for whatever the batch could not take (batch disabled, delivery refused): one LLM call per `enrich_status=pending` reel → `Enrichment` (summary, topics, hook, target, format, `primary_topic`, `evidence`). Runs `ENRICH_WORKERS` (default 5) in parallel. Then extracts `ReelArgument`s for `argument_status=pending` — each with a required **verbatim quote**. | `enrich_status=done`, `argument_status` advanced |
-| 6 | **embed** | `embed_agent.py` | Give every enriched reel a `vector` (via `cluster_agent._ensure_reel_embeddings`) and compute `chunk_vectors` passage embeddings for reels **and** documents (`_embed_passages`). Split from `enrich` on purpose so "analysed" and "searchable" can never drift apart. | embeddings written |
-| 7 | **blogscrape** | `blogscrape_agent.py` | For each active `BlogSource`, self-throttling on `crawl_interval_h`: discover article URLs (`blog_discovery.py`) and ingest new ones (`blog_agent.py` — trafilatura → Markdown → `KnowledgeDocument`). Deactivates a source after N consecutive failures. | new `KnowledgeDocument` rows |
-| 8 | **knowledge** | `knowledge_agent.py` | The **live fallback** for articles the batch could not take, plus embedding (which needs no LLM and always runs here). Enrich + embed blog articles (Medyca's and competitors'), using `model_for("analysis")`: `primary_topic`, on-topic verdict, `DocumentArgument` extraction (verbatim quote required). No hook/format — those are video-craft only. | `enrich_status`/`embed_status`/`argument_status=done` |
-| 9 | **cluster** | `cluster_agent.py` | Two-layer clustering (below). Writes a fresh `ClusterRun` **per scope**, flips `is_current` atomically, then refreshes `CustomTopic` matches (`core/custom_topics.recompute_matches`). | new current `ClusterRun` per scope |
+| 4 | **enrich** | `enrich_agent.py` | One LLM call per `enrich_status=pending` reel → `Enrichment` (summary, topics, hook, target, format, `primary_topic`, `evidence`). The model is Groq first, the local model as backstop (`03-llm-and-embeddings.md`). Then extracts `ReelArgument`s for `argument_status=pending` — each with a required **verbatim quote**. | `enrich_status=done`, `argument_status` advanced |
+| 5 | **embed** | `embed_agent.py` | Give every enriched reel a `vector` (via `cluster_agent._ensure_reel_embeddings`) and compute `chunk_vectors` passage embeddings for reels **and** documents (`_embed_passages`). Split from `enrich` on purpose so "analysed" and "searchable" can never drift apart. | embeddings written |
+| 6 | **blogscrape** | `blogscrape_agent.py` | For each active `BlogSource`, self-throttling on `crawl_interval_h`: discover article URLs (`blog_discovery.py`) and ingest new ones (`blog_agent.py` — trafilatura → Markdown → `KnowledgeDocument`). Deactivates a source after N consecutive failures. | new `KnowledgeDocument` rows |
+| 7 | **knowledge** | `knowledge_agent.py` | Enrich + embed blog articles (Medyca's and competitors'), using `model_for("analysis")`: `primary_topic`, on-topic verdict, `DocumentArgument` extraction (verbatim quote required). No hook/format — those are video-craft only. | `enrich_status`/`embed_status`/`argument_status=done` |
+| 8 | **cluster** | `cluster_agent.py` | Two-layer clustering (below). Writes a fresh `ClusterRun` **per scope**, flips `is_current` atomically, then refreshes `CustomTopic` matches (`core/custom_topics.recompute_matches`). | new current `ClusterRun` per scope |
 
 ## Video taken from a link (the fourth door, widened)
 
@@ -757,7 +763,10 @@ arriving at `enrich` therefore becomes two items, not one.
   *earlier* in the order than the previous one, so `enrich` (position 3 in the
   copy) after `batch` (unknown, position 8) looked like a backward step and every
   nightly run was drawn twice (visible in `pipeline.log` from 2026-11-03, when
-  `batch` joined the DAG).
+  `batch` joined the DAG). Since `batch` left the DAG (2026-11-15) the order used to
+  **read history** is `dag.HISTORY_ORDER` (the old nine, `batch` between `transcribe`
+  and `enrich`); a log written before and one written after both read as one run
+  per night (tests in `test_sources_and_status.py`).
 - **A run started from the interface is seen.** `activity()` reads the process
   table; a UI run is `manage.py run_job --job N`, so it looks the `Job` up
   (`kind`, `message`) and reports it with an Italian label (`JOB_KIND_LABELS`).
@@ -814,7 +823,6 @@ stage (done/total, speed, elapsed, remaining). Mechanism:
 | `scrape` | active accounts | one | the server through the proxy (embed page), no model |
 | `download` | reels taken this round, after the cap | one | no model |
 | `transcribe` | reels to transcribe | one | Whisper remote, local as backstop (per item) |
-| `batch` | deliveries to collect, then items to hand over | Ritiro, Consegna | Anthropic in bulk |
 | `enrich` | reels to analyse, then reels for claims | Analisi, Affermazioni | read from `llm_calls` |
 | `embed` | **not declared** (v1) | – | local vector model |
 | `blogscrape` | active sources (the note carries «articolo 3 di 12») | one | no model |
@@ -822,9 +830,9 @@ stage (done/total, speed, elapsed, remaining). Mechanism:
 | `cluster` | **not declared** (v1) | – | local + a model for the names |
 
 Not covered, on purpose: `embed` and `cluster` show only «in corso da N min»; commands run by
-hand (`reprocess`, `ingest_blog`, `sonnet_batch`) get no bar (their model calls show up as loose
-lines); Jobs only have the percentage they already had; the Batch has no live bar (see
-`BatchRun`). A stage failing is shown on **Avanzamento** from `stage_runs`, while `RunTimeline` on
+hand (`reprocess`, `ingest_blog`) get no bar (their model calls show up as loose
+lines); Jobs only have the percentage they already had. Old rounds with the retired `batch`
+stage are drawn as «Analisi in blocco (non più in uso)», in their old place. A stage failing is shown on **Avanzamento** from `stage_runs`, while `RunTimeline` on
 Stato still reads the log — they can differ on a failed stage (known: `ops.run_history` only
 closes a stage on its `✓` line); fixing that is separate work.
 

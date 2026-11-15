@@ -360,7 +360,7 @@
       },
       "understand": {
         "title": "Capisce",
-        "body": "Trascrive l'audio e legge il testo: di cosa parla, qual è il gancio iniziale, a chi si rivolge. L'analisi dei contenuti nuovi parte di notte e viene consegnata tutta insieme all'intelligenza artificiale: le risposte tornano entro poche ore invece che subito, e questo dimezza il costo. Se serve una risposta immediata — quando premi «Analizza» o fai una domanda — la piattaforma usa la via veloce."
+        "body": "Trascrive l'audio e legge il testo: di cosa parla, qual è il gancio iniziale, a chi si rivolge. L'analisi dei contenuti nuovi parte di notte e la fa un modello di intelligenza artificiale gratuito, Groq. Se in quel momento Groq è occupato o ha finito il suo limite, la piattaforma aspetta il minuto che serve; se non basta, lavora un modello installato sul nostro server, che è più lento. Se serve una risposta subito, per esempio quando premi «Analizza», la piattaforma non aspetta la notte."
       },
       "organise": {
         "title": "Organizza",
@@ -372,7 +372,7 @@
       }
     },
     "weighting": "Ogni contenuto viene pesato sul suo rendimento reale: un reel che va il doppio della tua media conta il doppio. Così i consigli seguono i numeri, non le impressioni.",
-    "nightly": "Tutto si aggiorna da solo ogni notte. Se non vuoi aspettare, puoi avviarlo tu: nella pagina «Stato pipeline» il riquadro «Coda di lavorazione» dice quanti reel mancano e quanto tempo ci vuole, e il pulsante «Aggiorna ora» fa partire subito la lavorazione. Se un aggiornamento è già in corso il pulsante resta spento: due lavorazioni insieme farebbero il doppio delle richieste a Instagram, che è proprio il punto in cui la piattaforma è più lenta. L'analisi in blocco della notte può completarsi poche ore dopo: i contenuti nuovi restano visibili, con l'analisi che arriva appena pronta.",
+    "nightly": "Tutto si aggiorna da solo ogni notte. Se non vuoi aspettare, puoi avviarlo tu: nella pagina «Stato pipeline» il riquadro «Coda di lavorazione» dice quanti reel mancano e quanto tempo ci vuole, e il pulsante «Aggiorna ora» fa partire subito la lavorazione. Se un aggiornamento è già in corso il pulsante resta spento: due lavorazioni insieme farebbero il doppio delle richieste a Instagram, che è proprio il punto in cui la piattaforma è più lenta. Se Groq è al suo limite, l'analisi dei contenuti nuovi può slittare al giro dopo: i contenuti restano visibili, con l'analisi che arriva appena pronta.",
     "outputs": {
       "title": "Cosa ottieni",
       "items": [
@@ -419,12 +419,12 @@
         "Dei video presi da un link non sempre riusciamo a ottenere l'audio: YouTube e Vimeo bloccano i server come il nostro, quindi scarichiamo passando da una connessione residenziale italiana, senza bisogno di accessi o cookie. Se quella connessione non risponde (o è finito il traffico), il download fallisce. In quel caso il video resta comunque in piattaforma con titolo, canale e link — cercabile e citabile come riferimento — ma senza trascrizione, e la riga te lo dice in chiaro. Se ti serve la trascrizione subito, carica il file video a mano.",
         "Se una pagina non riesce a caricare i dati, vedi un messaggio chiaro con il pulsante «Riprova»: una lista vuota vuol dire che non c'è niente, mai che qualcosa si è rotto.",
         "Nella mappa del Second Brain i temi oltre i primi si dispongono in cerchi concentrici attorno al loro gruppo: così nessuno si sovrappone, anche quando sono centinaia.",
-        "Avanzamento: gli stadi «indicizzazione» e «raggruppamento per tema» non dicono quanti elementi mancano, mostrano solo «in corso da…». La consegna in blocco non ha una barra che si muove: dice quando è stata consegnata e quando arriva la risposta. I lavori avviati dal sito mostrano solo la percentuale. I dettagli si tengono 90 giorni."
+        "Avanzamento: gli stadi «indicizzazione» e «raggruppamento per tema» non dicono quanti elementi mancano, mostrano solo «in corso da…». I lavori avviati dal sito mostrano solo la percentuale. I dettagli si tengono 90 giorni."
       ]
     },
     "models": {
       "title": "I modelli che usiamo, e per cosa",
-      "hint": "Ogni passaggio usa il modello adatto al lavoro che deve fare. I modelli sono messi in fila per priorità: se il primo non risponde (credito finito, limite giornaliero raggiunto) entra il successivo, e come ultima rete c'è un modello installato sul nostro server. La piattaforma non si ferma mai, al massimo risponde un po' peggio.",
+      "hint": "Ogni passaggio usa il modello adatto al lavoro che deve fare. La catena ha due anelli: prima Groq, un servizio esterno gratuito; se non risponde (limite al minuto o al giorno raggiunto) lavora un modello installato sul nostro server. La piattaforma non si ferma, ma sul modello del server è molto più lenta.",
       "items": [
         {
           "step": "Trascrizione audio",
@@ -433,22 +433,22 @@
         },
         {
           "step": "Analisi del contenuto",
-          "model": "Claude Sonnet 5",
+          "model": "Groq · gpt-oss-120b",
           "why": "Legge la trascrizione ed estrae il tema specifico, il gancio e le affermazioni, ognuna con la citazione testuale che la sostiene. È il livello più profondo: da qui dipende come è organizzato tutto il resto."
         },
         {
           "step": "Raggruppamento per tema",
-          "model": "Claude Sonnet 5",
+          "model": "Groq · gpt-oss-120b",
           "why": "Decide come sono organizzati i temi: è un giudizio, non un'estrazione meccanica."
         },
         {
           "step": "Domande alla Knowledge Bank",
-          "model": "Claude Sonnet 5",
+          "model": "Groq · gpt-oss-120b",
           "why": "Risponde solo dalle fonti Medyca, citandole; se le fonti non bastano lo dichiara invece di inventare."
         },
         {
           "step": "Piano editoriale",
-          "model": "Claude Sonnet 5",
+          "model": "Groq · gpt-oss-120b",
           "why": "Confronta la copertura di Medyca con quella dei competitor e propone idee girabili: angolo, gancio, scaletta e chiusura."
         },
         {
@@ -457,14 +457,9 @@
           "why": "Trasforma i testi in vettori: è ciò che permette di cercare per significato e non per parola esatta."
         },
         {
-          "step": "Analisi in blocco, di notte",
-          "model": "Claude Sonnet 5 (a lotti)",
-          "why": "I contenuti nuovi non hanno bisogno di una risposta in tre secondi: di notte reel e articoli vengono consegnati tutti insieme e le analisi tornano entro poche ore. Stesso modello, stessa qualità, metà del costo. Rifare l'analisi di tutto l'archivio costa così intorno ai 4 dollari invece di 8."
-        },
-        {
           "step": "Se un modello non risponde",
-          "model": "Riserva automatica",
-          "why": "Se il fornitore principale si ferma, il lavoro passa a un fornitore gratuito; se si ferma anche quello, entra il modello installato sul nostro server: più lento e meno preciso, ma niente si blocca. Per ogni contenuto resta scritto quale modello lo ha analizzato davvero."
+          "model": "Modello locale (Qwen 2.5 7B)",
+          "why": "Se Groq si ferma, il lavoro passa a un modello installato sul nostro server: più lento (una risposta può chiedere diversi minuti) e meno preciso, ma i contenuti si analizzano lo stesso, di notte. Per ogni contenuto resta scritto quale modello lo ha analizzato davvero."
         }
       ]
     },
@@ -480,7 +475,7 @@
     },
     "progress": {
       "title": "Dove vedere cosa sta succedendo",
-      "body": "Apri «Avanzamento» nel menu, sotto «Stato pipeline». Ogni stadio ha una barra con quattro numeri: quanti elementi sono fatti sul totale, a che velocità, da quanto tempo lavora e quanto manca. Sotto la barra c'è scritto quale reel o articolo sta leggendo adesso, e chi lo sta lavorando: il modello locale, un modello remoto, la consegna in blocco o nessun modello. Vale per ogni giro, anche quando riattivi tutto e arrivano nuovi reel e nuove fonti. In fondo trovi le ore di macchina di oggi per ogni tipo di lavoro."
+      "body": "Apri «Avanzamento» nel menu, sotto «Stato pipeline». Ogni stadio ha una barra con quattro numeri: quanti elementi sono fatti sul totale, a che velocità, da quanto tempo lavora e quanto manca. Sotto la barra c'è scritto quale reel o articolo sta leggendo adesso, e chi lo sta lavorando: il modello locale, un modello remoto o nessun modello. Vale per ogni giro, anche quando riattivi tutto e arrivano nuovi reel e nuove fonti. In fondo trovi le ore di macchina di oggi per ogni tipo di lavoro."
     }
   },
   "quality": {
@@ -691,7 +686,6 @@
     "retry": "Riprova",
     "retrying": "Riprovo…",
     "withoutTranscript": "senza trascrizione",
-    "analysing": "in analisi",
     "article": "Pagina web",
     "linksOutcomeTitle": "Cosa è successo ai link",
     "linksOutcomeClose": "Chiudi",
@@ -809,7 +803,7 @@
     "inThisRound": "in questo giro",
     "who": {
       "none": "nessun modello",
-      "batch": "in blocco (risposta entro 24 h)",
+      "batch": "stadio non più in uso",
       "stt": "trascrizione",
       "llm": "modello",
       "llm_local": "modello locale",
@@ -837,11 +831,6 @@
     "jobs": "Lavori avviati dal sito",
     "jobsHint": "Per questi lavori il sistema conosce solo la percentuale, non quanti pezzi mancano.",
     "pipelineJobNote": "Il giro avviato a mano si vede qui sopra, stadio per stadio.",
-    "batches": "In consegna",
-    "batchesHint": "Questi elementi sono stati consegnati in blocco ad Anthropic a metà prezzo. La risposta arriva entro 24 ore e non c'è una barra che si muove: il ritiro avviene al giro successivo.",
-    "batchesEmpty": "Nessuna consegna in blocco aperta.",
-    "batchLine": "{{n}} {{kind}} · consegnati {{when}} · risposta attesa entro {{by}}",
-    "batchReturn": "Numeri di ritorno dell'ultimo giro: {{written}} scritti, {{failed}} non riusciti.",
     "today": "Oggi",
     "todayHint": "Le ore in cui la macchina ha lavorato per il modello locale e per la trascrizione. Non si paga in euro: si paga in tempo.",
     "day": "Giorno",

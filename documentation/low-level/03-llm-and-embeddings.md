@@ -8,6 +8,12 @@ The code is **vendor-neutral on purpose**. Nothing in the source names an LLM ve
 asks for a *tier* and the concrete model id comes from config (`BEC/config/settings/base.py`,
 overridable in `BEC/.env`). Swapping providers is an env change, not a code change.
 
+**Since 2026-11-15 the chain has two links and nothing else: Groq, then the local model.**
+Anthropic (the paid key, rejected with 401 since early October), the `aiapiflow` reseller
+(balance exhausted, and it resold Claude access) and HuggingFace (dormant) are gone from the
+code, the settings, `.env.example` and `requirements.txt` (`anthropic` and its Batch API stage
+with them). The decision is Giuseppe's: «o Groq o chiamate al modello locale, punto».
+
 ### `model_for(task)` — the three tiers
 
 Defined in `BEC/llm/client.py`. Callers ask for a task, not a model:
@@ -15,7 +21,7 @@ Defined in `BEC/llm/client.py`. Callers ask for a task, not a model:
 | Tier call | Used for |
 |---|---|
 | `model_for("analysis")` | the *strongest* model: reading transcripts, extracting claims/themes, naming clusters |
-| `model_for("reasoning")` | strategy briefs, blog drafts, and the **RAG chat answer** |
+| `model_for("reasoning")` | strategy briefs, blog drafts, editorial plan |
 | `model_for("bulk")` | high-volume mechanical extraction, the **search reranker**, blog URL-pattern classification |
 
 It returns the tier's model **on the first live provider**. Callers pass that string back as
@@ -26,25 +32,22 @@ so a caller never needs to know who will answer — and provider #2 is never ask
 ### The provider chain (ordered, one entry per provider)
 
 `LLM_PROVIDER_ORDER` (default `fast,ollama`) picks the *kinds* of provider; `LLM_ENDPOINTS`
-lists the remote ones **in priority order**, each with its own url, key, dialect and models:
+lists the remote ones **in priority order**, each with its own url, key and models:
 
 ```
-LLM_ENDPOINTS=anthropic,groq,flow
-LLM_ANTHROPIC_BASE_URL / _API_KEY / _MODEL_ANALYSIS / _MODEL_REASONING / _MODEL_BULK
-LLM_GROQ_...  / _MODEL_CHAIN     (same-provider fallbacks for daily caps)
+LLM_ENDPOINTS=groq
+LLM_GROQ_BASE_URL / _API_KEY / _MODEL_ANALYSIS / _MODEL_REASONING / _MODEL_BULK
+LLM_GROQ_MODEL_CHAIN     (same-provider fallbacks for daily caps)
 ```
 
 A `.env` written before the chain existed still works: with `LLM_ENDPOINTS` unset, one endpoint
 is built from the old `LLM_*` / `FAST_LLM_*` names.
 
-**Dialects.** Most providers speak OpenAI's shape (`POST /chat/completions`, `Authorization:
-Bearer`) and go through `_fast_chat`. Anthropic's own API does not — different path
-(`/v1/messages`), different header (`x-api-key`), system prompt as a top-level field — so it has
-`_anthropic_chat`. The dialect is stored on the endpoint (`LLM_<NAME>_DIALECT`, auto-detected
-for `api.anthropic.com`), never guessed at call time.
+**One dialect.** Every remote provider speaks OpenAI's shape (`POST /chat/completions`,
+`Authorization: Bearer`) and goes through `_fast_chat`. There is no `dialect` field any more: it
+existed only for Anthropic's own API (`/v1/messages`, `x-api-key`), which is gone.
 
-- **fast** — every entry of `FAST_ENDPOINTS`, in order.
-- **hf** — HuggingFace `InferenceClient`. Dormant (not in the order).
+- **fast** — every entry of `FAST_ENDPOINTS`, in order (Groq).
 - **ollama** — local, the last resort. Serialized by a file lock (`_ollama_slot`) because the
   CPU fits one ~7B generation at a time; an interactive caller can claim `priority`.
   The number of threads is `OLLAMA_NUM_THREAD` (default 6, sent as `options.num_thread` by
@@ -67,14 +70,12 @@ Errors, and what each one does to the chain:
 > after the gateway's balance ran out, with 164 more left `failed`. `Enrichment.llm_model` records
 > the model that *actually* served (`last_model_used()`), which is the only way that was visible.
 
-### Deployed configuration (2026-09-13)
+### Deployed configuration (2026-11-15)
 
 | Priority | Provider | Analysis / Reasoning | Bulk | Notes |
 |---|---|---|---|---|
-| 1 | **Anthropic** (`api.anthropic.com`) | `claude-sonnet-5` | `claude-sonnet-5` | paid per token, the project's own key |
-| 2 | **Groq** (`api.groq.com/openai/v1`) | `openai/gpt-oss-120b` | `openai/gpt-oss-20b` | free, no card, ~30 RPM, ~0.4s per call |
-| 3 | **aiapiflow** (gateway) | `claude-opus-5` | `claude-sonnet-4-6` | **balance exhausted** (403 `INSUFFICIENT_BALANCE`); revives by itself if topped up |
-| 4 | **Ollama** (local) | `qwen2.5:3b-instruct-q4_K_M` | same | last resort; the 7b does ~3.8-4.0 tok/s at 6 threads (see below), the 3b still has to be re-measured |
+| 1 | **Groq** (`api.groq.com/openai/v1`) | `openai/gpt-oss-120b` | `openai/gpt-oss-20b` | free, no card; **caps tokens per minute (public: 8,000 for the 120b) and per day (200,000)**; ~0.4s per call |
+| 2 | **Ollama** (local) | `qwen2.5:7b-instruct-q4_K_M` | same | backstop. Apache 2.0, 4.7 GB. The old 3b is **not** usable for a client: its licence is "Qwen Research", non-commercial |
 
 Known limits, measured rather than assumed:
 
@@ -82,10 +83,6 @@ Known limits, measured rather than assumed:
   even with answers in parallel; reading the prompt runs at 9-13 tok/s. Bigger memory pages and
   passive waiting were tried and gave nothing. The 3b model has not been re-measured at 6 threads.
 
-- **No sampling parameters on current Claude models.** `temperature` / `top_p` / `top_k` were
-  removed on Sonnet 5, Opus 5 and the 4.7+ family; the SDK rejects the keyword outright
-  (`Messages.create() got an unexpected keyword argument 'temperature'`). `_anthropic_chat`
-  therefore does not send it — determinism comes from the prompt.
 - Groq retired `llama-3.3-70b-versatile` and `llama-3.1-8b-instant`; both 404 on this account.
   Live catalogue: `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`,
   `qwen/qwen3.6-27b`, `groq/compound`, `groq/compound-mini`, `whisper-large-v3`.
@@ -99,8 +96,6 @@ Known limits, measured rather than assumed:
 - **Every call is now recorded** (since 2026-11-13) in `llm_calls` — see
   [«What is recorded for each call»](#what-is-recorded-for-each-call). Money is still read on
   the provider's own dashboard; what the table gives is calls, tokens and **seconds per process**.
-- aiapiflow resells Claude access, which the project rule "niente credenziali di terze parti
-  rivendute" is about. It is kept last so the platform does not depend on it.
 
 ### What is recorded for each call
 
@@ -113,7 +108,7 @@ through, so none of them changed. Numbers and short labels only: **no prompt, no
   `load/prompt_eval/eval_duration` (nanoseconds). `done_reason == "length"` or a timeout that
   returns partial text (`_ollama_chat` returns what it has, without an error) → `truncated`.
   "No free slot after 900 s" → `failed`.
-- **Remote models** (`_fast_chat`, `_anthropic_chat`, `_hf_chat`): a row at the start and one
+- **Remote models** (`_fast_chat`): a row at the start and one
   update at the end, with the token counts the provider reports (`usage`; if absent the tokens
   stay empty and the row is still written). No live tokens: they answer all at once.
 - **Whisper** (`transcriber_agent._transcribe`) is not a `chat()` call, but takes the same
@@ -136,66 +131,29 @@ qwen2.5 7b Q4_K_M at 18 threads 0.2-0.8 tok/s, at 6 threads 3.8-4.0 tok/s; the m
 the cores, is the ceiling. Ollama loads the model with a 4096-token window (`/api/ps`,
 `client.py` does not set `num_ctx`): a longer prompt is cut silently. Not changed here.
 
-### Batch: the same models at half price
+### Token ceilings (and the Batch API, removed)
 
-`BEC/llm/batch.py` + `BEC/pipeline/agents/batch_agent.py`. The Batch API answers **within 24h**
-(usually inside an hour) and charges **50%**. Bulk nightly analysis does not need an answer in
-two seconds, so it goes here; anything interactive keeps using `client.chat()`.
+The nightly analysis used to go through Anthropic's Batch API (half price, answers within 24h,
+stage `batch`, table `batch_runs`, `manage.py sonnet_batch`). **Removed 2026-11-15**: the stage had
+delivered nothing since 2026-10-03 (key rejected), zero rows were left in `batched`, and the
+client wants no Anthropic call at all. The 26 receipts are exported to a file at release, before the
+migration (`0027`) drops the table (the command is in the task file, «da fare in produzione»); which model analysed what is already in
+`enrichments.llm_model` (947 Opus 5, 406 Sonnet 5, 138 gpt-oss-120b at the time).
 
-Because a batch cannot return a string synchronously, the work splits in two and the `batch`
-DAG stage runs **collect before submit**:
+**Token ceilings are a correctness issue, not a cost knob.** A truncated answer is unparseable
+JSON — a *lost* analysis, not a shorter one. Measured on the 2026-09-13 backlog run (Sonnet 5):
+at `max_tokens=700`, 6 of ~150 enrichment answers truncated; at 1200, 2 more still did; claim
+extraction at 600 lost **74 of 139**. Current values: `ENRICH_MAX_TOKENS = 2000`, claim
+extraction 1200.
 
-```
-notte 1   collect()  → writes down whatever last night's delivery produced
-          submit()   → hands over everything still pending
-notte 2   collect()  → those answers land
-```
-
-- Work in flight carries `Reel.enrich_status = "batched"` (a real status, migration 0020). The
-  pending query cannot see it, so the next run cannot resubmit and pay twice.
-- `BatchRun` (table `batch_runs`) is the receipt: provider batch id, the model, and the
-  `custom_id → reel_id + evidence` mapping. **Results come back in any order and are matched by
-  `custom_id`** (`reel-1251`) — matching by position would file one reel's analysis under
-  another reel, permanently.
-- An `errored` / `expired` / unparseable result sets the reel to `failed` with the reason.
-  Nothing requeues automatically; `manage.py sonnet_batch --retry-failed` is the human saying
-  "try again".
-- If the delivery is refused, the rows stay `pending` and the ordinary `enrich` stage does them
-  live the same night — degraded, never lost.
+The model also occasionally wraps the object in an array (`[{...}]`) — 10 of ~150 answers.
+`write_enrichment` unwraps a single-element list rather than throwing away an answer.
 
 **Re-embed after a re-analysis.** A document's vector is built from its title, summary and
 topics as well as its body, so rewriting an analysis leaves the old vector in place and the
 document keeps being found by the wrong questions. `embed_status` says `done`, so nothing
 revisits it on its own — set it back to `pending` for the rows you re-analysed. This bit the 323
 articles recovered on 2026-09-13: their summaries had been empty when they were first embedded.
-
-Commands: `manage.py sonnet_batch --status | --submit | --collect | --live | --retry-failed |
---redo-model <prefisso> | --cancel <id>`, each accepting `--kind reel_enrich | doc_enrich |
-doc_arguments | all` and `--limit N`. Settings: `BATCH_ENABLED`, `BATCH_MODEL`,
-`BATCH_MAX_REQUESTS`.
-
-**Three kinds of work** go through it, declared once in `batch_agent.KINDS` — `reel_enrich`,
-`doc_enrich`, `doc_arguments` — each saying which rows are owed, how to build the prompt and how
-to write the answer. A fourth is one entry in that table.
-
-**Token ceilings are a correctness issue, not a cost knob.** A truncated answer is unparseable
-JSON — a *lost* analysis, not a shorter one — and output is billed on what is produced, so a
-generous ceiling is free on the answers that already fit. Measured on the 2026-09-13 backlog run
-(Sonnet 5): at `max_tokens=700`, 6 of ~150 enrichment answers truncated; at 1200, 2 more still
-did (`stop_reason=max_tokens` at exactly the ceiling); claim extraction at 600 lost **74 of
-139**. Current values: `ENRICH_MAX_TOKENS = 2000`, claim extraction 1200. Both
-`_anthropic_chat` and `batch.collect()` now check `stop_reason == "max_tokens"` and say
-"risposta troncata", instead of letting it surface as a confusing JSON parse error.
-
-The model also occasionally wraps the object in an array (`[{...}]`) — 10 of ~150 answers.
-`write_enrichment` unwraps a single-element list rather than throwing away a paid answer.
-
-Measured cost on this corpus (1.113 transcripts, ~1.500 input / ~400 output tokens per reel):
-
-| | Full corpus | Per night (new content) |
-|---|---|---|
-| live calls, Sonnet 5 | ~8 $ | cents |
-| **batch, Sonnet 5** | **~4 $** | cents |
 
 ## Speech-to-text
 

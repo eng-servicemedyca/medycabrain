@@ -25,7 +25,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from core import progress, progress_report
-from core.models import BatchRun, Job, LLMCall, StageRun
+from core.models import Job, LLMCall, StageRun
 from llm import usage
 from pipeline import dag
 from pipeline.agents import enrich_agent
@@ -324,21 +324,25 @@ class ProgressSnapshotTests(TestCase):
 
     def test_empty_database_is_an_empty_answer_not_an_error(self):
         snap = progress_report.progress_snapshot()
-        self.assertEqual((snap["rounds"], snap["jobs"], snap["batches"]), ([], [], []))
+        self.assertEqual((snap["rounds"], snap["jobs"]), ([], []))
+        self.assertNotIn("batches", snap)  # the Batch API delivery is gone
         self.assertFalse(snap["running"])
 
-    def test_jobs_and_open_batches(self):
+    def test_jobs_listed_without_the_pipeline_bar(self):
         Job.objects.create(kind="strategy", status="running", progress=40, message="Leggo")
         Job.objects.create(kind="pipeline", status="running", progress=10)
-        BatchRun.objects.create(kind="reel_enrich", batch_id="b1", model="m",
-                                items=[{}, {}, {}], status="submitted")
-        BatchRun.objects.create(kind="reel_enrich", batch_id="b2", status="collected")
         snap = progress_report.progress_snapshot()
         self.assertEqual([j["kind"] for j in snap["jobs"]], ["strategy"])  # no pipeline bar
-        self.assertEqual(len(snap["batches"]), 1)
-        b = snap["batches"][0]
-        self.assertEqual(b["items"], 3)
-        self.assertEqual(b["expected_by"] - b["submitted_at"], timedelta(hours=24))
+
+    def test_an_old_round_with_the_retired_batch_stage_is_drawn_in_order(self):
+        # Rounds before 2026-11-15 have a `batch` row; it must keep its label
+        # and its place between transcribe and enrich, not fall to the end.
+        for stage in ("enrich", "batch", "transcribe"):
+            StageRun.objects.create(run_id="old", stage=stage, status="done", source="cron")
+        snap = progress_report.progress_snapshot()
+        stages = snap["rounds"][0]["stages"]
+        self.assertEqual([s["stage"] for s in stages], ["transcribe", "batch", "enrich"])
+        self.assertIn("non più in uso", stages[1]["label"])
 
     def test_a_call_outside_any_stage_is_shown_not_hidden(self):
         LLMCall.objects.create(process="web:chat", provider="ollama", is_local=True,
@@ -350,7 +354,7 @@ class ProgressSnapshotTests(TestCase):
     def test_query_count_stays_small(self):
         self._stage(stage="enrich", status="running", total=5,
                     started_at=timezone.now(), phase_started_at=timezone.now())
-        with self.assertNumQueries(6):
+        with self.assertNumQueries(5):
             progress_report.progress_snapshot()
 
 
