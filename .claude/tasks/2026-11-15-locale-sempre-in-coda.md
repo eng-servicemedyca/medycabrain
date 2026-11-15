@@ -1,7 +1,7 @@
 ---
 id: 2026-11-15-locale-sempre-in-coda
 titolo: Se Groq finisce si va sul modello locale, sempre in coda
-stato: revisione
+stato: pronto
 ramo: feat/locale-sempre-in-coda
 pr: ""
 ticket: ""
