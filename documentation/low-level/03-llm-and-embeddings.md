@@ -132,7 +132,8 @@ What that forces, all in `llm/client.py` and `config/settings/base.py`:
 | `OLLAMA_KEEP_ALIVE` | `30m` | the default unloads after 5 min; a reload is 96-123 s |
 | `OLLAMA_READ_TIMEOUT` | 600 s | silence allowed before the first token (load + reading the prompt >200 s; it was 120) |
 | `OLLAMA_PIPELINE_TIMEOUT` | 1500 s | ceiling of one local answer when the caller gave none (533 s writing + 123 s load, with room). It used to be 240: an average answer needs 251 |
-| `PIPELINE_LOCAL_MAX_CALLS` | 40 | ≈ 2.8 h of local work per round; `0` = no cap. Without it a night with Groq down asks for ~9 h and lands on the 14:15 round |
+| `PIPELINE_LOCAL_MAX_CALLS` | **0** (was 40) | `0` = no cap: with Groq out the work queues on the local model. A number above 0 brings the brake back (40 ≈ 2.8 h per round). Price of no cap: a big round can last ~9 h and the 14:15 round skips on the round lock |
+| `OLLAMA_LOCK_WAIT` | **1800 s** (was 900) | how long a caller waits its turn for the local slot; it must outlast `OLLAMA_PIPELINE_TIMEOUT` (1500 s) or a caller gives up while the queue is healthy |
 | `LLM_RATE_WAITS` | 6 | waits on Groq's per-minute cap before going local |
 | `LLM_RETRY_DISABLED_AFTER` | 600 s | a refused key is tried again after this long |
 | `ENRICH_WORKERS` | **1** (was 5) | the limit is Groq's per-minute token cap, not the thread count: five threads retrying together pushed 169 of 287 Groq calls into a refusal on 2026-11-15 |
@@ -152,11 +153,11 @@ see a frozen search) and `eval_mcp`'s judge (4,000 tokens). If Groq refuses: the
 «Il servizio dei modelli ha raggiunto il suo limite in questo momento. Riprova più tardi.», the
 search answers at once with the plain order, the eval prints no judge score.
 
-**The cap of local calls leaves work `pending`, never `failed`.** `chat()` counts local calls made
+**The cap of local calls is off by default (`PIPELINE_LOCAL_MAX_CALLS=0`, since 2026-11-15): when Groq cannot answer, the work goes on the local model and queues there, one call at a time.** Known limit: with Groq out a big round on the 7b can last hours (141 calls × ~4 min ≈ 9 h); the 14:15 round finds the round lock taken and skips (exit code 3), so rounds never overlap. The rest of this paragraph describes the brake, which only acts if someone sets a number above 0. It leaves work `pending`, never `failed`. `chat()` counts local calls made
 by a *pipeline* process (`process` starts with `pipeline:`; a Job the client started is never
 capped: a person is waiting). When the round has used them, `LLMLocalBudget` reaches the stage
 (`enrich`, `knowledge`): it stops, leaves what it did not try `pending`, writes a note on the
-stage («Fermato: usate le 40 chiamate al modello locale del giro. N restano in attesa per il giro
+stage («Fermato: usate le N chiamate al modello locale del giro. N restano in attesa per il giro
 dopo.», shown on the Avanzamento card and in the log) and returns `deferred` / `stopped`. Real errors
 stay `failed`. `DAG.run` zeroes the counter at the start of each round. `cluster` naming that hits
 the cap simply gets no name from the model (it already falls back).

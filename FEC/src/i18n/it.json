@@ -372,7 +372,7 @@
         "Il piano editoriale e il riordino dei risultati della ricerca usano solo Groq, senza riserva sul server. Se Groq è al limite il piano dice «Riprova più tardi» e la ricerca risponde subito con l'ordine semplice, senza dare errore.",
         "Parte un solo aggiornamento alla volta: se ne parte un secondo mentre il primo lavora, il secondo si ferma e lo scrive nel registro.",
         "Un testo scritto da un modello (brief e bozza di strategia, bozze del blog, piano editoriale) va sempre riletto da una persona prima di usarlo. Nelle bozze compaiono anche dosaggi e indicazioni mediche: il modello può sbagliarli, e nessun controllo automatico li verifica. Se la risposta del modello viene tagliata prima della fine, la piattaforma lo dice e non ti mostra il testo a metà.",
-        "Se sullo stesso server lavora un altro programma, il modello locale rallenta molto (anche il doppio) e il limite di 40 chiamate per giro può voler dire da circa un'ora a quasi quattro. Quando Groq rifiuta la chiave, la pagina Avanzamento lo scrive sullo stadio: «Groq non risponde: chiave rifiutata; il lavoro va sul modello locale»."
+        "Se sullo stesso server lavora un altro programma, il modello locale rallenta molto (anche il doppio) e il lavoro può durare molto di più. Se Groq non risponde, tutto il lavoro passa al modello locale e si mette in fila, una cosa alla volta, senza un limite di chiamate: un giro grosso può durare anche molte ore (circa nove per 141 chiamate). Il giro delle 14:15 trova quello ancora in corso e salta, così i due non si sovrappongono. Quando Groq rifiuta la chiave, la pagina Avanzamento lo scrive sullo stadio: «Groq non risponde: chiave rifiutata; il lavoro va sul modello locale»."
       ]
     },
     "models": {

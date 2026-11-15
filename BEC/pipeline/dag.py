@@ -123,7 +123,8 @@ class DAG:
         from core import progress
         from llm import client, usage
 
-        # A new round, a new allowance of local calls (PIPELINE_LOCAL_MAX_CALLS).
+        # A new round, a new allowance of local calls (only counts if
+        # PIPELINE_LOCAL_MAX_CALLS is set above 0; default is no cap).
         client.reset_local_budget()
         only = only or set()
         skip = skip or set()

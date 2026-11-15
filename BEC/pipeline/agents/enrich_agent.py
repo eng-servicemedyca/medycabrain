@@ -17,9 +17,10 @@ backstop, which does one generation at a time. The cap is WAITED OUT inside
 `client.chat()` (a 429 says nothing about the content), so a rate limit never
 becomes a failed reel.
 
-A round may make only PIPELINE_LOCAL_MAX_CALLS local calls (settings.py). When
-that runs out (`LLMLocalBudget`) the stage stops, says so in its note, and the
-reels it did not try STAY `pending` for the next round — they are not `failed`.
+By default a round has no limit on local calls: with Groq out the work queues on
+the local model. If PIPELINE_LOCAL_MAX_CALLS is set above 0 (settings.py) and
+runs out (`LLMLocalBudget`) the stage stops, says so in its note, and the reels
+it did not try STAY `pending` for the next round — they are not `failed`.
 Real failures stay `failed`; this is not one.
 """
 
