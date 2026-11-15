@@ -128,7 +128,7 @@ def generate_ideas(n: int = 8, job=None) -> list[ContentIdea]:
     )
     progress(25, "Genero le idee con il modello locale (può richiedere qualche minuto)…")
     # Long timeout: this is a background job, so wall-time doesn't hurt UX.
-    data = client.chat_json(IDEATION_SYSTEM, user, max_tokens=1200, retries=2, timeout=600)
+    data = client.chat_json(IDEATION_SYSTEM, user, max_tokens=1200, retries=2, timeout=900)
     ideas = data.get("idee") if isinstance(data, dict) else data
     if not isinstance(ideas, list):
         ideas = []

@@ -18,16 +18,11 @@ PENDING = "pending"
 DONE = "done"
 FAILED = "failed"
 SKIPPED = "skipped"
-# Handed to the Batch API and waiting for the answer. A real state, not a
-# flavour of pending: without it the next nightly run would resubmit the same
-# items and we would pay twice for the same analysis.
-BATCHED = "batched"
 STATUS_CHOICES = [
     (PENDING, "pending"),
     (DONE, "done"),
     (FAILED, "failed"),
     (SKIPPED, "skipped"),
-    (BATCHED, "batched"),
 ]
 
 CONTENT_FORMATS = [
@@ -197,16 +192,16 @@ class ReelEmbedding(models.Model):
     reel = models.OneToOneField(Reel, on_delete=models.CASCADE, related_name="embedding")
     vector = models.JSONField(default=list)  # list[float]
     # One vector per passage of the text, in the order core.knowledge._chunks
-    # produces them. The chat picks the passage that answers the question
+    # produces them. Search picks the passage that answers the question
     # rather than the head of the document, and re-encoding those passages on
     # every question cost 15-18s per query — the whole of its latency. The
     # text is not stored again: chunking is deterministic from the source.
     chunk_vectors = models.JSONField(default=list, blank=True)  # list[list[float]]
     model_name = models.CharField(max_length=128, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
-    # Bumps on every re-embed, unlike created_at. The chat's index cache keys
+    # Bumps on every re-embed, unlike created_at. The search index cache keys
     # on this: a re-embed that reuses rows (update_or_create) leaves the count
-    # and created_at unchanged, so without it the chat served a stale index
+    # and created_at unchanged, so without it the search served a stale index
     # until the process restarted.
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -811,57 +806,6 @@ class UploadedMedia(models.Model):
 
     def __str__(self):
         return self.title or self.original_name or f"upload {self.pk}"
-
-
-class BatchRun(models.Model):
-    """One delivery to the Batch API — the receipt we come back with.
-
-    The Batch API answers within 24h, not within seconds, so the work splits
-    into "submit" and "collect" across two nightly runs. This row is what
-    connects them: which provider batch is open, what went into it, and what
-    came back. Without it a restarted process would lose the batch id and the
-    money spent on it.
-
-    Results come back in ANY order and are matched by custom_id
-    ("reel-1251", "doc-42", "docarg-42"), never by position — matching by
-    position would file one item's analysis under a different item.
-    """
-
-    # One entry per kind of batchable work — mirrors batch_agent.KINDS.
-    KIND_CHOICES = [
-        ("reel_enrich", "analisi di un reel"),
-        ("doc_enrich", "analisi di un articolo"),
-        ("doc_arguments", "affermazioni di un articolo"),
-    ]
-    STATUS_CHOICES = [
-        ("submitted", "submitted"),   # handed over, still working
-        ("ended", "ended"),           # provider finished, results ready
-        ("collected", "collected"),   # we have written the results down
-        ("failed", "failed"),
-        ("canceled", "canceled"),
-    ]
-
-    kind = models.CharField(max_length=20, choices=KIND_CHOICES,
-                            default="reel_enrich")
-    batch_id = models.CharField(max_length=120, unique=True)
-    model = models.CharField(max_length=64, blank=True, default="")
-    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="submitted")
-    # The custom_ids we sent, so a collect knows what it is owed even if the
-    # rows changed in the meantime.
-    items = models.JSONField(default=list, blank=True)
-    counts = models.JSONField(default=dict, blank=True)
-    last_error = models.TextField(blank=True, default="")
-    submitted_at = models.DateTimeField(auto_now_add=True)
-    collected_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        db_table = "batch_runs"
-        ordering = ["-submitted_at"]
-        indexes = [models.Index(fields=["status"])]
-
-    def __str__(self):
-        return f"{self.kind} {self.batch_id} ({self.status})"
-
 
 
 class StageRun(models.Model):

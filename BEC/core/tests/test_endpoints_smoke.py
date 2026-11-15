@@ -63,3 +63,32 @@ class EndpointSmokeTests(APITestCase):
         self.client.credentials()  # drop the token
         resp = self.client.get("/api/v1/reels/")
         self.assertIn(resp.status_code, (401, 403))
+
+
+class ChatRemovedTests(APITestCase):
+    """The in-app chat (`knowledge/ask/`) was removed 2026-11-15: the client
+    uses the MCP connector. The search endpoint stays and needs no model."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user("chat-gone", password="x")
+        cls.token = Token.objects.create(user=cls.user)
+
+    def setUp(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+
+    def test_ask_endpoint_is_gone(self):
+        for method in (self.client.post, self.client.get):
+            resp = method("/api/v1/knowledge/ask/", {"query": "ciao"}, format="json")
+            self.assertEqual(resp.status_code, 404)
+
+    def test_search_endpoint_stays(self):
+        resp = self.client.get("/api/v1/knowledge/search/?q=")
+        self.assertNotEqual(resp.status_code, 404)
+
+    def test_the_chat_code_is_gone_but_the_search_is_not(self):
+        from core import knowledge
+        for name in ("answer", "_prepare", "_sources_block", "_mark_cited",
+                     "_reference_hits", "_inventory_line", "ANSWER_SYSTEM"):
+            self.assertFalse(hasattr(knowledge, name), name)
+        self.assertTrue(callable(knowledge.semantic_search))

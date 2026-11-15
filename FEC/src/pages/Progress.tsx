@@ -6,7 +6,6 @@ import { PanelError } from "../components/manage/parts";
 import { Skeleton } from "../components/ui/primitives";
 import { PageTransition } from "../components/ui/motion";
 import { fmtDuration, useTicker } from "../components/ops/live";
-import { BatchBlock } from "../components/progress/BatchBlock";
 import { DailyTotals } from "../components/progress/DailyTotals";
 import { ModelLines } from "../components/progress/ModelLines";
 import { StageCard } from "../components/progress/StageCard";
@@ -14,7 +13,7 @@ import { clock, whenLabel } from "../components/progress/format";
 
 /**
  * "Avanzamento": what is running right now, stage by stage, in the manner of
- * tqdm — and who is doing each item (local model, remote model, bulk delivery,
+ * tqdm — and who is doing each item (local model, remote model,
  * no model). Read-only: nothing here starts, stops or retries anything.
  *
  * It polls a light endpoint every 2 s while something runs and every 15 s when
@@ -163,8 +162,6 @@ export default function Progress() {
                     </div>
                   )}
                 </section>
-
-                <BatchBlock batches={data.batches} />
               </>
             )}
 

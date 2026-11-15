@@ -20,9 +20,9 @@ shape at confidence 1.0 — on a WordPress site the first crawl learns the
 article shape for free and the sitemap is filtered without any model call.
 
 robots.txt is honoured. We are a recurring crawler on third-party sites from
-one fixed IP; that is exactly the case robots exists for. The chat's one-off
-fetch of a user-pasted page (core/external_ref.fetch_reference) stays exempt:
-a human reading one page is not a crawler.
+one fixed IP; that is exactly the case robots exists for. A one-off fetch of a
+page a human pasted (a link checked at upload) is exempt: a human reading one
+page is not a crawler.
 """
 
 from __future__ import annotations

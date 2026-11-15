@@ -1,9 +1,9 @@
 ---
 id: 2026-11-14-pipeline-in-casa
 titolo: Raccolta di Instagram senza Apify (PR 1 di "pipeline in casa")
-stato: pronto
+stato: rilasciato
 ramo: feat/pipeline-in-casa
-pr: ""
+pr: "22"
 ticket: ""
 ---
 
@@ -847,7 +847,35 @@ UI (`/competitor/library`, menù «Ordina» → «Più visti», richiesta `order
 - «Top» del tema e mappa Second Brain nella UI (nessun cluster a lato): solo test.
 - Il tipo di errore con un nome sbagliato che viene per primo e proxy rotto (nota F): non corretto, solo osservato a livello di logica.
 - Resta tutto ciò che il primo giro non aveva potuto provare (yt-dlp dal proxy di riserva, stadi dopo `download` con modelli esterni, 23 account, collaborazione reale, pagina in produzione).
-## 6. Rilascio           (rilasciatore)
+## 6. Rilascio           (capo, al posto del rilasciatore)
+
+Rilasciato il 15/11/2026 dopo il merge della PR #22 (`8338d57`), con la
+conferma di Giuseppe («Sì, rilascia», «Lancialo ora»).
+
+- **Prima**: nessuna migrazione (`No planned migration operations`), nessuna
+  dipendenza cambiata, nessun giro in corso.
+- **Frontend** (01:13): `npm run build`, `✓ built in 20.75s`.
+- **Riavvio del backend**: fatto da Giuseppe con `sudo` alle 01:15. I due
+  servizi `active`, `/` e `/stato` 200.
+- **Primo giro vero**, a mano, `run_pipeline --only scrape,download` (01:13):
+  - `scrape done in 216.0s`: 23 account, **22 letti, 1 fallito**
+    (`elena,palliotto`, «non è un nome Instagram valido»). Nessun blocco.
+  - **5 reel nuovi** (tetto rispettato): 3 di Medyca (`owned`), 2 di
+    `augustopellegrini` (`competitor`). **48 rinviati** ai giri dopo.
+    «Possibile buco» su 10 account.
+  - `download done in 167.1s`: 5 scaricati, 0 falliti, durata letta
+    (41-130 s), audio presente. Visualizzazioni `None` su tutti; «mi piace»
+    `None` su Medyca, 494 e 91 sul competitor.
+  - 5 account con 0 video negli ultimi 6 post.
+
+**Non verificato**: trascrizione e analisi dei 5 reel nuovi (partono con il
+cron delle 03:30, catena di oggi); la pagina Stato sul sito live guardata da
+una persona; vecchi reel in collaborazione che cambiano proprietario (N5).
+
+**Aperto**: `elena,palliotto` (correggere il nome o disattivare l'account).
+I 48 rinviati entrano a 5 per giro: circa 5 giorni a due giri al giorno, più
+quello che esce di nuovo nel frattempo.
+
 ## Registro delle decisioni
 
 - 2026-11-14 - Lavoro aperto dal capo dopo il rilascio della PR #20. Lo

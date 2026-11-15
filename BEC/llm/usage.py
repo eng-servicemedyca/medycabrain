@@ -93,7 +93,7 @@ def scope(process: str, stage: str = "", job_id: int | None = None,
 
     Inner blocks inherit what they leave empty (a pipeline started by a Job
     keeps the Job's id). `default=True` only labels when nothing else does, so
-    the reranker called from the chat stays `web:chat`.
+    the reranker, which has no other label, is `mcp:cerca`.
     """
     global _process_scope
     outer = _scope_var.get() or _process_scope
@@ -247,8 +247,11 @@ class Call:
         from django.utils import timezone
         msg = f"{type(exc).__name__}: {exc}"[:200]
         end = time.monotonic()
+        # What Ollama reported before dying (a cut answer is `truncated`, with
+        # its tokens) is kept: it is what tells a cut from a crash.
         self._update(status="failed", finished_at=timezone.now(), error=msg,
-                     duration_seconds=round(end - (self._started or self._created), 2))
+                     duration_seconds=round(end - (self._started or self._created), 2),
+                     **self._fields)
 
 
 def begin(provider: str, model: str, is_local: bool, waiting: bool,

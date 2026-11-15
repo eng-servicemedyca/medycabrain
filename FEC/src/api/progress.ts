@@ -81,25 +81,12 @@ export interface ProgressJob {
   created_at: string;
 }
 
-export interface BatchData {
-  id: number;
-  kind: string;
-  kind_label: string;
-  items: number;
-  status: string;
-  model: string;
-  submitted_at: string;
-  expected_by: string;
-  counts: Record<string, number>;
-}
-
 export interface ProgressPayload {
   now: string;
   running: boolean;
   rounds: RoundData[];
   other_calls: ProgressItem[];
   jobs: ProgressJob[];
-  batches: BatchData[];
 }
 
 export interface DailyPayload {

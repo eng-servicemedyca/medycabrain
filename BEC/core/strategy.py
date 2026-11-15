@@ -160,7 +160,9 @@ def analyze(input_text: str, source_kind: str = "input", job=None,
     # bar would sit at a frozen 55% for the whole generation — which reads as a
     # crash. Say what is happening instead of faking a percentage.
     progress(60, "Scrivo il piano… di solito 30-60 secondi")
-    brief_md = client.chat(STRATEGY_SYSTEM, user, max_tokens=900, timeout=900,
+    # 1800, not 900: on gpt-oss-120b the reasoning tokens count against the
+    # ceiling and 3 brief tries out of 3 came back cut mid-sentence (2026-11-15).
+    brief_md = client.chat(STRATEGY_SYSTEM, user, max_tokens=1800, timeout=1800,
                            priority=True, model=client.model_for("reasoning"))
 
     progress(90, "Salvo il brief…")
@@ -195,7 +197,8 @@ def generate_draft(brief_id: int, job=None) -> dict:
     progress(30, "Scrivo la bozza completa…")
     medyca = "\n".join(f"- {s['title']}" for s in brief.medyca_sources) or "(nessuna)"
     user = DRAFT_USER.format(topic=brief.input_text, brief=brief.brief_md[:3000], medyca=medyca)
-    draft = client.chat(DRAFT_SYSTEM, user, max_tokens=1200, timeout=900,
+    # 2400, not 1200: same reason as the brief (cut mid-sentence 3 of 3).
+    draft = client.chat(DRAFT_SYSTEM, user, max_tokens=2400, timeout=1800,
                         priority=True, model=client.model_for("reasoning"))
     brief.draft_md = (draft or "").strip()
     brief.draft_model = client.last_model_used()[:64]

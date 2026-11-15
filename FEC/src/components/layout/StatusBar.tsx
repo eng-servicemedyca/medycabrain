@@ -5,7 +5,7 @@ import type { Job } from "../../api/jobs";
 /**
  * Global background-job status bar ("tmux bar"). Sits in the page flow, under
  * `<main>`, and only when there is something to report: pages get shorter
- * instead of being covered (a fixed bar hid the chat's send row). It persists
+ * instead of being covered (a fixed bar used to hide the page's bottom). It persists
  * across navigation so a long run stays visible while the user works
  * elsewhere. On the Home, which is a full-screen page with no shell, it floats.
  */
@@ -79,7 +79,12 @@ function JobRow({ job, onDismiss }: { job: Job; onDismiss: () => void }) {
               {active ? `${job.progress}%` : failed ? t("jobs.failed") : t("jobs.done")}
             </span>
           </div>
-          <div className="mt-1 truncate text-xs text-muted">{job.message}</div>
+          {/* A failed job says what to do in its LAST words ("Riprova più tardi"):
+              truncating it at 380 px hid exactly that. Only a running job's
+              progress line is cut. */}
+          <div className={"mt-1 text-xs text-muted " + (failed ? "break-words" : "truncate")}>
+            {job.message}
+          </div>
           <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface">
             <div
               className={

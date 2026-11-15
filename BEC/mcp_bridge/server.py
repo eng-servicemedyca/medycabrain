@@ -7,9 +7,8 @@ and ask questions grounded in THEIR data: Medyca's reels, the competitors',
 and the blogs.
 
 Read-only by construction: every tool is a query. The client's Claude does
-the reasoning; we hand it the same retrieval the in-app chat uses
-(core.knowledge.semantic_search — hybrid ranking, per-side quotas), so both
-surfaces answer from identical ground.
+the reasoning; we hand it the retrieval of core.knowledge.semantic_search (hybrid ranking, per-side
+quotas), the same one `GET knowledge/search/` uses.
 
 Auth: claude.ai custom connectors need a public HTTPS URL and offer OAuth or
 nothing. A real login is out of proportion for one client, so the credential
@@ -199,8 +198,8 @@ def _search(query: str, scope: str, limite: int, only: str | None,
     of a reel-dominated pool returned two). With `kind` filtering the index up
     front, the rerank sees a pool of the right type and size and runs in the
     cerca_tutto regime; nothing survives the rerank only to be dropped.
-    rerank=True gives the client's Claude the same LLM-sharpened order the
-    in-app chat gets.
+    rerank=True gives the client's Claude an LLM-sharpened order — Groq only,
+    never the local model; if Groq refuses the plain order answers at once.
     """
     from core.knowledge import semantic_search
 

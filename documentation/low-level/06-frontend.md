@@ -33,58 +33,32 @@ screen shows either side without mixing them.
 | `/:scope/timeline` | `Timeline.tsx` | Content over time. The month histogram comes from `fetchEngagementOverTime` (`/analytics/?metric=engagement-over-time`, same key `an-time` as Analytics: one request serves both); the grid below pages `fetchReels` with `posted_after`/`posted_before` of the selected month, newest first. It used to ask for 400 reels, got the 200 **oldest** (API cap) and drew the histogram from them: recent months were missing. |
 | `/:scope/clusters` + `/:scope/clusters/:id` | `Clusters.tsx`, `ClusterDetail.tsx` | The themes for that side. `ClusterDetail` reads `cluster.scope` and `Navigate`s to the right side when the URL disagrees (a competitor id pasted under `/medyca/`); reels and articles load only once the side agrees, and both page with `LoadMore` (the biggest cluster has 146 reels, 60 articles). |
 | `/second-brain` | `SecondBrain.tsx` | Editorial planner: ideas, gaps, plan. Below the plan, the **«Bozze del blog»** section: `BlogDraftCard` (`components/plan/`) lists the cluster-driven drafts (`GET /second-brain/blog-drafts/`) with badge espansione/bozza, theme, collapsible body (`AnswerBody`, no citation buttons) and Copia / Tieni / Scarta. `JobsContext` already invalidates `blog-drafts` when a `blog` job ends. Ideas and drafts are read with `fetchAllPages` (they are one list with optimistic updates, not an infinite scroll). |
-| `/knowledge-bank` | `KnowledgeBank.tsx` | The grounded RAG chat (below), with the "vai al contenuto" field in its header. |
 | `/content/:kind/:id` | `ContentDetail.tsx` | Resolves a reference the MCP cited (`blog:843` / `reel:199`) to the content's detail card (below). |
 | `/brain-map` | `BrainMap.tsx` | Cytoscape graph of themes/content (`components/graph/BrainGraph.tsx`). `components/graph/layout.ts` places a hub's themes in **concentric rings** (24 in the first, +8 per ring, +90 px radius) instead of one arc: 307 competitor themes sat ~8 px apart. Still deterministic. At rest only hubs and themes carry a label: opportunities (hundreds, packed at the bottom) and the client's custom themes show their name on hover or tap. Below 640 px the dashed opportunity arrows are not drawn (a knot of lines at 380 px) and a line explains the reduced view; wider screens keep them. Not checked by eye in a browser by the developer. |
 | `/workspace` | `Workspace.tsx` | Favorites / notes. |
 | `/accounts` | `Accounts.tsx` | **Management screen** (nav label «Fonti», page title «Gestione fonti»). Three tabs — Instagram profiles, blogs, uploaded interviews — instead of the three stacked sections it used to be: one list at a time, header and tabs fixed, only the list scrolls. The open tab is in the URL (`?tab=blogs|uploads`), so reload, back and shared links land on the same list; tab counts reuse the panels' own react-query keys, so they cost no extra request. Panels: `components/sources/AccountsPanel.tsx`, `components/sources/BlogSourcesPanel.tsx`, `components/uploads/UploadPanel.tsx`, all built from the shared pieces in `components/manage/parts.tsx` (tabs, panel header, folded add form, search + status filter, table frame, empty state, row actions). **Remove = hide, add again = restore.** The status filter has «Rimossi» (a second query, only fetched when chosen); «Rimuovi» moves a row there (reversible), «Ripristina» brings it back, and adding the same username/URL again restores the old row and says so. «Inattivo» is now «In pausa» (the pill still toggles pause). **Every action answers**: `useNotice`/`Notice` (in `manage/parts.tsx`) show a short ok/error message that disappears by itself, with the server's own Italian sentence (`apiErrorMessage`); a list that fails to load shows `PanelError` with «Riprova», never the «nessun account» empty state. `fetchAccounts`/`fetchBlogSources` follow every page (`fetchAllPages` in `endpoints.ts`) — the API pages at 24 and the list used to show 24 of 26 accounts. After adding an Instagram profile while the Apify budget is spent, the notice gives the date collection resumes. Row actions and status pills are at least 40 px tall (they were ~16 px). **On a phone (below 768 px) the account and blog tables turn into stacked cards** (`TableFrame stacked`, cells captioned by `data-label`), so «Rimuovi» is visible without scrolling sideways; the uploads table is not converted yet. The budget renewal date is shown by `formatResumeDate` (`lib/utils.ts`) in the Europe/Rome zone: «la raccolta riparte il 27 novembre» (Apify's `cycle_end` is 26 Nov 23:59 UTC, so collection resumes the 27th). Each list has search and a status filter (Instagram/blogs also filter by Medyca vs competitor) and the add form is folded away behind the primary button, so the list — not the form — is what you land on. Adding an Instagram profile now asks who it belongs to (`owner_type`, writable on `POST /accounts/`); before, every new profile was created as competitor by default. The **Caricamenti** tab has two doors into one list: drag a file, or paste a block of video links into the textarea below the drop zone (`importLinks` → `POST /uploads/from-links/`) — **YouTube and Vimeo**, mixed in the same paste, which is why the placeholder shows one example of each. Two controls travel with a pasted batch — a «Video di riferimento» checkbox and a «Di chi è» select — kept separate because they answer different questions; choosing «Di Medyca» shows an inline warning that the video will then count as Medyca's coverage and the editorial plan will stop flagging that subject as uncovered. Rows from a link show the channel, a clickable «Apri il video», a «riferimento» badge, and — for a failed download — **the error text inline**, not in a `title` tooltip: a blocked download has a remedy and the client can only act on it if he can read it. |
 | `/documentazione` | `Documentation.tsx` | **The client-facing docs** (see note below). |
 | `/stato` | `Status.tsx` | Live service/pipeline status. Carries `PipelineQueue` (`components/ops/`): how many reels are left, the estimated wait, and the **Aggiorna ora** button that starts a run (`POST /ops/run/`). While a run is alive the button is disabled and its `Job` progress replaces the estimate. Below it, `CollectionBox` says how Instagram is read («Raccolta: lettura diretta dal server») and how the last read went, in red if the `scrape` stage failed or the proxy is missing (it replaced `BudgetBar`, the Apify spending ceiling, when Apify went off on 2026-11-14). If `/ops/status/` fails: before the first success a `PanelError` with «Riprova» (it was a skeleton forever); afterwards a thin warning «mostro i dati delle HH:MM» above the last good data. `PipelineQueue` shows «N reel non lavorabili» (queue `blocked`) and, under the button, the result of the last UI run (`last_pipeline_job`: completed / completed but without… / failed). Jobs show `kind_label`, accounts show Medyca/Competitor, and `RunTimeline` has colours for `batch` and `blogscrape`. The «Temi del cliente» box (`CustomTopics.tsx`) uses the same notices: the server's sentence on error, «Tema aggiunto: N contenuti trovati» on success, a retry on a failed list. |
-| `/avanzamento` | `Progress.tsx` | **What is running now, stage by stage, tqdm style** (menu item «Avanzamento», right under «Stato pipeline»). One column, no tables, designed at 380 px. Order: **Adesso** (the active round(s), or «Non sta girando niente. Ultimo giro: …» plus the last round, or «Qui comparirà l'avanzamento dal prossimo giro.» on a new install; then Jobs with their percentage, and loose model calls), **In consegna** (`BatchBlock`: bulk deliveries, no bar, «risposta attesa entro»), **Oggi** (`DailyTotals`: machine hours per process with ‹ › to change day, a remote comparison row, local speed). Stages (`components/progress/StageCard.tsx`): waiting = one line; done = one line «120 su 120 in 14 min»; **running = open card**: name and phase, a `role="progressbar"` (8 px), four boxes **Fatti · Velocità · Passato · Mancano** (2×2 on a phone, one row from 640 px), then «sta lavorando» lines (`ModelLines`: item name cut with dots, **locale/remoto** badge, state in words, tokens, tokens/s, «di solito ancora…/al massimo…»); **failed = the card stays open** with icon + «Fallito», the bar stopped, the sentence and «37 fatti su 120 prima dell'errore». Who works is always written («modello locale», «in blocco (risposta entro 24 h)», «nessun modello»), never only a colour. Polling: `GET /ops/progress/` every **2 s** while something runs, **15 s** when still (react-query pauses it on a hidden tab); elapsed times tick locally each second (`useTicker`). `/ops/llm/` once, then every 60 s. Read-only: no retry button. Speed and time left come from the server; before 3 items «—» or «stima dai giri precedenti». Not covered: `embed`/`cluster` show only «in corso da N min»; Jobs have no done/total; the past rounds' history stays on Stato (`RunTimeline`). **Taken out of Stato** so the same number is not in two places: the «Lavori in corso» box, and «In questo momento» (`LiveActivity`) is now one line with the link «Segui l'avanzamento» (the re-analysis bar stays). The Stato stage bars were renamed «Totale storico per stadio» (they count the whole history, 1617 of 1618, not this round). |
+| `/avanzamento` | `Progress.tsx` | **What is running now, stage by stage, tqdm style** (menu item «Avanzamento», right under «Stato pipeline»). One column, no tables, designed at 380 px. Order: **Adesso** (the active round(s), or «Non sta girando niente. Ultimo giro: …» plus the last round, or «Qui comparirà l'avanzamento dal prossimo giro.» on a new install; then Jobs with their percentage, and loose model calls), **Oggi** (`DailyTotals`: machine hours per process with ‹ › to change day, a remote comparison row, local speed). Stages (`components/progress/StageCard.tsx`): waiting = one line; done = one line «120 su 120 in 14 min»; **running = open card**: name and phase, a `role="progressbar"` (8 px), four boxes **Fatti · Velocità · Passato · Mancano** (2×2 on a phone, one row from 640 px), then «sta lavorando» lines (`ModelLines`: item name cut with dots, **locale/remoto** badge, state in words, tokens, tokens/s, «di solito ancora…/al massimo…»); **failed = the card stays open** with icon + «Fallito», the bar stopped, the sentence and «37 fatti su 120 prima dell'errore». Who works is always written («modello locale», «modello remoto», «nessun modello»; a round older than 2026-11-15 shows its retired `batch` stage as «stadio non più in uso»), never only a colour. Polling: `GET /ops/progress/` every **2 s** while something runs, **15 s** when still (react-query pauses it on a hidden tab); elapsed times tick locally each second (`useTicker`). `/ops/llm/` once, then every 60 s. Read-only: no retry button. Speed and time left come from the server; before 3 items «—» or «stima dai giri precedenti». Not covered: `embed`/`cluster` show only «in corso da N min»; Jobs have no done/total; the past rounds' history stays on Stato (`RunTimeline`, which keeps the colour of the retired `batch` stage to draw old rounds). The «In consegna» box (`BatchBlock`) was removed with the Batch API (2026-11-15). **Taken out of Stato** so the same number is not in two places: the «Lavori in corso» box, and «In questo momento» (`LiveActivity`) is now one line with the link «Segui l'avanzamento» (the re-analysis bar stays). The Stato stage bars were renamed «Totale storico per stadio» (they count the whole history, 1617 of 1618, not this round). |
 | `/` | `Home.tsx` | Landing inside the app. |
 | `/login` | `Login.tsx` | Token auth via `contexts/AuthContext.tsx`. Tells wrong credentials (400/401/403) from an unreachable server (no response) and from a server error ("codice N"). After login, `App.tsx` returns to the page asked for (below). |
 
-## The RAG chat — `KnowledgeBank.tsx`
+## The chat is gone (2026-11-15)
 
-The "Chiedi alla Knowledge Bank" screen. Chat over everything the platform knows.
+The «Chat sui contenuti» page (`/knowledge-bank`, `KnowledgeBank.tsx`), its menu entry, the
+`askKnowledge()` call, the `kb.*` texts and the «Vai a un contenuto» field (`GoToContent`) were
+removed: the client uses the MCP connector, and a local-model chat took 6-8 minutes per answer.
+An old link to `/knowledge-bank` lands on the Home (the catch-all route). Nothing else changed in
+`api/knowledge.ts`: the document calls stay (`fetchKnowledgeDocs`, `fetchKnowledgeDoc`,
+`fetchClusterDocs`). `AnswerBody.tsx` stays: the article drawer and the blog drafts render
+Markdown with it.
 
-- Two filter pills: **scope** (`all` / `medyca` / `competitor`) and **content type**
-  (`all` / `reel` / `article`).
-- Calls `askKnowledge()` → `POST /knowledge/ask/` with
-  `{query, top_k: 8, scope, content_type, history (last 6 msgs), references}` and a 300 s
-  timeout. **No streaming** — a live seconds counter is shown while it thinks (~30 s answers).
-- URLs typed into a question are auto-detected (`URL_RE`) and sent as `references` — read on
-  the fly for that one answer, badged "reading page", never added to the bank, never mixed with
-  Medyca content.
-- Answers render via `components/knowledge/AnswerBody.tsx` with clickable `[n]` citations that
-  scroll to and highlight the matching source. The `Sources` component groups hits by origin
-  (external / owned / competitor) with colour coding (**blue = Medyca, amber = competitor**) and
-  a per-source relevance %. The code stresses that confusing Medyca's content with a
-  competitor's is the worst failure this screen can make.
-- On a 504 or the browser's own timeout the chat says «La risposta ha superato il tempo
-  massimo (3 minuti)…» instead of the generic error. nginx cut `/knowledge/ask/` at 180 s
-  while the browser waits 300 s; `deploy/nginx-medycabrain.conf` now has an exact-match
-  location for it at 300 s (the live file is copied at release, with a reload).
-- `FEC/src/api/knowledge.ts` also exposes `POST /knowledge/search/`,
-  `GET /knowledge/documents/`, `GET /knowledge/documents/:id/`.
+## From a reference to the content — `ContentDetail.tsx`
 
-## From a reference to the content — `GoToContent` + `ContentDetail.tsx`
+The MCP cites content with a link (`<base>/content/blog/843`, the `apri_nel_brain` field) and a
+`kind:id` code (`blog:843`). The link opens the content's card inside the brain:
 
-The MCP cites content as `kind:id` — `blog:843`, `reel:199` (`server.py`). The
-client had no way, from the brain, to see *which* content that was. Two small
-pieces close the gap, with **no backend or MCP change**:
-
-- `components/knowledge/GoToContent.tsx` — a field in the KnowledgeBank header.
-  `parseRef()` reads the reference **forgivingly**: it keeps the kind word and the
-  id after the colon and throws away anything in between, because the client's own
-  Claude prepends a citation number (`[2] blog:843`, `blog 2:843`) that is not ours.
-  `blog`/`articolo`/`article` → the blog card, `reel` → the reel card. It also accepts
-  the **MCP's own link** (`…/content/blog/843`, the `apri_nel_brain` field), which has
-  no colon and used to be rejected. An unrecognisable input shows an inline error. A valid
-  one calls `onOpen(ref)`: `KnowledgeBank` opens `ReelDetailDrawer`/`ArticleDetailDrawer`
-  **in place**, over the chat, without navigating — navigating unmounted the page and
-  wiped the conversation. The route below stays for links opened from outside.
-- `pages/ContentDetail.tsx` — the route. It reuses the Library's own
+- `pages/ContentDetail.tsx` — the route `/content/:kind/:id`. It reuses the Library's own
   `ReelDetailDrawer` (`reelId`) / `ArticleDetailDrawer` (`docId`); no new card was
   designed. It resolves the content first (same react-query keys as the drawers, so
   no extra request) and only mounts the drawer once the data is cached. The endpoints
@@ -99,8 +73,9 @@ pieces close the gap, with **no backend or MCP change**:
   been removed while it was still there — the exact misinformation this feature exists
   to remove. 401 is not handled here: `api/client.ts` logs the client out.
 
-  Closing goes back only when the navigation carried `state.fromApp` (set by
-  `GoToContent`), otherwise it goes to `/knowledge-bank`. It must **not** use
+  Closing goes back only when the navigation carried `state.fromApp` (set by the uploads
+  list), otherwise it goes to the **Home** (label «Torna alla Home»; it used to go to the
+  chat). It must **not** use
   `window.history.length`, which counts the whole browser tab: on an MCP link opened in
   an already-used tab, stepping back sends the client out of the brain.
 
@@ -147,7 +122,7 @@ Added so the same fix is not repeated in ten pages.
 
 ## Job bar (`StatusBar`, `JobsContext`)
 
-In the flow under `<main>` (it was `fixed bottom-0` and covered the chat's send row); on the
+In the flow under `<main>` (it was `fixed bottom-0` and covered the bottom of the page); on the
 Home, which has no shell, it floats. `JobsContext` polls once on mount (a reload used to make
 a running job disappear), exposes `starting` (disables the button at once: a double click
 queued two jobs) and `lastError` (a refused start shows a dismissible red row instead of an
@@ -162,7 +137,7 @@ silently, so keep them in step.
 `FEC/src/pages/Documentation.tsx` (route `/documentazione`) is the **client's** documentation —
 all prose lives in `FEC/src/i18n/it.json` under `docs.*`, `flow.*`, `ops.*`. It explains, in
 plain Italian: what comes in, the four stages (Raccoglie / Capisce / Organizza / Consiglia),
-which model does what, how the chat works, and the known limits. It also embeds live ops
+which model does what, how the connector's search works, and the known limits. It also embeds live ops
 (`components/ops/`, reading `GET /ops/status/`) and a download of the two-page `.drawio` schema.
 
 It also has a short section, «Dove vedere cosa sta succedendo», that tells the client where the

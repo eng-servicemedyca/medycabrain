@@ -64,7 +64,7 @@ flowchart TD
 
     EMB -.->|"indexed"| IDX["in-memory index<br/>_load_index() in core/knowledge.py<br/>cached, keyed on updated_at"]
     IDX --> SEARCH["semantic_search()<br/>0.75·cosine + 0.25·lexical + rerank"]
-    SEARCH --> API["REST: /knowledge/ask, /knowledge/search"]
+    SEARCH --> API["REST: /knowledge/search"]
     SEARCH --> MCPT["MCP: cerca / leggi"]
 
     classDef fs fill:#f1f5f9,stroke:#64748b;
@@ -122,7 +122,7 @@ flowchart LR
     LI --> RANK["_rank(): 0.75·cosine + 0.25·lexical<br/>owned vs competitor quota"]
     QE --> RANK
     RANK --> RERANK["_rerank() (optional LLM reorder)"]
-    RERANK --> HITS["ranked hits → chat / API / MCP"]
+    RERANK --> HITS["ranked hits → API / MCP"]
 ```
 
 1. **The vectors are the index.** They sit in the JSON columns written at stage 5/7.
@@ -133,8 +133,8 @@ flowchart LR
    `0.75·cosine + 0.25·lexical` (the lexical part catches exact names like "Bijuva"), keeping
    Medyca and competitor results fairly quota'd.
 4. An optional **LLM reranker** reorders the top pool.
-5. The result feeds the in-app chat (`/knowledge/ask`), the search endpoint, and the MCP tools
-   `cerca` / `leggi`.
+5. The result feeds the search endpoint (`/knowledge/search`) and the MCP tools `cerca` / `leggi`.
+   (The in-app chat, `/knowledge/ask`, was removed 2026-11-15.)
 
 Full ranking detail: [03-llm-and-embeddings.md](03-llm-and-embeddings.md).
 

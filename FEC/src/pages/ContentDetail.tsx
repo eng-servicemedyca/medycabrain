@@ -37,14 +37,16 @@ export default function ContentDetail() {
   const valid = (kind === "reel" || kind === "blog") && Number.isInteger(numId) && numId > 0;
 
   // Only step back when the navigation that brought us here says it came from
-  // inside the brain (`GoToContent` sets it). `window.history.length` counts the
-  // whole browser tab, so on an MCP link opened in an already-used tab it would
-  // send the client out of the app entirely.
+  // inside the brain (the uploads list sets it). `window.history.length` counts
+  // the whole browser tab, so on an MCP link opened in an already-used tab it
+  // would send the client out of the app entirely. Such a link has nowhere
+  // inside the app to return to but the Home.
   const fromApp = (location.state as { fromApp?: boolean } | null)?.fromApp === true;
   const goBack = () => {
     if (fromApp) navigate(-1);
-    else navigate("/knowledge-bank");
+    else navigate("/");
   };
+  const backLabel = t(fromApp ? "content.back" : "content.backToHome");
 
   // The data shape does not matter here — this page only needs to know whether
   // the id resolves — so the result is typed as unknown and left to the drawer.
@@ -67,7 +69,7 @@ export default function ContentDetail() {
       <PageTransition>
         <div className="flex h-full flex-col items-center justify-center px-4">
           <EmptyState message={t("content.notFound")} />
-          <Button onClick={goBack}>{t("content.backToLibrary")}</Button>
+          <Button onClick={goBack}>{backLabel}</Button>
         </div>
       </PageTransition>
     );
@@ -85,7 +87,7 @@ export default function ContentDetail() {
               {t("content.retry")}
             </Button>
             <Button variant="secondary" onClick={goBack}>
-              {t("content.backToLibrary")}
+              {backLabel}
             </Button>
           </div>
         </div>

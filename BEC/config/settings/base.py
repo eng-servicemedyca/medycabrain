@@ -143,9 +143,8 @@ RAW_DUMP_DIR.mkdir(parents=True, exist_ok=True)
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── LLM / Whisper / embeddings ─────────────────────────────────────────────────
-HF_API_TOKEN = os.environ.get("HF_API_TOKEN", "")
-HF_LLM_MODEL = os.environ.get("HF_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct")
-# Local-first: Ollama runs a quantized Qwen2.5-7B (zero cost, good Italian).
+# The local backstop: Ollama runs a quantized Qwen2.5-7B (Apache 2.0, zero cost,
+# good Italian). The 3B is NOT usable for a client: its licence is non-commercial.
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct-q4_K_M")
 # Threads for generation. Ollama defaults to every core (18 here) and on this
@@ -153,16 +152,38 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct-q4_K_M")
 # Q4_K_M does 0.2-0.8 tok/s at 18 threads, 1.4-1.9 at 12, 3.8-4.0 at 6, 2.9-3.2
 # at 4. 0 = do not send the option (let Ollama decide). Re-measure on new hardware.
 OLLAMA_NUM_THREAD = int(os.environ.get("OLLAMA_NUM_THREAD", "6"))
-# Provider order: try each until one answers. Default local-only; HF is
-# dormant (add ",hf" to call it — e.g. after refilling credits).
+# The 7b is a BACKSTOP and slow here (reads 13 tok/s, writes 2.8: ~250 s for an
+# average analysis, ~530 s for the longest seen — calculated 2026-11-15 from the
+# measured speeds, not timed on analysis prompts). So:
+#  - window: Ollama opened it at 4096 tokens, an analysis needs up to ~3,800;
+#    8192 costs 5.5 GB of the 82 free;
+#  - keep_alive: a reload costs 96-123 s, the default drops the model after 5 min;
+#  - read timeout: silence allowed before the first token (model load + reading
+#    the prompt >200 s; it was 120 s);
+#  - pipeline timeout: the whole answer (533 s writing + 123 s load, with room).
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
+OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
+OLLAMA_READ_TIMEOUT = int(os.environ.get("OLLAMA_READ_TIMEOUT", "600"))
+OLLAMA_PIPELINE_TIMEOUT = int(os.environ.get("OLLAMA_PIPELINE_TIMEOUT", "1500"))
+# Local calls one pipeline round may make before the stage stops and leaves the
+# rest `pending` (40 x ~4 min = ~2.8 h). 0 = no cap. Without it, a night with
+# Groq down would ask for ~9 h and run into the 14:15 round.
+PIPELINE_LOCAL_MAX_CALLS = int(os.environ.get("PIPELINE_LOCAL_MAX_CALLS", "40"))
+# Groq's per-minute cap is waited out this many times (each as long as Groq says,
+# 21 s at most on 2026-11-15) before the local model is asked.
+LLM_RATE_WAITS = int(os.environ.get("LLM_RATE_WAITS", "6"))
+# A provider switched off for a refused key is tried again after this many
+# seconds (the MCP connector never restarts on its own).
+LLM_RETRY_DISABLED_AFTER = int(os.environ.get("LLM_RETRY_DISABLED_AFTER", "600"))
+# One pipeline round at a time, across cron and "Aggiorna ora".
+PIPELINE_LOCK_PATH = os.environ.get("PIPELINE_LOCK_PATH", "/tmp/medycabrain-pipeline.lock")
 # Fast remote provider (OpenAI-compatible): Groq / Cerebras / OpenRouter /
 # DeepSeek / Together. ~100-300 tok/s vs ~1-3 tok/s for a 7B on this CPU, so
 # it is tried FIRST whenever a key is present. Ollama stays as the offline
 # backstop. Set FAST_LLM_API_KEY in .env to activate.
-# The LLM layer is provider-agnostic: any OpenAI-compatible endpoint works
-# (Groq, OpenAI, Anthropic-compatible gateways, OpenRouter, a self-hosted
-# proxy). Nothing below names a vendor — swapping provider is a config change,
-# never a code change.
+# The LLM layer speaks one dialect, OpenAI-compatible (Groq today). Nothing
+# below names a vendor — swapping provider is a config change, never a code
+# change. Anthropic and the reseller gateway were removed 2026-11-15.
 #
 # Two models, because the two workloads have opposite needs:
 #   BULK      hundreds of structured-extraction calls; cheap and fast wins
@@ -209,20 +230,36 @@ STT_BASE_URL = os.environ.get("FAST_LLM_BASE_URL", "https://api.groq.com/openai/
 STT_API_KEY = os.environ.get("FAST_LLM_API_KEY", "")
 
 # ── The remote-provider chain ───────────────────────────────────────────────
-# Several providers in priority order, each with its OWN base url, key, dialect
-# and model names. One provider is not enough: a free tier dies (a daily cap, a
-# depleted balance) and the whole platform silently drops to the local 3B model
-# — which is what happened until 2026-09-13, when 61 of 1066 enrichments were
-# produced by qwen2.5:3b instead of the configured model, invisibly.
+# Several providers in priority order, each with its OWN base url, key
+# and model names. Several providers can still be declared (a free tier dies on
+# a daily cap or a dead key, and the platform used to drop to the local model
+# invisibly: 61 of 1066 enrichments on 2026-09-13), but in production the list
+# is just `groq`; the local model is the second link, see llm/client.py.
 #
 # Declared in .env as:
-#     LLM_ENDPOINTS=anthropic,groq
-#     LLM_ANTHROPIC_BASE_URL=... _API_KEY=... _MODEL_ANALYSIS=... _MODEL_BULK=...
+#     LLM_ENDPOINTS=groq
+#     LLM_GROQ_BASE_URL=... _API_KEY=... _MODEL_ANALYSIS=... _MODEL_BULK=...
 #     LLM_GROQ_...                _MODEL_CHAIN=...  (same-provider fallbacks)
 # Order IS priority. A provider that rejects the key or has no balance is
 # skipped for the rest of the process; the next one answers.
+# The providers this code knows how to talk to. Adding one is a one-word change
+# here plus its LLM_<NAME>_* block in .env.
+KNOWN_LLM_ENDPOINTS = {"groq"}
+
+
 def _llm_endpoints() -> list[dict]:
     names = [n.strip() for n in os.environ.get("LLM_ENDPOINTS", "").split(",") if n.strip()]
+    # An old .env can still list the removed vendors (`anthropic`, `flow`, `hf`).
+    # They are ignored with ONE warning and no request is ever made, so a key
+    # left in the file cannot leave the machine.
+    ignored = [n for n in names if n.lower() not in KNOWN_LLM_ENDPOINTS]
+    if ignored:
+        import logging
+        logging.getLogger("config.settings").warning(
+            "LLM_ENDPOINTS: fornitori sconosciuti ignorati (%s); ammessi: %s. "
+            "Si possono togliere dal .env.", ", ".join(ignored),
+            ", ".join(sorted(KNOWN_LLM_ENDPOINTS)))
+    names = [n for n in names if n.lower() in KNOWN_LLM_ENDPOINTS]
     out = []
     for name in names:
         p = "LLM_" + re.sub(r"[^A-Z0-9]", "_", name.upper()) + "_"
@@ -233,16 +270,10 @@ def _llm_endpoints() -> list[dict]:
         reasoning = os.environ.get(p + "MODEL_REASONING", "").strip() or bulk
         analysis = os.environ.get(p + "MODEL_ANALYSIS", "").strip() or reasoning
         chain = [m.strip() for m in os.environ.get(p + "MODEL_CHAIN", "").split(",") if m.strip()]
-        # Anthropic's own API is not OpenAI-compatible (different path, header
-        # and response shape), so the dialect travels with the endpoint.
-        dialect = os.environ.get(p + "DIALECT", "").strip().lower()
-        if not dialect:
-            dialect = "anthropic" if "api.anthropic.com" in url else "openai"
         out.append({
             "name": name,
             "base_url": url,
             "api_key": os.environ.get(p + "API_KEY", "").strip(),
-            "dialect": dialect,
             "models": {"bulk": bulk, "reasoning": reasoning, "analysis": analysis},
             # Same-provider fallbacks: free tiers cap tokens per model per day,
             # so a sibling model on the same key still has its own budget.
@@ -257,19 +288,11 @@ if not FAST_ENDPOINTS and FAST_LLM_API_KEY:
     # works, as a single endpoint built from the old variable names.
     FAST_ENDPOINTS = [{
         "name": "fast", "base_url": FAST_LLM_BASE_URL, "api_key": FAST_LLM_API_KEY,
-        "dialect": "openai",
         "models": {"bulk": FAST_LLM_MODEL_BULK, "reasoning": FAST_LLM_MODEL,
                    "analysis": LLM_MODEL_REASONING_3 or LLM_MODEL_REASONING_2
                    or LLM_MODEL_REASONING or FAST_LLM_MODEL},
         "chain": FAST_LLM_MODEL_CHAIN,
     }]
-
-# ── Batch: the same models at half price, answers within 24h ────────────────
-# The nightly bulk work does not need an answer in 3 seconds, and the Batch
-# API charges 50% for exactly that trade. See BEC/llm/batch.py.
-BATCH_ENABLED = os.environ.get("BATCH_ENABLED", "1") == "1"
-BATCH_MODEL = os.environ.get("BATCH_MODEL", "claude-sonnet-5")
-BATCH_MAX_REQUESTS = int(os.environ.get("BATCH_MAX_REQUESTS", "2000"))
 
 # ── Video presi da un link (YouTube, Vimeo) ────────────────────────────────
 # yt-dlp scarica l'audio, ma **nessuno dei due fornitori lo dà in anonimo** da

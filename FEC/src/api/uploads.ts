@@ -9,7 +9,7 @@ export interface Upload {
   title: string;
   size_bytes: number;
   duration_s: number | null;
-  transcribe_status: "pending" | "done" | "failed" | "skipped" | "batched";
+  transcribe_status: "pending" | "done" | "failed" | "skipped";
   document: number | null;
   blog_draft: number | null;
   last_error: string;

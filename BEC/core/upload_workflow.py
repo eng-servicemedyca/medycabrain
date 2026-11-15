@@ -54,9 +54,18 @@ def _client_message(exc: Exception) -> str:
     information we do not hand out.
     """
     from core.link_ingest import LinkRefused, ToolMissing
+    from llm.client import LLMRemoteUnavailable, LLMTruncated
 
     if isinstance(exc, (LinkRefused, ToolMissing, ClientError)):
         return str(exc)
+    if isinstance(exc, LLMRemoteUnavailable):
+        # editorial plan: Groq-only by design, so a refusal is this sentence.
+        # What to do comes FIRST: on a phone the toast cuts the end.
+        return ("Riprova più tardi: il servizio dei modelli non risponde "
+                "o è al suo limite.")
+    if isinstance(exc, LLMTruncated):
+        return ("Riprova: la risposta del modello è stata tagliata prima "
+                "della fine e non la mostro a metà.")
     if isinstance(exc, subprocess.CalledProcessError):
         return ("Non riesco a leggere l'audio di questo file: potrebbe essere "
                 "danneggiato o in un formato non supportato.")
@@ -189,7 +198,7 @@ def _save_reference_only(up, reason: str) -> None:
     except Exception as exc:  # noqa: BLE001 — findability is a bonus here
         logger.warning("[upload] riferimento %s non indicizzato: %r", doc.id, exc)
         # Said, not left PENDING: a card without a vector is invisible to the
-        # chat, and "pending" would promise a retry nobody schedules.
+        # search, and "pending" would promise a retry nobody schedules.
         KnowledgeDocument.objects.filter(id=doc.id).update(embed_status=FAILED)
 
 
@@ -369,7 +378,7 @@ _DEFERRED_NOTE = ("Trascritto. L'analisi verrà completata nella prossima "
 
 
 def _analyse(up, doc) -> str:
-    """Enrich + arguments + embed inline, so the item is queryable in chat and
+    """Enrich + arguments + embed inline, so the item is searchable and
     a draft can be grounded now, not next nightly. Returns "done"/"deferred".
 
     Isolated from the transcription on purpose: by the time we are here the

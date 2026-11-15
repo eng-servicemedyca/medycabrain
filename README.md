@@ -24,7 +24,7 @@ righe nel proprio stato `pending` → una fase che fallisce non blocca le altre.
 ScraperAgent   → reel (metadati)      media_status=pending
 DownloaderAgent→ ffmpeg mp3 + thumb   transcribe_status=pending   (video cancellato)
 TranscriberAgent→ faster-whisper it   enrich_status=pending
-EnrichAgent    → LLM (HF) riassunto+topic+hook+formato + argomenti
+EnrichAgent    → LLM (Groq, poi modello locale) riassunto+topic+hook+formato + argomenti
 ClusterAgent   → embeddings locali → HDBSCAN/agglomerative → naming LLM (L1)
                  + argomenti assegnati ai cluster (L2)
 ```
@@ -51,7 +51,7 @@ python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 # torch CPU-only (evita i wheel CUDA da GB):
 pip install torch==2.4.1 --index-url https://download.pytorch.org/whl/cpu
-cp .env.example .env      # imposta SECRET_KEY, DATABASE_URL, HF_API_TOKEN
+cp .env.example .env      # imposta SECRET_KEY, DATABASE_URL, LLM_GROQ_API_KEY
 python manage.py migrate
 python manage.py seed_client_user --username cliente --password '...'
 python manage.py runserver 127.0.0.1:8010
@@ -66,7 +66,7 @@ npm run dev               # proxy /api → 127.0.0.1:8010
 
 | Cosa | Dove | Come |
 |------|------|------|
-| **HF_API_TOKEN** | `BEC/.env` | token HuggingFace Pro (enrichment + naming cluster). Senza, la pipeline salta enrich/naming ma gira lo stesso. |
+| **LLM_GROQ_API_KEY** | `BEC/.env` | chiave Groq (gratuita): analisi e nomi dei temi. Senza, lavora il modello locale (più lento). |
 | **Sessione Instagram** | `BEC/data/ig_session.json` | cookie di un **account burner** (non quello del cliente). Vedi sotto. |
 
 ## Runbook: sessione Instagram (account burner)

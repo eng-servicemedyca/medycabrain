@@ -8,6 +8,12 @@ The code is **vendor-neutral on purpose**. Nothing in the source names an LLM ve
 asks for a *tier* and the concrete model id comes from config (`BEC/config/settings/base.py`,
 overridable in `BEC/.env`). Swapping providers is an env change, not a code change.
 
+**Since 2026-11-15 the chain has two links and nothing else: Groq, then the local model.**
+Anthropic (the paid key, rejected with 401 since early October), the `aiapiflow` reseller
+(balance exhausted, and it resold Claude access) and HuggingFace (dormant) are gone from the
+code, the settings, `.env.example` and `requirements.txt` (`anthropic` and its Batch API stage
+with them). The decision is Giuseppe's: «o Groq o chiamate al modello locale, punto».
+
 ### `model_for(task)` — the three tiers
 
 Defined in `BEC/llm/client.py`. Callers ask for a task, not a model:
@@ -15,8 +21,8 @@ Defined in `BEC/llm/client.py`. Callers ask for a task, not a model:
 | Tier call | Used for |
 |---|---|
 | `model_for("analysis")` | the *strongest* model: reading transcripts, extracting claims/themes, naming clusters |
-| `model_for("reasoning")` | strategy briefs, blog drafts, and the **RAG chat answer** |
-| `model_for("bulk")` | high-volume mechanical extraction, the **search reranker**, blog URL-pattern classification |
+| `model_for("reasoning")` | strategy briefs, blog drafts, editorial plan |
+| `model_for("bulk")` | high-volume mechanical extraction, the **search reranker** (Groq only), blog URL-pattern classification |
 
 It returns the tier's model **on the first live provider**. Callers pass that string back as
 `chat(model=...)`; `chat()` re-resolves it per provider via `_task_of()` as it walks the chain,
@@ -26,25 +32,22 @@ so a caller never needs to know who will answer — and provider #2 is never ask
 ### The provider chain (ordered, one entry per provider)
 
 `LLM_PROVIDER_ORDER` (default `fast,ollama`) picks the *kinds* of provider; `LLM_ENDPOINTS`
-lists the remote ones **in priority order**, each with its own url, key, dialect and models:
+lists the remote ones **in priority order**, each with its own url, key and models:
 
 ```
-LLM_ENDPOINTS=anthropic,groq,flow
-LLM_ANTHROPIC_BASE_URL / _API_KEY / _MODEL_ANALYSIS / _MODEL_REASONING / _MODEL_BULK
-LLM_GROQ_...  / _MODEL_CHAIN     (same-provider fallbacks for daily caps)
+LLM_ENDPOINTS=groq
+LLM_GROQ_BASE_URL / _API_KEY / _MODEL_ANALYSIS / _MODEL_REASONING / _MODEL_BULK
+LLM_GROQ_MODEL_CHAIN     (same-provider fallbacks for daily caps)
 ```
 
 A `.env` written before the chain existed still works: with `LLM_ENDPOINTS` unset, one endpoint
 is built from the old `LLM_*` / `FAST_LLM_*` names.
 
-**Dialects.** Most providers speak OpenAI's shape (`POST /chat/completions`, `Authorization:
-Bearer`) and go through `_fast_chat`. Anthropic's own API does not — different path
-(`/v1/messages`), different header (`x-api-key`), system prompt as a top-level field — so it has
-`_anthropic_chat`. The dialect is stored on the endpoint (`LLM_<NAME>_DIALECT`, auto-detected
-for `api.anthropic.com`), never guessed at call time.
+**One dialect.** Every remote provider speaks OpenAI's shape (`POST /chat/completions`,
+`Authorization: Bearer`) and goes through `_fast_chat`. There is no `dialect` field any more: it
+existed only for Anthropic's own API (`/v1/messages`, `x-api-key`), which is gone.
 
-- **fast** — every entry of `FAST_ENDPOINTS`, in order.
-- **hf** — HuggingFace `InferenceClient`. Dormant (not in the order).
+- **fast** — every entry of `FAST_ENDPOINTS`, in order (Groq).
 - **ollama** — local, the last resort. Serialized by a file lock (`_ollama_slot`) because the
   CPU fits one ~7B generation at a time; an interactive caller can claim `priority`.
   The number of threads is `OLLAMA_NUM_THREAD` (default 6, sent as `options.num_thread` by
@@ -56,10 +59,17 @@ Errors, and what each one does to the chain:
 
 | Response | Exception | Effect |
 |---|---|---|
-| 429 | `LLMRateLimit` | waits `retry-after` (≤60s); if the cap is *daily*, walks that provider's own `_MODEL_CHAIN` — free tiers cap tokens per model per day, so a sibling model still has budget |
-| 401 / 402 / 403 | `LLMCreditError` | **that endpoint only** is skipped for the rest of the process; the next one answers |
+| 429, per minute | `LLMRateLimit` | **waited out, up to `LLM_RATE_WAITS` (6) times**, each as long as `retry-after` says (1-60 s; Groq said 1-21 s on 2026-11-15), and only then the next link. `retries=0` means «fail fast»: no waiting (the search reranker) |
+| 429, per day | `LLMRateLimit(daily=True)` | not waited for (it will not refill): walks that provider's own `_MODEL_CHAIN` — free tiers cap tokens per model per day, so a sibling model still has budget — then the local model |
+| 401 / 402 / 403 | `LLMCreditError` | that endpoint is **skipped for `LLM_RETRY_DISABLED_AFTER` (600 s), then tried again** (the MCP connector is a long process: one passing 403 must not switch its reranker off until a restart); the next link answers meanwhile. It is **said**, not only logged: the running stage's note reads «Groq non risponde: chiave rifiutata; il lavoro va sul modello locale» (`client.remote_problem()`), on Avanzamento |
 | 404 | `LLMModelMissing` | the provider is fine, the model name is not on it: move to the next endpoint **without** disabling this one |
-| anything else | logged at WARNING, retried, then next endpoint | a misconfigured provider must never fail silently |
+| anything else | logged at WARNING, retried (`retries`, backoff 1-2 s), then next endpoint | a misconfigured provider must never fail silently |
+| local answer cut (token ceiling or time ceiling) | `LLMTruncated` | **an error, not a half string**; **not retried**; the call row is `failed` + `truncated` |
+| local slot taken, wait ran out | `LLMBusy` (a `LLMLocalUnavailable`) | **not retried** (it used to be, up to 3 × 900 s = 45 min before failing); does not use the round's allowance |
+| Ollama not reachable (stopped, restarting) | `LLMLocalUnavailable` | not retried; no allowance used. **Not the content's fault**: with the budget error it is in `NOT_THE_ITEMS_FAULT`, and the stage leaves the item `pending` |
+| Groq answer cut (`finish_reason: length`) | `LLMTruncated` | **raised at once** (not sent to the 7b, which would be cut at the same place minutes later); row `failed` + `truncated`; the job says «Riprova: la risposta del modello è stata tagliata…». A free text (strategy, drafts) is never handed over half written |
+| round used its local calls | `LLMLocalBudget` | not retried; reaches the stage as itself — see below |
+| `remote_only` and no remote link answered | `LLMRemoteUnavailable` | the caller decides (plain order / «Riprova più tardi»); the local model is never asked |
 
 > **Why per-endpoint and not global.** Until 2026-09-13 one flag disabled the whole remote
 > layer, so a single dead gateway dropped everything to the local 3B model — silently. Measured
@@ -67,14 +77,12 @@ Errors, and what each one does to the chain:
 > after the gateway's balance ran out, with 164 more left `failed`. `Enrichment.llm_model` records
 > the model that *actually* served (`last_model_used()`), which is the only way that was visible.
 
-### Deployed configuration (2026-09-13)
+### Deployed configuration (2026-11-15)
 
 | Priority | Provider | Analysis / Reasoning | Bulk | Notes |
 |---|---|---|---|---|
-| 1 | **Anthropic** (`api.anthropic.com`) | `claude-sonnet-5` | `claude-sonnet-5` | paid per token, the project's own key |
-| 2 | **Groq** (`api.groq.com/openai/v1`) | `openai/gpt-oss-120b` | `openai/gpt-oss-20b` | free, no card, ~30 RPM, ~0.4s per call |
-| 3 | **aiapiflow** (gateway) | `claude-opus-5` | `claude-sonnet-4-6` | **balance exhausted** (403 `INSUFFICIENT_BALANCE`); revives by itself if topped up |
-| 4 | **Ollama** (local) | `qwen2.5:3b-instruct-q4_K_M` | same | last resort; the 7b does ~3.8-4.0 tok/s at 6 threads (see below), the 3b still has to be re-measured |
+| 1 | **Groq** (`api.groq.com/openai/v1`) | `openai/gpt-oss-120b` | `openai/gpt-oss-20b` | free, no card; **caps tokens per minute (public: 8,000 for the 120b) and per day (200,000)**; ~0.4s per call |
+| 2 | **Ollama** (local) | `qwen2.5:7b-instruct-q4_K_M` | same | backstop. Apache 2.0, 4.7 GB. The old 3b is **not** usable for a client: its licence is "Qwen Research", non-commercial |
 
 Known limits, measured rather than assumed:
 
@@ -82,10 +90,6 @@ Known limits, measured rather than assumed:
   even with answers in parallel; reading the prompt runs at 9-13 tok/s. Bigger memory pages and
   passive waiting were tried and gave nothing. The 3b model has not been re-measured at 6 threads.
 
-- **No sampling parameters on current Claude models.** `temperature` / `top_p` / `top_k` were
-  removed on Sonnet 5, Opus 5 and the 4.7+ family; the SDK rejects the keyword outright
-  (`Messages.create() got an unexpected keyword argument 'temperature'`). `_anthropic_chat`
-  therefore does not send it — determinism comes from the prompt.
 - Groq retired `llama-3.3-70b-versatile` and `llama-3.1-8b-instant`; both 404 on this account.
   Live catalogue: `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`,
   `qwen/qwen3.6-27b`, `groq/compound`, `groq/compound-mini`, `whisper-large-v3`.
@@ -99,9 +103,103 @@ Known limits, measured rather than assumed:
 - **Every call is now recorded** (since 2026-11-13) in `llm_calls` — see
   [«What is recorded for each call»](#what-is-recorded-for-each-call). Money is still read on
   the provider's own dashboard; what the table gives is calls, tokens and **seconds per process**.
-- aiapiflow resells Claude access, which the project rule "niente credenziali di terze parti
-  rivendute" is about. It is kept last so the platform does not depend on it.
 
+### The local backstop: qwen2.5 7b (2026-11-15)
+
+Groq is first, the local model second, and it is **slow**. Numbers (speeds measured on this VDS
+with the old 3b's real token counts; **the 7b times below are calculated, not timed on analysis
+prompts** — the first real round replaces them with `llm_calls` data):
+
+| | Reads | Writes | Total |
+|---|---|---|---|
+| average call (1,507 prompt + 389 answer tokens) | 112 s | 139 s | **~251 s** |
+| longest seen on 2026-11-15 (1,180 answer tokens) | 112 s | 421 s | **~533 s** |
+| first call, model to load | | | **+96-123 s** |
+
+(7b: reads 13.4 tok/s, writes 2.8. The 3b took 97 s on average; the 7b is ~2.6× slower. It is the
+model because it is already on the machine and **Apache 2.0**; the 3b is "Qwen Research", non-commercial.)
+
+One real check of the code path (2026-11-15, `client.chat_json` with the 7b, a synthetic reel
+prompt, a scratch database): 905 prompt + 174 answer tokens in **145 s** — model load 38 s, reading
+55 s (16.5 tok/s), writing 52 s (3.3 tok/s), JSON complete, nothing cut. The same prompt on Groq
+`gpt-oss-120b`: 1.1 s (912 + 378 tokens). One sample, not a benchmark.
+
+What that forces, all in `llm/client.py` and `config/settings/base.py`:
+
+| Setting | Default | Why |
+|---|---|---|
+| `OLLAMA_NUM_CTX` | 8192 | Ollama opened the model with a 4096 window; an analysis asks for up to 1,836 in + 2,000 out. 5.5 GB of the 82 free |
+| `OLLAMA_KEEP_ALIVE` | `30m` | the default unloads after 5 min; a reload is 96-123 s |
+| `OLLAMA_READ_TIMEOUT` | 600 s | silence allowed before the first token (load + reading the prompt >200 s; it was 120) |
+| `OLLAMA_PIPELINE_TIMEOUT` | 1500 s | ceiling of one local answer when the caller gave none (533 s writing + 123 s load, with room). It used to be 240: an average answer needs 251 |
+| `PIPELINE_LOCAL_MAX_CALLS` | 40 | ≈ 2.8 h of local work per round; `0` = no cap. Without it a night with Groq down asks for ~9 h and lands on the 14:15 round |
+| `LLM_RATE_WAITS` | 6 | waits on Groq's per-minute cap before going local |
+| `LLM_RETRY_DISABLED_AFTER` | 600 s | a refused key is tried again after this long |
+| `ENRICH_WORKERS` | **1** (was 5) | the limit is Groq's per-minute token cap, not the thread count: five threads retrying together pushed 169 of 287 Groq calls into a refusal on 2026-11-15 |
+
+Callers with their own ceilings (second round, after the test: on `gpt-oss-120b` the reasoning tokens
+count against `max_tokens`, and strategy brief, strategy draft and blog draft came back **cut
+mid-sentence 3 times out of 3**): strategy brief 900→**1800** tokens, strategy draft 1200→**2400**,
+blog interview 1600→**3200**, expand 1200→**2400**, draft 1400→**2800**; time ceilings 1800 s for those
+and 900 s for ideation (was 600) and the editorial plan (Groq only). Real check on Groq, 2026-11-15:
+brief 834 tokens used of 1800, strategy draft 1429 of 2400 (it would have been cut at the old 1200),
+blog draft 672 of 2800, all `finish_reason` ≠ `length`.
+
+**Work that never goes local** (`chat(..., remote_only=True)`): the editorial plan (3,600 tokens ≈
+21 min + reading, against a 15 min ceiling, and a JSON that long breaks easily on a 7b), the MCP
+search reranker (≈ 1m45 on the 7b, queued behind the pipeline for up to 15 min: the client would
+see a frozen search) and `eval_mcp`'s judge (4,000 tokens). If Groq refuses: the plan job says
+«Il servizio dei modelli ha raggiunto il suo limite in questo momento. Riprova più tardi.», the
+search answers at once with the plain order, the eval prints no judge score.
+
+**The cap of local calls leaves work `pending`, never `failed`.** `chat()` counts local calls made
+by a *pipeline* process (`process` starts with `pipeline:`; a Job the client started is never
+capped: a person is waiting). When the round has used them, `LLMLocalBudget` reaches the stage
+(`enrich`, `knowledge`): it stops, leaves what it did not try `pending`, writes a note on the
+stage («Fermato: usate le 40 chiamate al modello locale del giro. N restano in attesa per il giro
+dopo.», shown on the Avanzamento card and in the log) and returns `deferred` / `stopped`. Real errors
+stay `failed`. `DAG.run` zeroes the counter at the start of each round. `cluster` naming that hits
+the cap simply gets no name from the model (it already falls back).
+
+**One round at a time.** `DAG.run` holds a file lock (`PIPELINE_LOCK_PATH`, `flock`, gone with the
+process) for the whole round, so cron-vs-cron (03:30 still working at 14:15) and cron-vs-«Aggiorna
+ora» cannot overlap. The loser writes «un altro giro sta già lavorando: questo non parte» in the log
+and exits with code 3 (`ROUND_BUSY`); a manual job fails with «Un altro aggiornamento sta già
+lavorando. Riprova quando ha finito.».
+
+Expected hours of local work per round with the 7b (estimates: tokens measured, speed from one
+test, on a machine whose speed varies by up to 70%):
+
+| Round | Calls, tokens | Groq refusing like on 15/11 (no change) | With one thread + waiting | Groq off entirely |
+|---|---|---|---|---|
+| typical: 8 reels + 11 articles | 38, ~62,000 | 0-0.5 h | **0 h** | 2.7 h |
+| large: 10 reels + 54 articles | 141, ~230,000 | **1.6 h** | **0-1.3 h** | 9.2 h, stopped at 2.8 h by the cap |
+
+Known limits (written the moment they were known):
+- **Groq's free tier is the whole first link.** Public limit for `gpt-oss-120b`: 8,000 tokens/min,
+  200,000/day (the limit of *our* account was not verified; it is read only in the Groq console).
+  A large round used 170,240 tokens on 15/11, 85% of a day: the 14:15 round and the buttons find
+  little. Groq can change limits or retire a model without notice (it did twice).
+- **The editorial plan and the search reranker have no backstop** (by design, above).
+- **The 7b's quality on these prompts is not proven.** The 3b's three-content test gave more generic
+  themes and invented quotes; the quote check drops invented quotes, generic themes pass. Groq's
+  `gpt-oss-120b` has never written strategy, plan or drafts for this project (the last ones, in
+  July-August, came from Claude through the removed reseller): read one of each.
+- **Waiting on Groq has no overall ceiling**: up to 6 waits × 60 s = 360 s per call, about 1,080 s
+  when the daily cap walks the sibling models; a «request too large for the minute» 429 wastes all
+  six waits. Acceptable for a night round, not measured for a job a person is waiting for.
+- **The local model slows down a lot if another program shares the machine** (2026-11-15: a
+  service at 226% CPU, Ollama restarted by itself, 342 s for one call against 99-163 s): the cap of
+  40 local calls is **1.1-3.8 hours**, not a fixed 2.8.
+- **Texts written by a model must be re-read by a person** (strategy brief and draft, blog drafts,
+  editorial plan). Drafts can contain **dosages and medical statements**; no check verifies them.
+  The 7b also garbles terms (a reel's «brain fog» became «fuga del cervello»): its themes and
+  analyses are to be looked at.
+- `LLM_ENDPOINTS` accepts only the names the code knows (`groq`). Any other (`anthropic`, `flow`,
+  `hf`…) is **ignored with one warning at startup and no request is ever made**, so a key left in an
+  old `.env` cannot leave the machine.
+- The search reranker waits **10 s at most** for Groq (`knowledge.RERANK_TIMEOUT`), then answers in
+  plain order.
 ### What is recorded for each call
 
 `llm/usage.py`, hooked in `chat()` (`llm/client.py`) — the one place all 16 callers pass
@@ -113,14 +211,15 @@ through, so none of them changed. Numbers and short labels only: **no prompt, no
   `load/prompt_eval/eval_duration` (nanoseconds). `done_reason == "length"` or a timeout that
   returns partial text (`_ollama_chat` returns what it has, without an error) → `truncated`.
   "No free slot after 900 s" → `failed`.
-- **Remote models** (`_fast_chat`, `_anthropic_chat`, `_hf_chat`): a row at the start and one
+- **Remote models** (`_fast_chat`): a row at the start and one
   update at the end, with the token counts the provider reports (`usage`; if absent the tokens
   stay empty and the row is still written). No live tokens: they answer all at once.
 - **Whisper** (`transcriber_agent._transcribe`) is not a `chat()` call, but takes the same
   machine: `usage.stt()` records it (`kind='stt'`) so its hours enter the daily totals.
 - **Who asked**: `usage.scope(process, stage, job_id, run_id)` — set by `DAG.run`
-  (`pipeline:<stage>`), `run_job` (`job:<kind>`), `core/knowledge.answer` (`web:chat`) and the
-  reranker (`mcp:cerca`, only when nothing else labels it). Without a scope: `cmd:<command>` or
+  (`pipeline:<stage>`), `run_job` (`job:<kind>`) and the reranker (`mcp:cerca`, only when
+  nothing else labels it). Rows older than 2026-11-15 may carry `web:chat`; the page labels
+  them «Chat sui contenuti (funzione tolta)». Without a scope: `cmd:<command>` or
   `altro`. The label lives in a contextvar **and** a process-wide fallback set from the main
   thread, because a contextvar does not cross into a `ThreadPoolExecutor` (`enrich` uses 5
   threads); the fallback is not set from web request threads (it would leak between requests).
@@ -136,66 +235,29 @@ qwen2.5 7b Q4_K_M at 18 threads 0.2-0.8 tok/s, at 6 threads 3.8-4.0 tok/s; the m
 the cores, is the ceiling. Ollama loads the model with a 4096-token window (`/api/ps`,
 `client.py` does not set `num_ctx`): a longer prompt is cut silently. Not changed here.
 
-### Batch: the same models at half price
+### Token ceilings (and the Batch API, removed)
 
-`BEC/llm/batch.py` + `BEC/pipeline/agents/batch_agent.py`. The Batch API answers **within 24h**
-(usually inside an hour) and charges **50%**. Bulk nightly analysis does not need an answer in
-two seconds, so it goes here; anything interactive keeps using `client.chat()`.
+The nightly analysis used to go through Anthropic's Batch API (half price, answers within 24h,
+stage `batch`, table `batch_runs`, `manage.py sonnet_batch`). **Removed 2026-11-15**: the stage had
+delivered nothing since 2026-10-03 (key rejected), zero rows were left in `batched`, and the
+client wants no Anthropic call at all. The 26 receipts are exported to a file at release, before the
+migration (`0027`) drops the table (the command is in the task file, «da fare in produzione»); which model analysed what is already in
+`enrichments.llm_model` (947 Opus 5, 406 Sonnet 5, 138 gpt-oss-120b at the time).
 
-Because a batch cannot return a string synchronously, the work splits in two and the `batch`
-DAG stage runs **collect before submit**:
+**Token ceilings are a correctness issue, not a cost knob.** A truncated answer is unparseable
+JSON — a *lost* analysis, not a shorter one. Measured on the 2026-09-13 backlog run (Sonnet 5):
+at `max_tokens=700`, 6 of ~150 enrichment answers truncated; at 1200, 2 more still did; claim
+extraction at 600 lost **74 of 139**. Current values: `ENRICH_MAX_TOKENS = 2000`, claim
+extraction 1200.
 
-```
-notte 1   collect()  → writes down whatever last night's delivery produced
-          submit()   → hands over everything still pending
-notte 2   collect()  → those answers land
-```
-
-- Work in flight carries `Reel.enrich_status = "batched"` (a real status, migration 0020). The
-  pending query cannot see it, so the next run cannot resubmit and pay twice.
-- `BatchRun` (table `batch_runs`) is the receipt: provider batch id, the model, and the
-  `custom_id → reel_id + evidence` mapping. **Results come back in any order and are matched by
-  `custom_id`** (`reel-1251`) — matching by position would file one reel's analysis under
-  another reel, permanently.
-- An `errored` / `expired` / unparseable result sets the reel to `failed` with the reason.
-  Nothing requeues automatically; `manage.py sonnet_batch --retry-failed` is the human saying
-  "try again".
-- If the delivery is refused, the rows stay `pending` and the ordinary `enrich` stage does them
-  live the same night — degraded, never lost.
+The model also occasionally wraps the object in an array (`[{...}]`) — 10 of ~150 answers.
+`write_enrichment` unwraps a single-element list rather than throwing away an answer.
 
 **Re-embed after a re-analysis.** A document's vector is built from its title, summary and
 topics as well as its body, so rewriting an analysis leaves the old vector in place and the
 document keeps being found by the wrong questions. `embed_status` says `done`, so nothing
 revisits it on its own — set it back to `pending` for the rows you re-analysed. This bit the 323
 articles recovered on 2026-09-13: their summaries had been empty when they were first embedded.
-
-Commands: `manage.py sonnet_batch --status | --submit | --collect | --live | --retry-failed |
---redo-model <prefisso> | --cancel <id>`, each accepting `--kind reel_enrich | doc_enrich |
-doc_arguments | all` and `--limit N`. Settings: `BATCH_ENABLED`, `BATCH_MODEL`,
-`BATCH_MAX_REQUESTS`.
-
-**Three kinds of work** go through it, declared once in `batch_agent.KINDS` — `reel_enrich`,
-`doc_enrich`, `doc_arguments` — each saying which rows are owed, how to build the prompt and how
-to write the answer. A fourth is one entry in that table.
-
-**Token ceilings are a correctness issue, not a cost knob.** A truncated answer is unparseable
-JSON — a *lost* analysis, not a shorter one — and output is billed on what is produced, so a
-generous ceiling is free on the answers that already fit. Measured on the 2026-09-13 backlog run
-(Sonnet 5): at `max_tokens=700`, 6 of ~150 enrichment answers truncated; at 1200, 2 more still
-did (`stop_reason=max_tokens` at exactly the ceiling); claim extraction at 600 lost **74 of
-139**. Current values: `ENRICH_MAX_TOKENS = 2000`, claim extraction 1200. Both
-`_anthropic_chat` and `batch.collect()` now check `stop_reason == "max_tokens"` and say
-"risposta troncata", instead of letting it surface as a confusing JSON parse error.
-
-The model also occasionally wraps the object in an array (`[{...}]`) — 10 of ~150 answers.
-`write_enrichment` unwraps a single-element list rather than throwing away a paid answer.
-
-Measured cost on this corpus (1.113 transcripts, ~1.500 input / ~400 output tokens per reel):
-
-| | Full corpus | Per night (new content) |
-|---|---|---|
-| live calls, Sonnet 5 | ~8 $ | cents |
-| **batch, Sonnet 5** | **~4 $** | cents |
 
 ## Speech-to-text
 
@@ -218,8 +280,8 @@ Measured cost on this corpus (1.113 transcripts, ~1.500 input / ~400 output toke
 
 ## Retrieval / RAG — `core/knowledge.py`
 
-This one module powers both the in-app chat **and** the MCP `cerca` tool. Same code, same
-ranking.
+This module powers the MCP `cerca` tools and `GET knowledge/search/`. (It used to power the
+in-app chat too, removed 2026-11-15.)
 
 ```mermaid
 flowchart TD
@@ -247,7 +309,7 @@ flowchart TD
      `want=max(top_k, RERANK_POOL)`, instead of over-fetching a mixed pool of `top_k*3=24` and
      discarding most after the LLM ran. Measured, that cut a typed search from 11–14s into the
      `cerca_tutto` regime (~2.6s), and killed the starvation where a minority type post-filtered
-     to fewer than `top_k` results. Chat callers leave `kind=None`.
+     to fewer than `top_k` results. Callers that want both types leave `kind=None`.
 2. **Embed the query** — `_embed_query()`.
 3. **Hybrid rank** — `_rank()` blends dense and lexical: `0.75 * cosine + 0.25 * lexical_score`.
    The lexical term (`_lexical_score`) is what catches exact drug/brand names like "Bijuva"
@@ -261,8 +323,8 @@ flowchart TD
 6. **Optional rerank** — `_rerank(query, out)` makes **one** structured LLM call
    (`model_for("bulk")`, `max_tokens=2000`, `retries=0`) over a `RERANK_POOL=15` candidate
    pool, asking for a JSON `{"ordine": [...]}` ordering, then returns the top `top_k`. On *any*
-   failure it falls back to the blend order — it never errors out. Both the chat and MCP `cerca`
-   call it with `rerank=True`.
+   failure it falls back to the blend order — it never errors out. MCP `cerca` calls it with
+   `rerank=True`; it is **Groq only** (see below).
    - **Known limit / why `retries=0`:** with a full pool of long snippets Sonnet 5 sometimes
      prefaces the JSON with a line of reasoning and tips over the ceiling (`stop_reason=max_tokens`).
      At the old `max_tokens=1000` this surfaced as an intermittent **~30–40s hang** on MCP search —
@@ -271,14 +333,12 @@ flowchart TD
      headroom (the same real pool reranks in ~2–3s) and `retries=0` makes the rare truncation fall
      back to the blend order in one shot instead of multiplying the latency.
 
-### `answer()` — the grounded chat
+### The chat is gone
 
-`answer()` / `_prepare()` build the RAG chat reply:
-- Retrieve with `semantic_search`, then generate with `model_for("reasoning")`.
-- The system prompt **forbids outside knowledge**, requires numbered `[n]` citations, and
-  keeps Medyca vs competitor material strictly labelled and separated.
-- A URL pasted into a question is fetched on the fly via `core/external_ref.fetch_reference`
-  (SSRF-guarded), used **only** for that one answer, marked external, and never added to the
-  bank.
+`answer()` / `_prepare()` (the grounded RAG chat reply, its prompt, the pasted-page references
+read through `core/external_ref.fetch_reference`) and `knowledge/ask/` were **removed
+2026-11-15**: the client uses the MCP connector, and with a local fallback a chat answer would
+have taken minutes. Nothing was stored by the chat, so no migration. `core/knowledge.py` now has
+one job: `semantic_search`.
 
 Next: [the MCP connector](04-mcp-connector.md).

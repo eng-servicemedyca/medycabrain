@@ -33,12 +33,11 @@ Four inputs → derived layers → themes. See `documentation/low-level/01-data-
 
 `pipeline/dag.py` (which also owns the stage list, via `build_steps()`), entry
 `core/management/commands/run_pipeline.py`, one agent per stage:
-`scrape → download → transcribe → batch → enrich → embed → blogscrape → knowledge → cluster`.
-`batch` hands the analysis to the Anthropic Batch API (half price, answers within 24h) and
-collects finished deliveries; `enrich` is the live fallback for whatever the batch could
-not take. Remote models are a priority chain declared in `.env` (`LLM_ENDPOINTS`), each
-provider with its own key and dialect, and a dead provider is skipped rather than taking
-the whole remote layer down with it.
+`scrape → download → transcribe → enrich → embed → blogscrape → knowledge → cluster`
+(eight stages; the old `batch` stage, which handed the analysis to the Anthropic Batch API, was
+removed 2026-11-15 — `dag.HISTORY_ORDER` keeps it only to draw old rounds). Models are a
+two-link chain: **Groq** (declared in `.env` as `LLM_ENDPOINTS=groq`) and then the **local
+Ollama model** as the backstop. No Anthropic, no reseller gateway, no HuggingFace.
 **Collection is split in two on purpose** (since 2026-11-14, Apify is off): the server *lists*
 an account's reels by reading its public **embed page** through the residential proxy
 (`scraper/embed_provider.py`: last 6 posts, only videos the account owns, no views), and yt-dlp
@@ -57,10 +56,14 @@ model call writes `llm_calls` (`llm/usage.py`, numbers only, never the text); th
 ## Models
 
 Vendor-neutral. Code asks for a tier via `model_for("analysis"|"reasoning"|"bulk")`
-(`llm/client.py`); the actual id is in `.env`. STT = Whisper large-v3 (remote) / faster-whisper
+(`llm/client.py`); the actual id is in `.env`. The chain is Groq → local `qwen2.5:7b` (slow: ~4 min per analysis, hence one worker,
+Groq's per-minute cap is waited out 6 times before going local, a cap of 40 local calls per round that
+leaves the rest `pending`, one round at a time by file lock). `chat(remote_only=True)` never reaches
+the local model: editorial plan, search reranker, `eval_mcp` judge. STT = Whisper large-v3 (remote) / faster-whisper
 (local). Embeddings = multilingual MiniLM. RAG (`core/knowledge.py`): `semantic_search` blends
-`0.75·cosine + 0.25·lexical`, keeps owned/competitor quotas, optional LLM reranker. Same engine
-powers the chat and MCP `cerca`. See `documentation/low-level/03-llm-and-embeddings.md`.
+`0.75·cosine + 0.25·lexical`, keeps owned/competitor quotas, optional LLM reranker. The engine
+powers MCP `cerca` (the in-app chat was removed 2026-11-15); its reranker is Groq-only, and when
+Groq refuses the search answers at once with the plain order. See `documentation/low-level/03-llm-and-embeddings.md`.
 
 ## MCP connector
 

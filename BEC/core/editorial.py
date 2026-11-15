@@ -123,7 +123,12 @@ def generate_plan(n: int = 6, theme: str = "", job=None) -> list[ContentIdea]:
     data = client.chat_json(
         PLAN_SYSTEM,
         PLAN_USER.format(n=n, medyca=medyca, competitor=competitor, focus=focus),
+        # remote_only: 3,600 tokens at the local model's 2.8 tok/s are 21 minutes
+        # plus reading, against a 15-minute ceiling, and a JSON that long breaks
+        # easily on a 7b. If Groq refuses, the job says "riprova più tardi"
+        # (LLMRemoteUnavailable -> upload_workflow._client_message).
         max_tokens=3600, timeout=900, model=client.model_for("reasoning"),
+        remote_only=True,
     )
     items = data.get("contenuti") if isinstance(data, dict) else data
     if not isinstance(items, list):

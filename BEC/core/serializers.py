@@ -88,7 +88,7 @@ class BlogSourceSerializer(serializers.ModelSerializer):
     def validate_index_url(self, value):
         """The URL a crawler will visit on a schedule: only public http(s).
 
-        Reuses the chat's SSRF chain — its refusal messages are already
+        Reuses the SSRF chain of core.external_ref — its refusal messages are already
         user-facing Italian.
         """
         from urllib.parse import urlparse

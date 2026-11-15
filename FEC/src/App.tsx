@@ -19,7 +19,6 @@ const Analytics = lazyPage(() => import("./pages/Analytics"));
 const Workspace = lazyPage(() => import("./pages/Workspace"));
 const Accounts = lazyPage(() => import("./pages/Accounts"));
 const SecondBrain = lazyPage(() => import("./pages/SecondBrain"));
-const KnowledgeBank = lazyPage(() => import("./pages/KnowledgeBank"));
 const ContentDetail = lazyPage(() => import("./pages/ContentDetail"));
 const BrainMap = lazyPage(() => import("./pages/BrainMap"));
 const Documentation = lazyPage(() => import("./pages/Documentation"));
@@ -43,7 +42,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           </ErrorBoundary>
         </main>
         {/* In the flow, under <main>: the pages get shorter instead of being
-            covered. A fixed bar hid the chat's send row. */}
+            covered. A fixed bar used to hide the bottom of a page. */}
         <StatusBar />
       </div>
     </div>
@@ -70,7 +69,6 @@ function AppRoutes() {
           <Route path="/:scope/clusters" element={<Scoped><Clusters /></Scoped>} />
           <Route path="/:scope/clusters/:id" element={<Scoped><ClusterDetail /></Scoped>} />
           <Route path="/second-brain" element={<SecondBrain />} />
-          <Route path="/knowledge-bank" element={<KnowledgeBank />} />
           <Route path="/content/:kind/:id" element={<ContentDetail />} />
           <Route path="/brain-map" element={<BrainMap />} />
           <Route path="/documentazione" element={<Documentation />} />

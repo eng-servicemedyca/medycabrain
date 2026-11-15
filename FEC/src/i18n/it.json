@@ -13,7 +13,6 @@
     "clusters": "Cluster",
     "secondBrain": "Second Brain",
     "brainMap": "Mappa (DAG)",
-    "knowledgeBank": "Chat sui contenuti",
     "workspace": "Workspace",
     "accounts": "Fonti",
     "logout": "Esci",
@@ -111,56 +110,7 @@
     }
   },
   "kb": {
-    "title": "Knowledge Bank",
-    "browse": "Sfoglia",
-    "search": "Cerca",
-    "ask": "Chiedi",
-    "articles": "Articoli blog",
-    "reels": "Reel Medyca",
-    "content": "Contenuto",
-    "date": "Data",
-    "views": "View",
-    "transcript": "Trascrizione",
-    "noDocs": "Nessun articolo. Importa il blog con ingest_blog.",
-    "searchPlaceholder": "Cerca per significato in tutta la knowledge bank…",
-    "searchHint": "Scrivi almeno 3 caratteri per la ricerca semantica.",
-    "askPlaceholder": "Fai una domanda alla knowledge bank di Medyca…",
-    "askButton": "Chiedi all'AI",
-    "askNote": "Risposta generata solo dalle fonti di Medyca, con citazioni verificabili.",
-    "thinking": "Sto pensando…",
-    "sources": "Fonti",
-    "relevance": "rilevanza",
-    "noResults": "Nessun risultato.",
-    "cited": "citata nella risposta",
-    "askIntro": "Fai una domanda e ottieni una risposta costruita solo sui contenuti di Medyca, con le fonti citate. Le altre schede servono per sfogliare il materiale grezzo.",
-    "chatTitle": "Chat sui contenuti",
-    "chatSubtitle": "Chiedi qualcosa ai contenuti di Medyca e dei competitor: risponde citando le fonti, senza inventare. Incolla un link per farle leggere una pagina esterna e confrontarla.",
-    "scopeAll": "Tutti",
-    "scopeMedyca": "Solo Medyca",
-    "scopeCompetitor": "Solo competitor",
-    "send": "Invia",
-    "placeholder": "Scrivi una domanda, o incolla il link di una pagina da confrontare…",
-    "reading": "Sto leggendo le fonti…",
-    "suggest": "Prova a chiedere",
-    "suggestions": [
-      "Cosa ho già detto sugli ormoni bioidentici?",
-      "Di cosa parlano i competitor che io non tratto?",
-      "Quali sono i miei contenuti che hanno funzionato meglio e perché?"
-    ],
-    "clear": "Nuova conversazione",
-    "reading_page": "leggo",
-    "refHint": "Incolla un link nella domanda per farglielo leggere e confrontare con la knowledge bank.",
-    "externalRef": "fonte esterna",
-    "origin": {
-      "external": "Riferimenti esterni",
-      "owned": "Materiale di Medyca",
-      "competitor": "Materiale dei competitor"
-    },
-    "untitled": "(senza titolo)",
-    "typeAll": "Tutto",
-    "typeReel": "Reel",
-    "typeArticle": "Articoli",
-    "timeout": "La risposta ha superato il tempo massimo (3 minuti). Prova una domanda più breve o un ambito più stretto: per esempio solo Medyca, oppure solo i reel."
+    "untitled": "(senza titolo)"
   },
   "jobs": {
     "ideation": "Generazione idee di contenuto",
@@ -328,14 +278,11 @@
     "retry": "Riprova"
   },
   "content": {
-    "gotoLabel": "Vai a un contenuto",
-    "gotoPlaceholder": "Es. blog:843 oppure reel:199",
-    "gotoButton": "Apri",
-    "gotoError": "Non riconosco questo riferimento. Scrivi il tipo e il numero, per esempio blog:843 oppure reel:199.",
     "notFound": "Questo contenuto non esiste più o l'indirizzo non è valido. Potrebbe essere stato rimosso.",
     "loadError": "Non riesco a caricare questo contenuto adesso. Il contenuto c'è: è la piattaforma che non risponde. Riprova tra poco.",
     "retry": "Riprova",
-    "backToLibrary": "Torna alla chat sui contenuti"
+    "back": "Torna indietro",
+    "backToHome": "Torna alla Home"
   },
   "docs": {
     "title": "Documentazione — come funziona la piattaforma",
@@ -360,7 +307,7 @@
       },
       "understand": {
         "title": "Capisce",
-        "body": "Trascrive l'audio e legge il testo: di cosa parla, qual è il gancio iniziale, a chi si rivolge. L'analisi dei contenuti nuovi parte di notte e viene consegnata tutta insieme all'intelligenza artificiale: le risposte tornano entro poche ore invece che subito, e questo dimezza il costo. Se serve una risposta immediata — quando premi «Analizza» o fai una domanda — la piattaforma usa la via veloce."
+        "body": "Trascrive l'audio e legge il testo: di cosa parla, qual è il gancio iniziale, a chi si rivolge. L'analisi dei contenuti nuovi parte di notte e la fa un modello di intelligenza artificiale gratuito, Groq. Se in quel momento Groq è occupato o ha finito il suo limite, la piattaforma aspetta il minuto che serve; se non basta, lavora un modello installato sul nostro server, che è più lento. Se serve una risposta subito, per esempio quando premi «Analizza», la piattaforma non aspetta la notte."
       },
       "organise": {
         "title": "Organizza",
@@ -372,7 +319,7 @@
       }
     },
     "weighting": "Ogni contenuto viene pesato sul suo rendimento reale: un reel che va il doppio della tua media conta il doppio. Così i consigli seguono i numeri, non le impressioni.",
-    "nightly": "Tutto si aggiorna da solo ogni notte. Se non vuoi aspettare, puoi avviarlo tu: nella pagina «Stato pipeline» il riquadro «Coda di lavorazione» dice quanti reel mancano e quanto tempo ci vuole, e il pulsante «Aggiorna ora» fa partire subito la lavorazione. Se un aggiornamento è già in corso il pulsante resta spento: due lavorazioni insieme farebbero il doppio delle richieste a Instagram, che è proprio il punto in cui la piattaforma è più lenta. L'analisi in blocco della notte può completarsi poche ore dopo: i contenuti nuovi restano visibili, con l'analisi che arriva appena pronta.",
+    "nightly": "Tutto si aggiorna da solo ogni notte. Se non vuoi aspettare, puoi avviarlo tu: nella pagina «Stato pipeline» il riquadro «Coda di lavorazione» dice quanti reel mancano e quanto tempo ci vuole, e il pulsante «Aggiorna ora» fa partire subito la lavorazione. Se un aggiornamento è già in corso il pulsante resta spento: due lavorazioni insieme farebbero il doppio delle richieste a Instagram, che è proprio il punto in cui la piattaforma è più lenta. Se Groq è al suo limite, l'analisi dei contenuti nuovi può slittare al giro dopo: i contenuti restano visibili, con l'analisi che arriva appena pronta.",
     "outputs": {
       "title": "Cosa ottieni",
       "items": [
@@ -381,7 +328,7 @@
         "Temi e Mappa — i tuoi argomenti e quelli scoperti automaticamente",
         "Second Brain — cosa hai già coperto e dove c'è un buco",
         "Brief e bozze — pronti da usare, con le fonti citate",
-        "Knowledge Bank — tutto il materiale, ricercabile",
+        "Knowledge Bank — tutto il materiale, ricercabile: si interroga dal tuo Claude, con il connettore",
         "Connettore per Claude (MCP): la banca dati interrogabile direttamente dal tuo Claude, in sola lettura",
         "Fonti — la pagina da cui aggiungi, metti in pausa, rimuovi e ripristini i profili Instagram, i blog e le interviste caricate, una scheda per tipo. Una fonte rimossa non si perde: la ritrovi nel filtro «Rimossi»",
         "Bozze del blog — gli articoli scritti partendo da un tema (nuovi o ampliamenti) compaiono in fondo alla pagina Second Brain: li leggi, li copi, li tieni o li scarti"
@@ -389,7 +336,7 @@
     },
     "goto": {
       "title": "Aprire un contenuto da un riferimento",
-      "body": "Quando fai domande a Claude tramite il connettore, ogni contenuto citato arriva con il suo titolo, di chi è (Medyca, un competitor o un riferimento) e un link che si apre qui dentro — per esempio «Metodo Marion Gluck — Medyca». Clicca il link e vedi subito la scheda del contenuto: titolo, fonte, testo o trascrizione e il link all'originale. Se il link che hai copiato è quello che ti ha dato Claude, incollalo così com'è nel campo «Vai a un contenuto», in alto nella pagina «Chiedi alla Knowledge Bank»: la scheda si apre sopra la chat, senza cancellare la conversazione. Se hai in mano solo un codice tipo blog:843 o reel:199 (magari da una risposta vecchia), incolla lo stesso codice nello stesso campo — va bene anche se davanti c'è un numero di citazione, per esempio «blog 2:843» — e premi Apri. Se il codice non è chiaro, o il contenuto è stato rimosso, te lo diciamo con un messaggio semplice. Se invece è la piattaforma a non rispondere sul momento, te lo diciamo in modo diverso — il contenuto c'è ancora — e ti diamo un bottone per riprovare. Se apri un link senza essere entrato, la piattaforma ti chiede di accedere e poi ti porta direttamente al contenuto."
+      "body": "Quando fai domande a Claude tramite il connettore, ogni contenuto citato arriva con il suo titolo, di chi è (Medyca, un competitor o un riferimento) e un link che si apre qui dentro — per esempio «Metodo Marion Gluck — Medyca». Clicca il link e vedi subito la scheda del contenuto: titolo, fonte, testo o trascrizione e il link all'originale. Se il contenuto è stato rimosso, o l'indirizzo non è chiaro, te lo diciamo con un messaggio semplice. Se invece è la piattaforma a non rispondere sul momento, te lo diciamo in modo diverso — il contenuto c'è ancora — e ti diamo un bottone per riprovare. Se apri un link senza essere entrato, la piattaforma ti chiede di accedere e poi ti porta direttamente al contenuto. Un codice da solo, tipo blog:843, non si apre da qui: chiedi a Claude il link del contenuto."
     },
     "download": {
       "title": "Schema della pipeline",
@@ -404,7 +351,7 @@
         "Vengono letti i contenuti dalla scheda Reel; i post video normali e i caroselli non sono inclusi.",
         "I blog vengono monitorati come i profili Instagram: quello di Medyca e i blog dei competitor aggiunti dalla pagina «Fonti». L'importazione parte dai ~40 articoli più recenti per fonte e completa l'archivio nelle notti successive — importiamo il recente, non tutto lo storico.",
         "37 video trascritti il 27 luglio avevano usato il modello locale di riserva, meno preciso sui termini medici. Il collegamento al servizio di trascrizione è stato corretto e quelle trascrizioni sono state rifatte.",
-        "Gli articoli non hanno metriche di engagement (view, like): compaiono in Libreria, Cluster, temi e chat, ma non nei grafici di Analytics, che restano sui reel. Un'analisi dedicata ai blog (cadenza di pubblicazione, copertura dei temi) è prevista in un giro successivo.",
+        "Gli articoli non hanno metriche di engagement (view, like): compaiono in Libreria, Cluster e temi, ma non nei grafici di Analytics, che restano sui reel. Un'analisi dedicata ai blog (cadenza di pubblicazione, copertura dei temi) è prevista in un giro successivo.",
         "Gli articoli in lingua diversa dall'italiano (es. International Menopause Society) vengono riassunti e classificati in italiano; la ricerca dentro il testo originale inglese è meno precisa di quella sugli articoli italiani.",
         "Link incollati: leggo video YouTube e Vimeo (anche le pagine video di TVRS) e pagine web. Reel Instagram, PDF e Word, cartelle Drive/Dropbox non si possono incollare (per i file: scaricali e caricali qui sopra). Le pagine protette da accesso o abbonamento non si leggono. Il titolo e il canale di un video si leggono mentre lavora la piattaforma, non subito: un video privato o rimosso compare nella lista come «errore», con il motivo.",
         "Se il server viene riavviato mentre un file o un link è in lavorazione, l'elemento passa a «errore» con la scritta «Interrotto da un riavvio» e non riparte da solo: premi «Riprova». Se l'analisi dopo la trascrizione non riesce, il testo è comunque salvato e l'analisi si completa nella notte. I link che l'utente ha aggiunto a mano compaiono sempre in Libreria, anche se il sistema li giudica fuori tema.",
@@ -419,12 +366,18 @@
         "Dei video presi da un link non sempre riusciamo a ottenere l'audio: YouTube e Vimeo bloccano i server come il nostro, quindi scarichiamo passando da una connessione residenziale italiana, senza bisogno di accessi o cookie. Se quella connessione non risponde (o è finito il traffico), il download fallisce. In quel caso il video resta comunque in piattaforma con titolo, canale e link — cercabile e citabile come riferimento — ma senza trascrizione, e la riga te lo dice in chiaro. Se ti serve la trascrizione subito, carica il file video a mano.",
         "Se una pagina non riesce a caricare i dati, vedi un messaggio chiaro con il pulsante «Riprova»: una lista vuota vuol dire che non c'è niente, mai che qualcosa si è rotto.",
         "Nella mappa del Second Brain i temi oltre i primi si dispongono in cerchi concentrici attorno al loro gruppo: così nessuno si sovrappone, anche quando sono centinaia.",
-        "Avanzamento: gli stadi «indicizzazione» e «raggruppamento per tema» non dicono quanti elementi mancano, mostrano solo «in corso da…». La consegna in blocco non ha una barra che si muove: dice quando è stata consegnata e quando arriva la risposta. I lavori avviati dal sito mostrano solo la percentuale. I dettagli si tengono 90 giorni."
+        "Avanzamento: gli stadi «indicizzazione» e «raggruppamento per tema» non dicono quanti elementi mancano, mostrano solo «in corso da…». I lavori avviati dal sito mostrano solo la percentuale. I dettagli si tengono 90 giorni.",
+        "Le analisi dipendono da Groq, un servizio esterno gratuito. Ha un limite di lavoro al minuto e uno al giorno, e può cambiarlo o ritirare un modello senza avvisare. Un giro grosso usa da solo quasi tutto il limite di una giornata: il giro del pomeriggio e le funzioni che premi a mano (piano editoriale, ideazione) possono trovarne poco.",
+        "Quando Groq non basta lavora il modello installato sul nostro server. È molto più lento (una singola analisi può chiedere fino a 9 minuti) e la sua qualità su questi contenuti non è ancora stata provata: con le prove fatte finora i temi sono usciti più generici e a volte le citazioni erano inventate; il controllo scarta quelle che non si ritrovano nel testo, ma i temi generici passano. Ogni giro può usarlo al massimo 40 volte: ciò che resta aspetta il giro dopo, resta «in attesa» (non «fallito») e la pagina Avanzamento lo scrive.",
+        "Il piano editoriale e il riordino dei risultati della ricerca usano solo Groq, senza riserva sul server. Se Groq è al limite il piano dice «Riprova più tardi» e la ricerca risponde subito con l'ordine semplice, senza dare errore.",
+        "Parte un solo aggiornamento alla volta: se ne parte un secondo mentre il primo lavora, il secondo si ferma e lo scrive nel registro.",
+        "Un testo scritto da un modello (brief e bozza di strategia, bozze del blog, piano editoriale) va sempre riletto da una persona prima di usarlo. Nelle bozze compaiono anche dosaggi e indicazioni mediche: il modello può sbagliarli, e nessun controllo automatico li verifica. Se la risposta del modello viene tagliata prima della fine, la piattaforma lo dice e non ti mostra il testo a metà.",
+        "Se sullo stesso server lavora un altro programma, il modello locale rallenta molto (anche il doppio) e il limite di 40 chiamate per giro può voler dire da circa un'ora a quasi quattro. Quando Groq rifiuta la chiave, la pagina Avanzamento lo scrive sullo stadio: «Groq non risponde: chiave rifiutata; il lavoro va sul modello locale»."
       ]
     },
     "models": {
       "title": "I modelli che usiamo, e per cosa",
-      "hint": "Ogni passaggio usa il modello adatto al lavoro che deve fare. I modelli sono messi in fila per priorità: se il primo non risponde (credito finito, limite giornaliero raggiunto) entra il successivo, e come ultima rete c'è un modello installato sul nostro server. La piattaforma non si ferma mai, al massimo risponde un po' peggio.",
+      "hint": "Ogni passaggio usa il modello adatto al lavoro che deve fare. La catena ha due anelli: prima Groq, un servizio esterno gratuito; se non risponde (limite al minuto o al giorno raggiunto) lavora un modello installato sul nostro server. La piattaforma non si ferma, ma sul modello del server è molto più lenta.",
       "items": [
         {
           "step": "Trascrizione audio",
@@ -433,23 +386,23 @@
         },
         {
           "step": "Analisi del contenuto",
-          "model": "Claude Sonnet 5",
+          "model": "Groq · gpt-oss-120b",
           "why": "Legge la trascrizione ed estrae il tema specifico, il gancio e le affermazioni, ognuna con la citazione testuale che la sostiene. È il livello più profondo: da qui dipende come è organizzato tutto il resto."
         },
         {
           "step": "Raggruppamento per tema",
-          "model": "Claude Sonnet 5",
+          "model": "Groq · gpt-oss-120b",
           "why": "Decide come sono organizzati i temi: è un giudizio, non un'estrazione meccanica."
         },
         {
-          "step": "Domande alla Knowledge Bank",
-          "model": "Claude Sonnet 5",
-          "why": "Risponde solo dalle fonti Medyca, citandole; se le fonti non bastano lo dichiara invece di inventare."
+          "step": "Piano editoriale",
+          "model": "Groq · gpt-oss-120b (solo Groq)",
+          "why": "Confronta la copertura di Medyca con quella dei competitor e propone idee girabili: angolo, gancio, scaletta e chiusura."
         },
         {
-          "step": "Piano editoriale",
-          "model": "Claude Sonnet 5",
-          "why": "Confronta la copertura di Medyca con quella dei competitor e propone idee girabili: angolo, gancio, scaletta e chiusura."
+          "step": "Riordino dei risultati di ricerca",
+          "model": "Groq · gpt-oss-20b (solo Groq)",
+          "why": "Sistema in ordine di pertinenza i risultati che il connettore dà a Claude. Se Groq non risponde, i risultati arrivano subito nell'ordine semplice."
         },
         {
           "step": "Indicizzazione per la ricerca",
@@ -457,30 +410,24 @@
           "why": "Trasforma i testi in vettori: è ciò che permette di cercare per significato e non per parola esatta."
         },
         {
-          "step": "Analisi in blocco, di notte",
-          "model": "Claude Sonnet 5 (a lotti)",
-          "why": "I contenuti nuovi non hanno bisogno di una risposta in tre secondi: di notte reel e articoli vengono consegnati tutti insieme e le analisi tornano entro poche ore. Stesso modello, stessa qualità, metà del costo. Rifare l'analisi di tutto l'archivio costa così intorno ai 4 dollari invece di 8."
-        },
-        {
           "step": "Se un modello non risponde",
-          "model": "Riserva automatica",
-          "why": "Se il fornitore principale si ferma, il lavoro passa a un fornitore gratuito; se si ferma anche quello, entra il modello installato sul nostro server: più lento e meno preciso, ma niente si blocca. Per ogni contenuto resta scritto quale modello lo ha analizzato davvero."
+          "model": "Modello locale (Qwen 2.5 7B)",
+          "why": "Se Groq si ferma, il lavoro passa a un modello installato sul nostro server: più lento (una risposta può chiedere diversi minuti) e meno preciso, ma i contenuti si analizzano lo stesso, di notte. Per ogni contenuto resta scritto quale modello lo ha analizzato davvero."
         }
       ]
     },
     "rag": {
-      "title": "Come funziona \"Chiedi alla Knowledge Bank\"",
+      "title": "Come funziona la ricerca del connettore",
       "steps": [
         "La domanda viene cercata in due modi insieme: per significato (vettori) e per parola esatta — serve per nomi come Bijuva, che la ricerca semantica da sola può mancare.",
         "Di ogni contenuto trovato viene estratto il passaggio che riguarda davvero la domanda, non l'inizio dell'articolo.",
-        "Il modello risponde usando solo quei passaggi e cita ogni affermazione con un numero.",
-        "Le fonti effettivamente citate vengono evidenziate, così puoi verificarle una per una.",
-        "Se incolli il link di una pagina nella domanda, viene letta sul momento e usata solo per quella risposta: resta marcata come fonte esterna, non entra nella knowledge bank e non viene mai confusa con i contenuti di Medyca."
+        "I contenuti di Medyca e quelli dei competitor sono cercati separatamente e poi uniti, così i tuoi non spariscono dietro i più numerosi. Ogni risultato dice di chi è: non vengono mai confusi.",
+        "Un modello di Groq riordina i risultati dal più al meno pertinente. Se in quel momento Groq non risponde, la ricerca usa subito l'ordine semplice e risponde lo stesso: non aspetta e non dà errore."
       ]
     },
     "progress": {
       "title": "Dove vedere cosa sta succedendo",
-      "body": "Apri «Avanzamento» nel menu, sotto «Stato pipeline». Ogni stadio ha una barra con quattro numeri: quanti elementi sono fatti sul totale, a che velocità, da quanto tempo lavora e quanto manca. Sotto la barra c'è scritto quale reel o articolo sta leggendo adesso, e chi lo sta lavorando: il modello locale, un modello remoto, la consegna in blocco o nessun modello. Vale per ogni giro, anche quando riattivi tutto e arrivano nuovi reel e nuove fonti. In fondo trovi le ore di macchina di oggi per ogni tipo di lavoro."
+      "body": "Apri «Avanzamento» nel menu, sotto «Stato pipeline». Ogni stadio ha una barra con quattro numeri: quanti elementi sono fatti sul totale, a che velocità, da quanto tempo lavora e quanto manca. Sotto la barra c'è scritto quale reel o articolo sta leggendo adesso, e chi lo sta lavorando: il modello locale, un modello remoto o nessun modello. Vale per ogni giro, anche quando riattivi tutto e arrivano nuovi reel e nuove fonti. In fondo trovi le ore di macchina di oggi per ogni tipo di lavoro."
     }
   },
   "quality": {
@@ -691,7 +638,6 @@
     "retry": "Riprova",
     "retrying": "Riprovo…",
     "withoutTranscript": "senza trascrizione",
-    "analysing": "in analisi",
     "article": "Pagina web",
     "linksOutcomeTitle": "Cosa è successo ai link",
     "linksOutcomeClose": "Chiudi",
@@ -809,7 +755,7 @@
     "inThisRound": "in questo giro",
     "who": {
       "none": "nessun modello",
-      "batch": "in blocco (risposta entro 24 h)",
+      "batch": "stadio non più in uso",
       "stt": "trascrizione",
       "llm": "modello",
       "llm_local": "modello locale",
@@ -833,15 +779,10 @@
     "longer": "più lunga del solito",
     "atMost": "al massimo {{duration}}",
     "otherCalls": "Altre richieste al modello",
-    "otherCallsHint": "Chat, ricerca e comandi: non sono uno stadio del giro.",
+    "otherCallsHint": "Ricerca dal connettore e comandi: non sono uno stadio del giro.",
     "jobs": "Lavori avviati dal sito",
     "jobsHint": "Per questi lavori il sistema conosce solo la percentuale, non quanti pezzi mancano.",
     "pipelineJobNote": "Il giro avviato a mano si vede qui sopra, stadio per stadio.",
-    "batches": "In consegna",
-    "batchesHint": "Questi elementi sono stati consegnati in blocco ad Anthropic a metà prezzo. La risposta arriva entro 24 ore e non c'è una barra che si muove: il ritiro avviene al giro successivo.",
-    "batchesEmpty": "Nessuna consegna in blocco aperta.",
-    "batchLine": "{{n}} {{kind}} · consegnati {{when}} · risposta attesa entro {{by}}",
-    "batchReturn": "Numeri di ritorno dell'ultimo giro: {{written}} scritti, {{failed}} non riusciti.",
     "today": "Oggi",
     "todayHint": "Le ore in cui la macchina ha lavorato per il modello locale e per la trascrizione. Non si paga in euro: si paga in tempo.",
     "day": "Giorno",
@@ -852,11 +793,12 @@
     "machineTime": "{{duration}} di macchina",
     "waitedFor": "in attesa {{duration}}",
     "tokensInOut": "{{tin}} token letti, {{tout}} scritti",
-    "calls": "{{n}} chiamate",
+    "calls_one": "{{count}} chiamata",
+    "calls_other": "{{count}} chiamate",
     "failedCalls": "{{n}} non riuscite",
     "total": "Totale",
     "remoteTitle": "Modelli remoti, per confronto",
-    "remoteLine": "{{calls}} chiamate · {{tokens}} token · {{duration}} di attesa della risposta",
+    "remoteLine": "{{calls}} · {{tokens}} token · {{duration}} di attesa della risposta",
     "speedLine": "Velocità del modello locale nelle ultime 24 ore: {{n}} token al secondo ({{model}}).",
     "speedNone": "Velocità del modello locale: nessuna chiamata nelle ultime 24 ore."
   }

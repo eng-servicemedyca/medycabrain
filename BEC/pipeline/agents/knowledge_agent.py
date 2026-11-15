@@ -33,6 +33,7 @@ from django.conf import settings
 from core import progress
 from core.models import DONE, FAILED, PENDING, DocumentArgument, KnowledgeDocument
 from llm import client, prompts
+from llm.client import NOT_THE_ITEMS_FAULT
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +76,7 @@ DOC_MAX_TOKENS = 2000
 
 
 def build_doc_enrich_prompt(doc: KnowledgeDocument) -> tuple[str, str]:
-    """(system, user) for one article. Shared by the live path and the batch,
-    so the two can never ask different questions of the same article."""
+    """(system, user) for one article."""
     who = doc.source.name if doc.source else "Medyca"
     ownership = (" (un CONCORRENTE di Medyca)" if doc.owner_type == "competitor"
                  else " (il blog di Medyca stessa)")
@@ -86,8 +86,7 @@ def build_doc_enrich_prompt(doc: KnowledgeDocument) -> tuple[str, str]:
 
 
 def write_doc_enrich(doc: KnowledgeDocument, data) -> None:
-    """Store one analysis. Extracted so a batch answer, arriving hours later,
-    is written by exactly the same rules as a live one."""
+    """Store one analysis."""
     from pipeline.agents.enrich_agent import canonical_topic, pick_primary_topic
 
     # The model occasionally wraps the object in an array; the content is
@@ -200,7 +199,8 @@ def run(ctx) -> dict:
     from pipeline.agents.enrich_agent import _parallel
 
     enriched = enrich_failed = embedded = embed_failed = 0
-    arg_docs = total_args = arg_failed = 0
+    arg_docs = total_args = arg_failed = deferred = 0
+    stopped, stop_exc = False, None
 
     if client.available():
         qs = KnowledgeDocument.objects.filter(
@@ -211,7 +211,14 @@ def run(ctx) -> dict:
         # the reel stage's thread pool applies unchanged.
         docs = list(qs)
         progress.open(len(docs), "articoli", "Analisi")
+        done_ids = set()
         for doc, _res, exc in _parallel(docs, _enrich_one):
+            if isinstance(exc, NOT_THE_ITEMS_FAULT):
+                # Not tried, not failed: stays pending for the next round.
+                stopped, stop_exc = True, exc
+                deferred += len(docs) - len(done_ids)
+                break
+            done_ids.add(doc.id)
             if exc is None:
                 enriched += 1
             else:
@@ -227,7 +234,13 @@ def run(ctx) -> dict:
             qs_a = qs_a[: ctx.limit]
         arg_list = list(qs_a)
         progress.open(len(arg_list), "articoli", "Affermazioni")
+        arg_done = 0
         for doc, n, exc in _parallel(arg_list, _extract_arguments):
+            if isinstance(exc, NOT_THE_ITEMS_FAULT):
+                stopped, stop_exc = True, exc
+                deferred += len(arg_list) - arg_done
+                break
+            arg_done += 1
             if exc is None:
                 doc.argument_status = DONE
                 doc.save(update_fields=["argument_status"])
@@ -265,7 +278,18 @@ def run(ctx) -> dict:
     # NOTE: failures stay FAILED, per project rule. The blanket reset that
     # used to live here re-queued every permanently broken doc on every run —
     # an infinite retry that also hid the failure from every status page.
-    return {"enriched": enriched, "enrich_failed": enrich_failed,
-            "arg_docs": arg_docs, "arguments": total_args,
-            "arg_failed": arg_failed,
-            "embedded": embedded, "embed_failed": embed_failed}
+    out = {"enriched": enriched, "enrich_failed": enrich_failed,
+           "arg_docs": arg_docs, "arguments": total_args,
+           "arg_failed": arg_failed,
+           "embedded": embedded, "embed_failed": embed_failed}
+    if stopped:
+        from pipeline.agents.enrich_agent import note_stopped
+        note_stopped(deferred, stop_exc)
+        out["deferred"] = deferred
+        out["stopped"] = ("modello locale non disponibile"
+                          if isinstance(stop_exc, client.LLMLocalUnavailable)
+                          else "tetto di chiamate al modello locale")
+    else:
+        from pipeline.agents.enrich_agent import note_remote_problem
+        note_remote_problem()
+    return out
