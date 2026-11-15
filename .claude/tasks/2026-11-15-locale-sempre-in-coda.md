@@ -97,3 +97,26 @@ Solo risposte finte, nessuna chiamata a Groq.
 - Il frontend non è stato ricompilato: ho cambiato solo una stringa di `it.json` (JSON valido).
 - Se `.env` di produzione ha già `PIPELINE_LOCAL_MAX_CALLS=40` o `OLLAMA_LOCK_WAIT=900`, vince il `.env`:
   va cambiato a mano al rilascio.
+
+## 4. Revisione          (revisore)
+
+**Verdetto: PASSA.** Nessun blocco. Quattro rilievi, nessuno impedisce il merge.
+
+Controllato:
+- Predefiniti: `PIPELINE_LOCAL_MAX_CALLS` 0 e `OLLAMA_LOCK_WAIT` 1800 in `base.py` e `.env.example`; 1800 > 1500 (`OLLAMA_PIPELINE_TIMEOUT`). Il test li legge da `base.py` a ambiente pulito.
+- Nessun punto assume un tetto > 0: `_take_local_call` esce subito con `cap <= 0`; `note_stopped` (`enrich_agent.py:136`) usa `n` solo se arriva un `LLMLocalBudget` o un `LLMLocalUnavailable` (il secondo ha un testo suo), quindi niente «usate le 0 chiamate». Nessuna divisione per il tetto.
+- Ricerca MCP: `core/knowledge.py:412`, `core/editorial.py:131`, `eval_mcp.py:350` restano `remote_only=True`. Non toccati dal diff.
+- Documenti (`02-pipeline.md`, `03-llm-and-embeddings.md`, `it.json`, `architecture-summary.md`) dicono il vero e riportano il limite noto (giro di ore, ~9 h per 141 chiamate, 14:15 salta con uscita 3). Il drawio nomina solo il tetto al minuto di Groq: non serve toccarlo.
+- Invarianti: `owner_type` non toccato, nessun stato `failed` azzerato, nessun segreto nel diff, un solo commit sul ramo, nessun commit su `main`.
+
+Rilievi (dal più pesante):
+1. **Il lavoro può ancora NON andare in coda sul locale, per tre vie rimaste** (`BEC/llm/client.py`, `chat`):
+   - `LLMBusy` dopo 1800 s (`_ollama_slot`, righe 282 e 291): se un lavoro del cliente (priorità) tiene il locale a lungo, il giro rinuncia. Lo stadio si ferma e lascia `pending` (`NOT_THE_ITEMS_FAULT`, riga 127). Non è un errore, ma è «non in coda».
+   - `LLMLocalUnavailable` se Ollama è spento (riga 204): stesso effetto, stadio fermo e `pending`. Voluto, ma non è una coda.
+   - `requests.exceptions.Timeout` (righe 719-724): silenzio oltre `OLLAMA_READ_TIMEOUT` (600 s) o risposta oltre il tetto. Non è in `NOT_THE_ITEMS_FAULT`, quindi quel reel diventa `failed` e non torna in attesa. È il comportamento già fuso con la PR #23, non nuovo, ma con il tetto spento i giri lunghi lo rendono più probabile.
+   Nessuna delle tre è un cambio di questo diff.
+2. Il 14:15 che salta (limite noto, scritto): se il giro lungo si ferma per `LLMBusy` o Ollama spento, i reel restano `pending` fino al prossimo giro utile; con giri di ore il «prossimo» può essere anche il giorno dopo. Il documento non lo dice esplicitamente.
+3. Al rilascio `.env` di produzione vince sul predefinito: se contiene `PIPELINE_LOCAL_MAX_CALLS=40` o `OLLAMA_LOCK_WAIT=900`, la modifica non ha effetto (già annotato dallo sviluppatore). Non l'ho verificato: non ho toccato la produzione.
+4. Il test dei predefiniti carica `base.py` come modulo a parte con `clear=True` sull'ambiente: regge oggi (338 test verdi, dichiarati dallo sviluppatore), ma si rompe se `base.py` un giorno richiede una variabile obbligatoria.
+
+`stato:` resta `revisione`; passa a `pronto` se anche il collaudo passa.
