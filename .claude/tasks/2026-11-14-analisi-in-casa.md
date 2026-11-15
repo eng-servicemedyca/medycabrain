@@ -1,7 +1,7 @@
 ---
 id: 2026-11-14-analisi-in-casa
 titolo: Groq o modello locale, niente Anthropic, niente chat (PR 2 di "pipeline in casa")
-stato: sviluppo
+stato: pronto
 ramo: feat/analisi-in-casa
 pr: ""
 ticket: ""
@@ -1182,6 +1182,31 @@ reversibile nella struttura. Documentazione aggiornata nello stesso lavoro.
   (`deploy/nginx-medycabrain.conf:22,60`), `_with_retry` quasi morto. Una
   risposta di testo libero tagliata da Groq torna tagliata senza segnale.
 
+### Secondo giro (revisione su `8e5d1bd`)
+
+*(Testo del revisore, incollato dal capo in versione ridotta.)*
+
+**Verdetto: PASSA.** Nessun bloccante. R1, R2, R3, D1-D4 corretti. Commit con
+i soli 20 file attesi, file di lavoro integro, nessun segreto, `owner_type`
+non toccato.
+
+**Non bloccanti, lasciati aperti:**
+
+- **N1.** `core/ideation.py:131` (1.200 token) e `core/editorial.py:123`
+  (3.600): tetti non rialzati. Con «risposta tagliata = errore», se uno dei
+  due viene tagliato il cliente legge «Riprova» e può ritrovare lo stesso
+  taglio. Nel collaudo del primo giro sono usciti interi su Groq.
+- **N2.** `llm/client.py` `_ollama_chat`: Ollama che cade a metà risposta
+  (errore nel ciclo `iter_lines`) marca ancora `failed` il contenuto.
+- **N3.** Dopo un `LLMLocalUnavailable` lo stadio si ferma al primo elemento;
+  gli altri aspettano il giro dopo anche se Groq avrebbe potuto servirli.
+- **N4.** `LLM_ENDPOINTS` vuoto (`config/settings/base.py`): nessun avviso,
+  tutto va sul locale. Al rilascio va scritto `LLM_ENDPOINTS=groq`.
+- **N5.** `client.py:447`: `del _fast_disabled[name]` può dare un `KeyError`
+  raro con più thread (innocuo nel riordino; `.pop(name, None)` lo toglie).
+- **N6.** Una risposta tagliata da Groq non prova il 7b e resta `failed`:
+  da riguardare il 29/11 con la quota del locale.
+
 ## 5. Collaudo           (collaudatore)
 
 Collaudo del 15/11/2026 (10:59-11:50), ramo `feat/analisi-in-casa` (`98d07bd`), eseguito in una
@@ -1611,3 +1636,12 @@ token, copie dati e log cancellati; `BEC/logs` della copia cancellato; in `/tmp`
   vecchia non esce più), D3, D4. R4, R5, R6, D5, D6 vanno nei limiti noti e
   nei passi di rilascio. D6 e i dosaggi nella bozza di strategia: la qualità
   dei testi va riletta da una persona, è scritto tra i limiti.
+- 2026-11-15 - **Secondo giro: revisione passa, collaudo passa** (336 test).
+  Il capo apre la PR. Restano aperti come limiti noti, non corretti qui:
+  N1-N6 della revisione e le tre osservazioni del collaudo (`LLM_ENDPOINTS`
+  vuoto cade in silenzio sul locale; nota di `knowledge` senza «N restano in
+  attesa» quando Groq e Ollama mancano insieme; `output_tokens` vuoto sulle
+  chiamate tagliate). Fatto da sapere: il collaudo ha usato la chiave Groq di
+  produzione e il 15/11 ha esaurito il tetto giornaliero di `gpt-oss-120b`
+  (la catena è passata al modello fratello). I prossimi collaudi devono
+  contare i token o usare una chiave a parte.
