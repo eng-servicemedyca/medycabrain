@@ -120,3 +120,18 @@ Rilievi (dal più pesante):
 4. Il test dei predefiniti carica `base.py` come modulo a parte con `clear=True` sull'ambiente: regge oggi (338 test verdi, dichiarati dallo sviluppatore), ma si rompe se `base.py` un giorno richiede una variabile obbligatoria.
 
 `stato:` resta `revisione`; passa a `pronto` se anche il collaudo passa.
+
+## 5. Collaudo           (collaudatore)
+
+**Verdetto: PASSA.** Nessuna chiamata a Groq: chiavi svuotate e indirizzo di Groq puntato su una porta morta (`127.0.0.1:1`). Database usa-e-getta (Postgres 16, porta 55461, già fermato e cancellato); lucchetti miei in una cartella a parte, non quelli di produzione.
+
+1. **Suite intera** (`manage.py test core --noinput`, ambiente ripulito):
+   `Ran 338 tests in 61.033s` / `OK`.
+2. **Predefiniti letti da Django** con `PIPELINE_LOCAL_MAX_CALLS` e `OLLAMA_LOCK_WAIT` tolti dall'ambiente: stampa `0 1800`.
+3. **Comportamento chiesto da Giuseppe, dal vivo** (modello vero `qwen2.5:7b-instruct-q4_K_M`, stadio `pipeline:enrich`, 3 testi brevi, `max_tokens=12`): Groq irraggiungibile (3 tentativi falliti per chiamata), poi tutti e 3 sul locale: ok in ~109 s (la prima, carica il modello; il server era sotto carico), 2,1 s e 4,3 s. `local_calls_used: 0`, nessun `LLMLocalBudget`, nessun «restano in attesa». Righe `LLMCall`: 3 `ollama ... done`.
+4. **Coda, due processi insieme** (2 chiamate ciascuno): tutte e 4 finite `done`, una dopo l'altra, con attese nel lucchetto di 0, 2,0, 2,1 e 4,0 s. Nessun `LLMBusy`.
+5. **FEC**: `npm ci` e `npm run build` dentro il worktree: `tsc -b && vite build` fine, `✓ built in 27.30s`. La frase nuova di Documentazione è in italiano semplice e corretta; è un po' lunga (cinque frasi in una voce), ma si capisce. Nota: non l'ho vista sulla pagina in browser.
+
+**Non provato**: un giro grosso vero (ore); la pagina Documentazione a schermo (nessun browser, e `:9093` è produzione, che non gira da questo ramo); Ollama non era occupato da altro, ma il carico della macchina era alto (la prima chiamata locale ha impiegato 109 s). Il `.env` di produzione con `=40`/`=900` (già annotato dallo sviluppatore) va cambiato al rilascio.
+
+`stato:` può passare a `pronto`.
