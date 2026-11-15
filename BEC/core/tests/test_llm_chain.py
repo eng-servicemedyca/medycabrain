@@ -430,3 +430,188 @@ class StatusPageSaysTheTruthTests(SimpleTestCase):
         self.assertIn("solo Groq", rows["Piano editoriale"])
         self.assertIn("solo Groq", rows["Riordino dei risultati di ricerca"])
         self.assertNotIn("claude", " ".join(rows.values()).lower())
+
+
+# ── second round of fixes (review R1-R3, test D1-D4) ──────────────────────────
+
+@_chain_settings()
+class SlowGroqRerankTests(_ChainCase):
+    def test_the_rerank_waits_ten_seconds_at_most_then_answers_in_plain_order(self):
+        import requests
+        from core import knowledge
+        seen = {}
+
+        def slow(url, **kw):
+            seen["timeout"] = kw.get("timeout")
+            raise requests.exceptions.ReadTimeout("Groq accetta e poi tace")
+
+        hits = [{"kind": "reel", "title": "a", "snippet": "x"},
+                {"kind": "reel", "title": "b", "snippet": "y"}]
+        with mock.patch.object(client.requests, "post", side_effect=slow), \
+             mock.patch.object(client, "_ollama_chat") as oll:
+            out = knowledge._rerank("q", hits)
+        self.assertEqual(seen["timeout"], knowledge.RERANK_TIMEOUT)
+        self.assertLessEqual(knowledge.RERANK_TIMEOUT, 10)
+        self.assertEqual([h["title"] for h in out], ["a", "b"])   # plain order
+        oll.assert_not_called()
+        self.assertEqual(self.sleeps, [])
+
+
+@_chain_settings(LLM_RETRY_DISABLED_AFTER=600)
+class RefusedKeyIsSeenAndNotForeverTests(_ChainCase):
+    def test_a_refused_key_is_said_on_the_stage_note_not_only_in_the_log(self):
+        with mock.patch.object(client, "_fast_chat", side_effect=client.LLMCreditError("403")), \
+             mock.patch.object(client, "_ollama_chat", return_value="locale"), \
+             mock.patch("core.progress.note") as note:
+            client.chat("s", "u")
+        self.assertIn("Groq non risponde: chiave rifiutata", note.call_args.args[0])
+        self.assertIn("modello locale", client.remote_problem())
+
+    def test_it_is_tried_again_after_the_interval(self):
+        with mock.patch.object(client, "_fast_chat", side_effect=client.LLMCreditError("403")), \
+             mock.patch.object(client, "_ollama_chat", return_value="locale"):
+            client.chat("s", "u")
+        self.assertEqual(client._endpoints(), [])            # off for now
+        later = client.time.monotonic() + 601
+        with mock.patch.object(client.time, "monotonic", return_value=later):
+            self.assertEqual([e["name"] for e in client._endpoints()], ["groq"])
+        self.assertEqual(client.remote_problem(), "")         # and no longer reported
+
+    def test_a_stage_that_ends_normally_still_says_it(self):
+        from pipeline.agents import enrich_agent
+        client._fast_disabled["groq"] = client.time.monotonic()
+        client._problem["text"] = "Groq non risponde: chiave rifiutata; il lavoro va sul modello locale"
+        with mock.patch.object(enrich_agent.progress, "note") as note:
+            enrich_agent.note_remote_problem()
+        self.assertIn("chiave rifiutata", note.call_args.args[0])
+
+
+class KnownProvidersOnlyTests(SimpleTestCase):
+    def _endpoints(self, names):
+        import importlib
+        env = {"LLM_ENDPOINTS": names, "LLM_GROQ_BASE_URL": "https://g.invalid/v1",
+               "LLM_GROQ_API_KEY": "k", "LLM_GROQ_MODEL_BULK": "b",
+               "LLM_ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+               "LLM_ANTHROPIC_API_KEY": "sk-old", "LLM_ANTHROPIC_MODEL_BULK": "x",
+               "LLM_FLOW_BASE_URL": "https://flow.invalid/v1", "LLM_FLOW_API_KEY": "old",
+               "LLM_FLOW_MODEL_BULK": "y"}
+        with mock.patch.dict(os.environ, env):
+            base = importlib.import_module("config.settings.base")
+            with self.assertLogs("config.settings", "WARNING") as logs:
+                import logging
+                logging.getLogger("config.settings").warning("sentinel")  # assertLogs needs one
+                out = base._llm_endpoints()
+        return out, logs.output
+
+    def test_old_vendor_names_are_ignored_with_one_warning_and_their_keys_never_used(self):
+        out, logs = self._endpoints("anthropic,groq,flow,hf")
+        self.assertEqual([e["name"] for e in out], ["groq"])
+        warned = [l for l in logs if "sconosciuti" in l]
+        self.assertEqual(len(warned), 1)
+        self.assertIn("anthropic", warned[0])
+        self.assertNotIn("sk-old", " ".join(logs))             # no secret in the log
+        self.assertNotIn("sk-old", repr(out))                  # and not in the chain
+
+    def test_only_old_names_means_no_endpoint_at_all(self):
+        out, _ = self._endpoints("anthropic,flow")
+        self.assertEqual(out, [])
+
+
+@_chain_settings()
+class GroqCutAnswerTests(_ChainCase):
+    def _post(self, finish):
+        resp = mock.MagicMock(status_code=200)
+        resp.json.return_value = {"choices": [{"finish_reason": finish,
+                                               "message": {"content": "A metà fra"}}],
+                                  "usage": {"prompt_tokens": 5, "completion_tokens": 900}}
+        return mock.patch.object(client.requests, "post", return_value=resp)
+
+    def test_finish_reason_length_is_a_named_error_recorded_as_truncated(self):
+        from core.models import LLMCall
+        with self._post("length"), mock.patch.object(client, "_ollama_chat") as oll:
+            with self.assertRaises(LLMTruncated):
+                client.chat("s", "u", max_tokens=900)
+        oll.assert_not_called()    # the 7b would be cut at the same place, minutes later
+        row = LLMCall.objects.filter(provider="groq").latest("id")
+        self.assertEqual((row.status, row.truncated), ("failed", True))
+
+    def test_a_finished_answer_passes(self):
+        with self._post("stop"):
+            self.assertEqual(client.chat("s", "u"), "A metà fra")
+
+    def test_the_client_hears_it_and_the_ceilings_are_doubled(self):
+        import inspect
+
+        from core import blog_workflow, strategy
+        from core.upload_workflow import _client_message
+        self.assertIn("tagliata", _client_message(LLMTruncated("x")))
+        self.assertIn("Riprova più tardi", _client_message(LLMRemoteUnavailable("x")))
+        self.assertTrue(_client_message(LLMRemoteUnavailable("x")).startswith("Riprova"))
+        src = inspect.getsource(strategy)
+        self.assertIn("max_tokens=1800", src)
+        self.assertIn("max_tokens=2400", src)
+        self.assertIn("max_tokens=2400", inspect.getsource(blog_workflow))
+
+
+@_chain_settings(PIPELINE_LOCAL_MAX_CALLS=2)
+class LocalNotReachableTests(_ChainCase):
+    def _groq_down(self):
+        return mock.patch.object(client, "_fast_chat",
+                                 side_effect=LLMRateLimit(1, daily=True))
+
+    def test_ollama_not_reachable_is_not_the_contents_fault_and_costs_no_allowance(self):
+        import requests
+        with self._groq_down(), \
+             mock.patch.object(client.requests, "post",
+                               side_effect=requests.exceptions.ConnectionError("giù")), \
+             usage.scope("pipeline:enrich", stage="enrich"):
+            for _ in range(3):
+                with self.assertRaises(client.LLMLocalUnavailable):
+                    client.chat("s", "u")
+        self.assertEqual(client.local_calls_used(), 0)
+
+    def test_a_busy_slot_costs_no_allowance(self):
+        with self._groq_down(), \
+             mock.patch.object(client, "_ollama_slot", side_effect=LLMBusy("occupato")), \
+             usage.scope("pipeline:enrich", stage="enrich"):
+            for _ in range(3):
+                with self.assertRaises(LLMBusy):
+                    client.chat("s", "u")
+        self.assertEqual(client.local_calls_used(), 0)
+
+
+class BusyLocalLeavesItemsPendingTests(StageKeepsWhatItDidNotTryPendingTests):
+    """Same fixtures as the budget test: a busy or stopped local model is not the
+    reel's fault either. `failed` is only for a real error of the content."""
+
+    def test_busy_leaves_pending_and_the_note_says_the_local_model_was_unavailable(self):
+        def fn(reel):
+            raise LLMBusy("occupato")
+
+        out, note = self._run(fn)
+        from core.models import Reel
+        self.assertEqual(Reel.objects.filter(enrich_status="pending").count(), 4)
+        self.assertEqual(Reel.objects.filter(enrich_status="failed").count(), 0)
+        self.assertEqual(out["deferred"], 4)
+        self.assertIn("non era disponibile", note.call_args.args[0])
+
+    def test_unreachable_ollama_is_the_same(self):
+        def fn(reel):
+            raise client.LLMLocalUnavailable("spento")
+
+        out, _ = self._run(fn)
+        from core.models import Reel
+        self.assertEqual(Reel.objects.filter(enrich_status="failed").count(), 0)
+        self.assertEqual(out["stopped"], "modello locale non disponibile")
+
+    def test_the_note_says_groq_is_off_when_it_is(self):
+        client._fast_disabled["groq"] = client.time.monotonic()
+        client._problem["text"] = "Groq non risponde: chiave rifiutata; il lavoro va sul modello locale"
+        self.addCleanup(client._fast_disabled.clear)
+
+        def fn(reel):
+            raise LLMLocalBudget("tetto")
+
+        _, note = self._run(fn)
+        self.assertIn("Groq non risponde", note.call_args.args[0])
+        self.assertIn("restano in attesa", note.call_args.args[0])

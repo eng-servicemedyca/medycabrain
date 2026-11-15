@@ -19,7 +19,7 @@ from unittest import mock
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.db import OperationalError, ProgrammingError
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
@@ -150,9 +150,6 @@ class DatabaseDownTests(TestCase):
             self.assertEqual(progress.plan_stages("r", ["scrape"], "cron"), {})
 
 
-# A test must never hold the real round lock: a cron round starting at that
-# moment would be refused, and a real round running would fail these tests.
-@override_settings(PIPELINE_LOCK_PATH=f"/tmp/medycabrain-test-{os.getpid()}.lock")
 class DagWritesStageRunsTests(TestCase):
     def setUp(self):
         usage._reset_breaker()
@@ -493,3 +490,28 @@ class MissingTablesTripTheBreakerTests(TestCase):
             for _ in range(5):
                 usage.guard("avanzamento", lambda: StageRun.objects.filter(id=1).update(done=1))
         self.assertEqual(len(logs.records), 1)
+
+
+class NoFalseEstimateDuringALocalCallTests(TestCase):
+    def test_no_time_left_and_no_speed_while_a_local_call_is_open(self):
+        # Items 1-5 were fast (Groq); the one now under way is the 7b's, ~4 min.
+        now = timezone.now()
+        row = StageRun.objects.create(
+            run_id="r", stage="enrich", status="running", source="cron", total=60,
+            done=5, started_at=now - timedelta(seconds=10),
+            phase_started_at=now - timedelta(seconds=10))
+        LLMCall.objects.create(process="pipeline:enrich", provider="ollama", is_local=True,
+                               status="running", pid=os.getpid(), stage_run_id=row.id,
+                               created_at=now)
+        stage = progress_report.progress_snapshot()["rounds"][0]["stages"][0]
+        self.assertIsNone(stage["eta_seconds"])
+        self.assertIsNone(stage["rate_per_minute"])
+
+    def test_with_no_local_call_the_estimate_is_still_given(self):
+        now = timezone.now()
+        StageRun.objects.create(
+            run_id="r2", stage="enrich", status="running", source="cron", total=60,
+            done=5, started_at=now - timedelta(seconds=10),
+            phase_started_at=now - timedelta(seconds=10))
+        stage = progress_report.progress_snapshot()["rounds"][0]["stages"][0]
+        self.assertIsNotNone(stage["eta_seconds"])

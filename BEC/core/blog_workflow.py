@@ -134,7 +134,10 @@ def run_document_blog(document_id: int, job=None) -> dict:
     progress(90, "Scrivo la bozza dall'intervista…")
     user = INTERVIEW_USER.format(
         title=doc.title or "Intervista", transcript=transcript[:12000])
-    content = client.chat(INTERVIEW_SYSTEM, user, max_tokens=1600, timeout=1200)
+    # Ceilings doubled 2026-11-15: gpt-oss-120b spends part of max_tokens on
+    # reasoning and its blog draft was cut mid-sentence; a cut answer is now an
+    # error (LLMTruncated), never a finished-looking text.
+    content = client.chat(INTERVIEW_SYSTEM, user, max_tokens=3200, timeout=1800)
 
     draft = BlogDraft.objects.create(
         mode="draft", cluster_label=doc.primary_topic or "",
@@ -177,12 +180,12 @@ def run_cluster_blog(cluster_id: int, job=None) -> dict:
             article=(doc.content_text or doc.summary_it or "")[:4000],
             reels=reel_txt,
         )
-        content = client.chat(EXPAND_SYSTEM, user, max_tokens=1200, timeout=1200)
+        content = client.chat(EXPAND_SYSTEM, user, max_tokens=2400, timeout=1800)
         mode, title = "expand", f"Espansione: {doc.title.replace(' — Medyca','')}"
     else:
         progress(35, "Scrivo una bozza fondata sui reel…")
         user = DRAFT_USER.format(label=cluster.label_it, reels=reel_txt)
-        content = client.chat(DRAFT_SYSTEM, user, max_tokens=1400, timeout=1200)
+        content = client.chat(DRAFT_SYSTEM, user, max_tokens=2800, timeout=1800)
         mode, title = "draft", f"Bozza: {cluster.label_it}"
 
     progress(90, "Salvo il risultato…")

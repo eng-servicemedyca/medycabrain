@@ -172,6 +172,9 @@ PIPELINE_LOCAL_MAX_CALLS = int(os.environ.get("PIPELINE_LOCAL_MAX_CALLS", "40"))
 # Groq's per-minute cap is waited out this many times (each as long as Groq says,
 # 21 s at most on 2026-11-15) before the local model is asked.
 LLM_RATE_WAITS = int(os.environ.get("LLM_RATE_WAITS", "6"))
+# A provider switched off for a refused key is tried again after this many
+# seconds (the MCP connector never restarts on its own).
+LLM_RETRY_DISABLED_AFTER = int(os.environ.get("LLM_RETRY_DISABLED_AFTER", "600"))
 # One pipeline round at a time, across cron and "Aggiorna ora".
 PIPELINE_LOCK_PATH = os.environ.get("PIPELINE_LOCK_PATH", "/tmp/medycabrain-pipeline.lock")
 # Fast remote provider (OpenAI-compatible): Groq / Cerebras / OpenRouter /
@@ -239,8 +242,24 @@ STT_API_KEY = os.environ.get("FAST_LLM_API_KEY", "")
 #     LLM_GROQ_...                _MODEL_CHAIN=...  (same-provider fallbacks)
 # Order IS priority. A provider that rejects the key or has no balance is
 # skipped for the rest of the process; the next one answers.
+# The providers this code knows how to talk to. Adding one is a one-word change
+# here plus its LLM_<NAME>_* block in .env.
+KNOWN_LLM_ENDPOINTS = {"groq"}
+
+
 def _llm_endpoints() -> list[dict]:
     names = [n.strip() for n in os.environ.get("LLM_ENDPOINTS", "").split(",") if n.strip()]
+    # An old .env can still list the removed vendors (`anthropic`, `flow`, `hf`).
+    # They are ignored with ONE warning and no request is ever made, so a key
+    # left in the file cannot leave the machine.
+    ignored = [n for n in names if n.lower() not in KNOWN_LLM_ENDPOINTS]
+    if ignored:
+        import logging
+        logging.getLogger("config.settings").warning(
+            "LLM_ENDPOINTS: fornitori sconosciuti ignorati (%s); ammessi: %s. "
+            "Si possono togliere dal .env.", ", ".join(ignored),
+            ", ".join(sorted(KNOWN_LLM_ENDPOINTS)))
+    names = [n for n in names if n.lower() in KNOWN_LLM_ENDPOINTS]
     out = []
     for name in names:
         p = "LLM_" + re.sub(r"[^A-Z0-9]", "_", name.upper()) + "_"

@@ -90,15 +90,22 @@ class LLMCreditError(LLMError):
     skipped for the rest of the process; the next one in the chain answers."""
 
 
-class LLMBusy(LLMError):
+class LLMLocalUnavailable(LLMError):
+    """The local model cannot be reached at all (Ollama stopped or restarting).
+    Nothing is wrong with the content being processed."""
+
+
+class LLMBusy(LLMLocalUnavailable):
     """The local slot is not free (another generation, or a person has priority)
     and the wait ran out. Retrying only queues again behind the same thing."""
 
 
 class LLMTruncated(LLMError):
-    """The local answer was cut — at the token ceiling or by the time ceiling.
-    A cut JSON is a lost analysis, not a shorter one, so it is an error here and
-    not a string. Not retried: the same prompt is cut at the same place."""
+    """The answer was cut — at the token ceiling (local or Groq: finish_reason
+    "length") or by the local time ceiling. A cut JSON is a lost analysis, and a
+    free text cut mid-sentence must never reach the client as if it were
+    finished, so it is an error here and not a string. Not retried: the same
+    prompt is cut at the same place."""
 
 
 class LLMLocalBudget(LLMError):
@@ -110,6 +117,11 @@ class LLMRemoteUnavailable(LLMError):
     """`remote_only` call and no remote provider answered (cap, key, network).
     The caller decides what to do — rerank falls back to plain order, the plan
     says «riprova più tardi» — but it never waits for the local model."""
+
+
+# Not the content's fault: the item stays `pending` and the stage says why. Real
+# errors of the content (a broken answer) stay `failed`.
+NOT_THE_ITEMS_FAULT = (LLMLocalBudget, LLMLocalUnavailable)
 
 
 class LLMModelMissing(LLMError):
@@ -124,7 +136,25 @@ class LLMModelMissing(LLMError):
 # Per ENDPOINT, not global: when one gateway runs out of balance the next one
 # in the chain must still answer. A single flag here meant a dead gateway took
 # the whole remote layer down with it and everything fell to the local model.
-_fast_disabled: set[str] = set()
+# name -> time it was disabled. A key refusal is not forever: the MCP connector
+# is a long-lived process and one passing 403 must not switch its reranker off
+# until the next restart, so a disabled endpoint is tried again after
+# LLM_RETRY_DISABLED_AFTER seconds.
+_fast_disabled: dict[str, float] = {}
+_problem = {"text": ""}
+
+
+def remote_problem() -> str:
+    """Why a remote provider is switched off right now ("" if none): the
+    sentence a stage shows instead of leaving it only in the log."""
+    return _problem["text"] if _fast_disabled else ""
+
+
+def _announce(text: str) -> None:
+    """Put the sentence on the running stage's note (no-op outside a stage)."""
+    with contextlib.suppress(Exception):
+        from core import progress
+        progress.note(text)
 
 
 def _ollama_chat(system: str, user: str, max_tokens: int, temperature: float,
@@ -160,9 +190,16 @@ def _ollama_chat(system: str, user: str, max_tokens: int, temperature: float,
     deadline = time.time() + timeout
     # Silence allowed: loading the model (96-123 s) and reading the prompt
     # (~112 s for a 1,500-token one) both happen before the first token.
-    with requests.post(f"{settings.OLLAMA_URL}/api/chat", json=payload,
-                       stream=True,
-                       timeout=(10, settings.OLLAMA_READ_TIMEOUT)) as resp:
+    try:
+        resp_cm = requests.post(f"{settings.OLLAMA_URL}/api/chat", json=payload,
+                                stream=True,
+                                timeout=(10, settings.OLLAMA_READ_TIMEOUT))
+    except requests.exceptions.ConnectionError as exc:
+        # Ollama stopped or restarting (it restarted by itself at 11:43 on
+        # 2026-11-15, when another service on the box took the CPU): nothing
+        # is wrong with the content, so this is not a failure of the item.
+        raise LLMLocalUnavailable(f"Ollama non raggiungibile: {exc.__class__.__name__}") from exc
+    with resp_cm as resp:
         resp.raise_for_status()
         for line in resp.iter_lines():
             if not line:
@@ -347,7 +384,14 @@ def _fast_chat(system: str, user: str, max_tokens: int, temperature: float,
     body = resp.json()
     u = body.get("usage") or {}
     usage.note_tokens(u.get("prompt_tokens"), u.get("completion_tokens"))
-    return body["choices"][0]["message"]["content"]
+    choice = body["choices"][0]
+    if choice.get("finish_reason") == "length":
+        # Measured 2026-11-15: strategy brief, strategy draft and blog draft all
+        # came back cut mid-sentence on gpt-oss-120b (its reasoning tokens count
+        # against max_tokens) and were handed over as if finished.
+        raise LLMTruncated(
+            f"{endpoint.get('name', 'fast')}: risposta tagliata al tetto di {max_tokens} token")
+    return choice["message"]["content"]
 
 
 def transcribe_audio(path: str, prompt: str = "", language: str = "it") -> dict:
@@ -397,6 +441,10 @@ TASKS = ("analysis", "reasoning", "bulk")
 
 def _endpoints() -> list[dict]:
     """The remote providers still worth trying, in priority order."""
+    now = time.monotonic()
+    for name, since in list(_fast_disabled.items()):
+        if now - since >= settings.LLM_RETRY_DISABLED_AFTER:
+            del _fast_disabled[name]
     return [e for e in settings.FAST_ENDPOINTS
             if e.get("api_key") and e["name"] not in _fast_disabled]
 
@@ -467,7 +515,7 @@ def local_calls_used() -> int:
     return _local_calls
 
 
-def _take_local_call() -> None:
+def _take_local_call() -> bool:
     """Count a local call of a pipeline round, or refuse it when the round has
     used PIPELINE_LOCAL_MAX_CALLS. Calls that are not a pipeline stage (a Job
     the client started, a command) are not capped: a person is waiting for them.
@@ -477,12 +525,21 @@ def _take_local_call() -> None:
     global _local_calls
     cap = settings.PIPELINE_LOCAL_MAX_CALLS
     if cap <= 0 or not usage.current()["process"].startswith("pipeline:"):
-        return
+        return False
     with _local_calls_lock:
         if _local_calls >= cap:
             raise LLMLocalBudget(
                 f"tetto di {cap} chiamate al modello locale raggiunto in questo giro")
         _local_calls += 1
+    return True
+
+
+def _give_back_local_call() -> None:
+    """A call that never got the slot (busy, Ollama unreachable) generated
+    nothing: it must not use up the round's allowance."""
+    global _local_calls
+    with _local_calls_lock:
+        _local_calls = max(0, _local_calls - 1)
 
 
 def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2,
@@ -531,6 +588,8 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
         try:
             text = fn()
         except BaseException as exc:
+            if isinstance(exc, LLMTruncated):
+                rec.stats(truncated=True)
             rec.fail(exc)
             raise
         rec.done_remote(model=last_model_used())
@@ -572,7 +631,7 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
         # Local generation: take the single CPU slot, never run two at once.
         # The budget is checked before the row is born: a refused call is not
         # a call. The row is born BEFORE the wait: "in coda" is a state worth showing.
-        _take_local_call()
+        counted = _take_local_call()
         rec = usage.begin("ollama", settings.OLLAMA_MODEL, is_local=True, waiting=True,
                           max_tokens=max_tokens, prompt_chars=prompt_chars)
         try:
@@ -582,6 +641,8 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
                                     json_mode=json_mode, timeout=timeout,
                                     on_token=on_token, rec=rec)
         except BaseException as exc:
+            if counted and isinstance(exc, LLMLocalUnavailable):
+                _give_back_local_call()
             rec.fail(exc)
             raise
         rec.done(model=f"{settings.OLLAMA_MODEL}")
@@ -603,10 +664,24 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
                 logger.warning("[llm] %s key rejected/depleted — disabling it: %s",
                                label, exc)
                 if provider == "fast":
-                    _fast_disabled.add(endpoint["name"])
+                    _fast_disabled[endpoint["name"]] = time.monotonic()
+                    _problem["text"] = (f"{endpoint['name'].capitalize()} non risponde: "
+                                        "chiave rifiutata; il lavoro va sul modello locale")
+                    _announce(_problem["text"])
                 last_err = exc
                 break
-            except (LLMBusy, LLMTruncated, LLMLocalBudget) as exc:
+            except LLMTruncated as exc:
+                if provider == "fast":
+                    # Groq cut the answer at our ceiling. The local model would
+                    # be cut at the same place after minutes of work, and a
+                    # free text must not be handed over half written: the
+                    # caller gets the named error at once.
+                    logger.warning("[llm] %s: %s", label, exc)
+                    raise
+                logger.warning("[llm] %s: %s — not retrying", label, exc)
+                last_err = exc
+                break
+            except (LLMLocalUnavailable, LLMLocalBudget) as exc:
                 # Local failures with a name. None improves on a second try: the
                 # slot is still taken, the answer is cut at the same place, the
                 # round's budget is still spent — and each try is 4-9 minutes.
@@ -651,8 +726,8 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
                 last_err = exc
                 if attempt < retries:
                     time.sleep(2 ** attempt)
-    if isinstance(last_err, LLMLocalBudget):
-        # The stage must be able to tell "we stopped trying" from "it failed".
+    if isinstance(last_err, NOT_THE_ITEMS_FAULT):
+        # The stage must be able to tell "we could not try" from "it failed".
         raise last_err
     if remote_only:
         raise LLMRemoteUnavailable(f"remote providers failed: {last_err!r}")

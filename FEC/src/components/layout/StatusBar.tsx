@@ -79,7 +79,12 @@ function JobRow({ job, onDismiss }: { job: Job; onDismiss: () => void }) {
               {active ? `${job.progress}%` : failed ? t("jobs.failed") : t("jobs.done")}
             </span>
           </div>
-          <div className="mt-1 truncate text-xs text-muted">{job.message}</div>
+          {/* A failed job says what to do in its LAST words ("Riprova più tardi"):
+              truncating it at 380 px hid exactly that. Only a running job's
+              progress line is cut. */}
+          <div className={"mt-1 text-xs text-muted " + (failed ? "break-words" : "truncate")}>
+            {job.message}
+          </div>
           <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface">
             <div
               className={

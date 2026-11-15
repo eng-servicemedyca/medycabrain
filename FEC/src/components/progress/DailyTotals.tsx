@@ -89,7 +89,7 @@ export function DailyTotals() {
                     />
                   </div>
                   <p className="mt-2 text-xs tabular-nums text-muted">
-                    {t("progress.calls", { n: p.calls })}
+                    {t("progress.calls", { count: p.calls })}
                     {p.wait_seconds > 0 && ` · ${t("progress.waitedFor", { duration: fmtDuration(p.wait_seconds) })}`}
                     {(p.tokens_in > 0 || p.tokens_out > 0) &&
                       ` · ${t("progress.tokensInOut", { tin: fmtNum(p.tokens_in, 0), tout: fmtNum(p.tokens_out, 0) })}`}
@@ -108,7 +108,7 @@ export function DailyTotals() {
             <div className="text-sm font-bold text-navy">{t("progress.remoteTitle")}</div>
             <p className="mt-1 text-xs tabular-nums text-muted">
               {t("progress.remoteLine", {
-                calls: data.remote.calls,
+                calls: t("progress.calls", { count: data.remote.calls }),
                 tokens: fmtNum(data.remote.tokens_in + data.remote.tokens_out, 0),
                 duration: fmtDuration(data.remote.seconds),
               })}

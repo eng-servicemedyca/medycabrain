@@ -33,7 +33,7 @@ from django.conf import settings
 from core import progress
 from core.models import DONE, FAILED, PENDING, DocumentArgument, KnowledgeDocument
 from llm import client, prompts
-from llm.client import LLMLocalBudget
+from llm.client import NOT_THE_ITEMS_FAULT
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +200,7 @@ def run(ctx) -> dict:
 
     enriched = enrich_failed = embedded = embed_failed = 0
     arg_docs = total_args = arg_failed = deferred = 0
-    stopped = False
+    stopped, stop_exc = False, None
 
     if client.available():
         qs = KnowledgeDocument.objects.filter(
@@ -213,9 +213,9 @@ def run(ctx) -> dict:
         progress.open(len(docs), "articoli", "Analisi")
         done_ids = set()
         for doc, _res, exc in _parallel(docs, _enrich_one):
-            if isinstance(exc, LLMLocalBudget):
+            if isinstance(exc, NOT_THE_ITEMS_FAULT):
                 # Not tried, not failed: stays pending for the next round.
-                stopped = True
+                stopped, stop_exc = True, exc
                 deferred += len(docs) - len(done_ids)
                 break
             done_ids.add(doc.id)
@@ -236,8 +236,8 @@ def run(ctx) -> dict:
         progress.open(len(arg_list), "articoli", "Affermazioni")
         arg_done = 0
         for doc, n, exc in _parallel(arg_list, _extract_arguments):
-            if isinstance(exc, LLMLocalBudget):
-                stopped = True
+            if isinstance(exc, NOT_THE_ITEMS_FAULT):
+                stopped, stop_exc = True, exc
                 deferred += len(arg_list) - arg_done
                 break
             arg_done += 1
@@ -283,8 +283,13 @@ def run(ctx) -> dict:
            "arg_failed": arg_failed,
            "embedded": embedded, "embed_failed": embed_failed}
     if stopped:
-        from pipeline.agents.enrich_agent import note_local_budget
-        note_local_budget(deferred)
+        from pipeline.agents.enrich_agent import note_stopped
+        note_stopped(deferred, stop_exc)
         out["deferred"] = deferred
-        out["stopped"] = "tetto di chiamate al modello locale"
+        out["stopped"] = ("modello locale non disponibile"
+                          if isinstance(stop_exc, client.LLMLocalUnavailable)
+                          else "tetto di chiamate al modello locale")
+    else:
+        from pipeline.agents.enrich_agent import note_remote_problem
+        note_remote_problem()
     return out

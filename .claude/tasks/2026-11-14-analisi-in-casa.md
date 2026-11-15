@@ -1,7 +1,7 @@
 ---
 id: 2026-11-14-analisi-in-casa
 titolo: Groq o modello locale, niente Anthropic, niente chat (PR 2 di "pipeline in casa")
-stato: revisione
+stato: sviluppo
 ramo: feat/analisi-in-casa
 pr: ""
 ticket: ""
@@ -1085,8 +1085,351 @@ Un campione solo, prompt piccolo (905 token, non i 1.500 di un'analisi media).
    3b solo se serve davvero; si tornerebbe a uno stato in cui Anthropic e `flow` fallivano comunque).
 6. Riavvio di `medycabrain-backend` e `medycabrain-mcp`.
 
+### Secondo giro (correzioni dopo revisione e collaudo)
+
+Lavoro nella copia separata (`scratchpad/wt-analisi`); produzione non toccata, un commit nuovo
+sopra i tre. Punto per punto:
+
+- **R1** `_rerank` aspetta Groq al massimo `RERANK_TIMEOUT`=10 s, poi ordine semplice. Test con
+  Groq che accetta e poi tace (`ReadTimeout`): il timeout passato è 10, ordine semplice, Ollama
+  e attese mai chiamati.
+- **R2** Chiave rifiutata: `client.remote_problem()` e nota sullo stadio in corso («Groq non
+  risponde: chiave rifiutata; il lavoro va sul modello locale»), anche a fine stadio e dentro la
+  nota di «fermato». Un endpoint spento si riprova dopo `LLM_RETRY_DISABLED_AFTER`=600 s (il
+  connettore non resta spento fino al riavvio). Test.
+- **R3** `LLMBusy` e Ollama irraggiungibile sono `LLMLocalUnavailable`: insieme al tetto fanno
+  `NOT_THE_ITEMS_FAULT`; `enrich` e `knowledge` lasciano `pending`, si fermano e la nota dice
+  «il modello locale non era disponibile (occupato o spento)». Una chiamata che non ha avuto lo
+  slot restituisce il suo posto nel tetto. Un errore vero resta `failed`. Test (4 reel, 0 `failed`).
+- **D1** `finish_reason=length` di Groq = `LLMTruncated`: riga `llm_calls` `failed` + `truncated`,
+  il lavoro dice «Riprova: la risposta del modello è stata tagliata…», non va al 7b (sarebbe
+  tagliata allo stesso punto dopo minuti) e nessun testo a metà arriva al cliente. Tetti:
+  brief 900→1800, bozza di strategia 1200→2400, bozze blog 1600/1200/1400→3200/2400/2800, attese 1800 s.
+- **D2** `LLM_ENDPOINTS`: solo nomi noti (`groq`); gli altri (`anthropic`, `flow`, `hf`…) ignorati
+  con **un** avviso all'avvio e nessuna richiesta di rete; il test prova che la chiave vecchia non
+  compare né nella catena né nel log.
+- **D3** Messaggio del Job: «Riprova più tardi: il servizio dei modelli non risponde o è al suo
+  limite.» (l'azione prima; non dice più «limite» da solo per una chiave rifiutata); `StatusBar`
+  non taglia più il messaggio di un lavoro fallito (va a capo).
+- **D4** Nessuna stima «mancano…»/«velocità» mentre c'è una chiamata locale aperta (test);
+  «le 1 chiamate» corretto (nota del tetto, plurale i18n di `progress.calls`).
+- **D5/D6, R4, R6 e dosaggi**: scritti tra i limiti noti (`03` e pagina `Documentazione`).
+- Il file di lucchetto: `core/tests/__init__.py` dà a ogni processo di test un lucchetto suo,
+  tolto a fine corsa (tolto anche l'override locale in `test_progress.py`, che lasciava un file
+  per ogni corsa). Dopo la suite: nessun file in `/tmp`.
+
+Prove (output vero, copia separata, Postgres a lato):
+```
+Ran 336 tests in 38.392s   OK      (erano 317: +19)
+makemigrations --check --dry-run   No changes detected
+npx tsc --noEmit                   tsc=0
+```
+Tre chiamate vere a Groq con i prompt veri di strategia e bozze (materiale finto), tetti nuovi:
+```
+brief strategia: OK, 2.2s, tetto 1800, usati 834 token, finisce «...gestione delle vampate di calore.»
+bozza strategia: OK, 3.5s, tetto 2400, usati 1429 token (col vecchio 1200 sarebbe stata tagliata)
+bozza blog:      OK, 1.6s, tetto 2800, usati 672 token
+```
+(Il codice solleva se `finish_reason` è `length`: «OK» vuol dire `stop`.) Il testo a metà frase col
+tetto vecchio non l'ho riprodotto con Groq: è coperto da un test che simula `finish_reason: length`.
+
+Da aggiungere ai passi di rilascio (R6): **`migrate` e riavvio di backend e `medycabrain-mcp` uno
+dopo l'altro, senza pause** (tra i due il backend vecchio dà 500 su Stato/Avanzamento); il passo 3
+(pulire `.env`) resta consigliato ma ora una chiave vecchia rimasta non esce più. I blocchi nginx
+per `knowledge/ask/` (`deploy/nginx-medycabrain.conf`, righe ~22 e ~60) vanno tolti con root:
+fuori da questa PR.
+
+Non provato nel secondo giro: gesto vero sull'interfaccia (toast a 380 px, pagina Avanzamento
+senza stima), solo `tsc` e test del backend; nessuna prova con Ollama spento davvero (solo la
+`ConnectionError` simulata).
+
 ## 4. Revisione          (revisore)
+
+*(Testo del revisore, primo giro su `98d07bd`, incollato dal capo in versione ridotta; nessun rilievo tolto.)*
+
+**Verdetto: PASSA.** Nessun bloccante. `owner_type` non toccato, nessun
+segreto nel diff né in `.env.example`, nessun fornitore rivenduto rimasto.
+I 9 strumenti MCP non dipendono da codice tolto. Migrazione 0027 sana e
+reversibile nella struttura. Documentazione aggiornata nello stesso lavoro.
+
+**Non bloccanti, per gravità**
+
+- **R1. Ricerca MCP con Groq lento** (`core/knowledge.py:416-420`,
+  `llm/client.py:513`): `_rerank` chiama senza `timeout`, quindi con Groq che
+  accetta e poi risponde piano il cliente aspetta fino a 120 s prima
+  dell'ordine semplice. I rifiuti immediati (tetto al minuto, al giorno,
+  chiave morta, rete) rispondono subito. Rimedio: `timeout` di circa 10 s.
+- **R2. Chiave Groq rifiutata** (`client.py:602-608`, `enrich_agent.py`
+  `note_local_budget`): Groq viene saltato per tutto il processo con un solo
+  `logger.warning`; la nota dello stadio dice «usate le 40 chiamate» senza
+  dire perché. Nel connettore MCP, processo lungo, un 403 passeggero spegne il
+  riordino fino al riavvio del servizio.
+- **R3. Locale occupato = `failed` per sempre** (`enrich_agent.py`,
+  `knowledge_agent.py`): `LLMBusy` (slot occupato oltre 900 s) e collegamento
+  rifiutato da Ollama arrivano come `LLMError` generico e il contenuto resta
+  `failed` senza colpa. `_take_local_call` (`client.py:481-485`) conta la
+  chiamata anche se lo slot è occupato.
+- **R4. Nessun tetto complessivo all'attesa su Groq** (`client.py:539-555`):
+  fino a 360 s per chiamata, circa 1.080 s sul tetto giornaliero con i modelli
+  fratelli. Un 429 «troppo grande per il minuto» spreca le 6 attese. Da
+  scrivere nei limiti noti di `03`.
+- **R5. Lucchetto**: giusto (`flock`, non resta orfano; i job del cliente non
+  passano da `DAG.run`). Il giro rifiutato esce con codice 3.
+- **R6. Rilascio e residui**: tra `migrate` e riavvio il backend vecchio dà
+  500 su Stato/Avanzamento: farli di seguito. Codice nuovo con `.env` vecchio
+  non crasha ma prova `anthropic` a ogni chiamata. Residui innocui:
+  commento `core/models.py:894`, blocchi nginx per `knowledge/ask/`
+  (`deploy/nginx-medycabrain.conf:22,60`), `_with_retry` quasi morto. Una
+  risposta di testo libero tagliata da Groq torna tagliata senza segnale.
+
 ## 5. Collaudo           (collaudatore)
+
+Collaudo del 15/11/2026 (10:59-11:50), ramo `feat/analisi-in-casa` (`98d07bd`), eseguito in una
+copia di lavoro a lato con un Postgres 16 usa-e-getta (porta 55461) caricato con una **copia di sola
+lettura dei dati di produzione** (`pg_dump` -> restore; 345 MB, 1.633 reel, 2.265 articoli, schema a 0026,
+26 righe in `batch_runs`). Backend a lato su :9193, ponte MCP a lato su :8125/:8126, interfaccia a lato
+su :9194 (le due ultime servivano `FEC/dist` della copia). Produzione mai scritta: `main`, `BEC/.env`
+(ultima modifica 13/11), crontab, servizi e `FEC/dist` intatti; nessun giro vero (cron) era in corso
+(`pgrep` vuoto) e le prove sono finite alle 11:47, ben prima delle 14:15. Chiave Groq vera presa dal
+`.env` senza stamparla; per «Groq rifiuta» una chiave finta (401), per «ambiente vecchio» chiavi finte
+anche per Anthropic, flow e HF (nessuna chiave vera è andata verso quei fornitori).
+
+### Verdetto: PASSA, con un difetto serio non bloccante e cinque piccoli
+
+Nessun difetto bloccante: migrazione, chiave di ricerca MCP, catena Groq -> 7b, tetto di chiamate,
+lucchetto «un giro alla volta», menu/rotte/pagine senza chat, pagine Stato e Avanzamento con i giri
+vecchi: tutto si comporta come dice il disegno. **Ma le tre funzioni di scrittura lunga (brief di
+strategia, bozza di strategia, bozza blog) con Groq arrivano tagliate a metà frase** (sotto, D1). Non è
+nato in questo ramo (su `main` oggi la catena `anthropic -> groq` darebbe lo stesso testo tagliato), ma
+il ramo dice che queste funzioni «restano su Groq» e il cliente le troverebbe rotte: la decisione è di
+Giuseppe prima di dire che «funzionano».
+
+### 1. Suite, migrazioni, tipi, build
+
+```
+$ manage.py makemigrations --check --dry-run        -> No changes detected
+$ manage.py check                                   -> System check identified no issues (0 silenced).
+$ manage.py test core --noinput   (chiavi svuotate, OLLAMA_URL su porta morta)
+Found 317 test(s).
+Ran 317 tests in 40.944s
+OK
+$ cd FEC && npm run build     (tsc -b && vite build, node_modules copiato nella copia, dist della copia)
+✓ built in 19.54s
+```
+317 test come atteso. Il build non ha errori di tipo. Nota: la suite lascia un file vuoto
+`/tmp/medycabrain-test-<pid>.lock` (innocuo; ho tolto il mio).
+
+### 2. Migrazione 0027 su copia realistica (schema 0026, 26 righe in `batch_runs`)
+
+Passi di produzione copiati alla lettera (dal punto 2 della sezione 3):
+```
+reels|0   knowledge_documents|0   uploaded_media|0                    <- nessuna riga 'batched'
+COPY 26      wc -l logs/batch_runs-2026-11.csv -> 27 (titolo + 26)       <- il file va in BEC/logs, ignorato da git
+```
+Rifiuto (messo `reels.enrich_status='batched'` su una riga, poi ripristinato a `done`):
+```
+$ migrate core 0027
+RuntimeError: Ci sono ancora righe nello stato 'batched' {'reel.enrich_status': 1}: consegnate ad Anthropic
+e mai ritirate. Vanno risolte prima di togliere lo stato (riportarle a 'pending' o ritirarle), poi si rilancia la migrazione.
+-> batch_runs ancora 26 righe, ultima migrazione ancora 0026_llmcall_stagerun
+```
+Poi, senza la riga `batched`:
+```
+migrate core 0027   -> Applying core.0027_drop_batchrun... OK     (to_regclass('batch_runs') vuoto)
+migrate core 0026   -> Unapplying core.0027_drop_batchrun... OK    (batch_runs ricreata, 0 righe)
+migrate             -> Applying core.0027_drop_batchrun... OK
+makemigrations --check -> No changes detected
+```
+Non provato: il rientro del file CSV nella tabella ricreata (passo 4 del «tornare indietro»).
+
+### 3. Connettore MCP da client vero (bridge del ramo contro la copia dati, confronto con il bridge di produzione :8025, sola lettura)
+
+Client: SDK `mcp` in Python, trasporto streamable-HTTP, stesso percorso `/<segreto>/mcp` del cliente.
+Gli strumenti elencati sono gli stessi nei due bridge (panoramica, cerca_reel, cerca_articoli, cerca_tutto,
+leggi_reel, leggi_articolo, leggi, cerca_riferimenti, fonti_blog, temi). Esito, ramo (nuovo) contro produzione:
+
+| Chiamata | Risultato | Secondi nuovo / prod |
+|---|---|---|
+| `panoramica` | testo identico | 0,04 / 0,08 |
+| `temi` (all, 34.657 caratteri) | identico | 1,48 / 0,74 |
+| `fonti_blog` | identico | 0,04 / 0,04 |
+| `cerca_reel` «vampate di calore e terapia ormonale bioidentica» | stessi 5 id, stesso ordine, testo identico | 3,26 / 38,21 (prod a freddo) |
+| `cerca_articoli` «progesterone e sonno» | stessi 5 id, stesso ordine | 2,02 / 3,84 |
+| `cerca_tutto` «perimenopausa sintomi ansia» (competitor) | stessi 5 id, stesso ordine | 16,29 / 13,80 (caricamento dei vettori a freddo, uguale in prod) |
+| `cerca_riferimenti` «progesterone e sonno» | stessi 5 id, stesso ordine | 0,89 / 0,73 |
+| `cerca_tutto` «testosterone nella donna» | ordine diverso nelle posizioni 3-5 | 2,67 / 1,74 |
+| `leggi_reel reel:415`, `leggi_articolo blog:1713`, `leggi blog:275` | identici | 0,02-0,04 |
+| errori: `reel:99999999`, `pippo` | stesso messaggio chiaro | 0,01 |
+
+(Il testo differisce solo nel dominio dei link `apri_nel_brain`, perché la copia ha un altro `BRAIN_BASE_URL`: normalizzato, identico.)
+L'unica differenza vera è «testosterone»: l'ordine dipende dal riordino fatto da Groq e **cambia da una
+chiamata all'altra anche sul bridge di produzione** (3 prove ciascuno: prod ha dato due ordini diversi, il
+ramo lo stesso ordine tre volte). Differenza spiegata, non regressione.
+
+**Groq che rifiuta** (chiave finta -> 401; bridge a lato :8126; Ollama caricato con il 7b nel frattempo):
+```
+cerca_reel      28,63 s  (primo uso: caricamento dei vettori; non è Groq)   ordine semplice
+cerca_articoli   2,11 s
+cerca_tutto      2,22 s
+cerca_riferimenti 4,05 s
+llm_calls: una riga groq 'failed' (LLMCreditError ... 401); nessuna riga ollama; il log dice
+"[rerank] fallito, tengo l'ordine del blend: LLMRemoteUnavailable(...)"; 0 menzioni di ollama/11434.
+```
+La ricerca risponde lo stesso, in 2-4 secondi a caldo, senza toccare Ollama. (Provato solo il 401; il 429 «al
+minuto» sul riordino è coperto dai test, non l'ho provocato.)
+
+### 4. Giro vero della pipeline a lato (3 reel + 3 articoli rimessi in attesa nella copia)
+
+Reel 765, 697, 848 (`enrich` e `argument` -> `pending`), articoli 234, 1938, 330 (idem). Parcheggiati nella copia 6
+reel «da trascrivere» (audio non presenti nella copia) e 35 articoli con affermazioni in attesa, così il giro tocca
+solo i sei scelti. `--skip-scrape --skip-blogscrape` (non ho voluto fare richieste vere a Instagram né ai blog: vedi sotto).
+
+`run_pipeline --dry-run`: elenca 8 stadi (scrape, download, transcribe, enrich, embed, blogscrape, knowledge,
+cluster), nessun `batch`, nessun lucchetto preso.
+
+**A. Groq vero** (`--limit 3`): 
+```
+download 0.1s · transcribe 0.0s · enrich 12.2s {'enriched': 3, 'arguments': 18, 'enrich_failed': 0} · embed 37.1s
+knowledge 43.3s {'enriched': 3, 'arguments': 18, 'enrich_failed': 0} · cluster 55.8s
+stage_runs: 6 righe, nessun 'batch', tutte done
+llm_calls: groq/gpt-oss-120b 12 riuscite (1,3 s l'una); 5 'failed' = rate limit, ciascuna seguita da attesa vera:
+  "[llm] groq rate-limited — waiting 3s (1/6)", 9s, 12s, 12s, "2s (2/6)"   -> nessun contenuto è finito sul 7b
+```
+Zero chiamate `ollama`; `enrichments.llm_model` = `openai/gpt-oss-120b`; `owner_type` invariato (competitor).
+L'attesa sul tetto al minuto l'ho vista accadere davvero (5 volte), non solo nel test con il finto.
+
+**B. Groq rifiuta** (chiave finta; `PIPELINE_LOCAL_MAX_CALLS=2` per non aspettare ore):
+```
+enrich 289.3s {'enriched': 2, 'deferred': 3, 'stopped': 'tetto di chiamate al modello locale'}
+knowledge 0.1s {... 'deferred': 3, 'stopped': 'tetto di chiamate al modello locale'}
+"Fermato: usate le 2 chiamate al modello locale del giro. 3 restano in attesa per il giro dopo."  (nota di stage_runs)
+stato finale: reel 697 e 848 enrich=done argument=pending; reel 765 enrich=pending; 3 articoli enrich=pending; ZERO failed
+llm_calls: 1 riga groq failed (401, 0 s), poi ollama qwen2.5:7b-instruct-q4_K_M, una alla volta (11:15:49-11:18:32, poi 11:18:33-11:20:38), 0 troncate
+```
+Secondi veri sul 7b (analisi di un reel, 840-1.513 token letti, 163-299 scritti, tetto 1.200-2.000):
+
+| Chiamata | Totale | Caricamento | Lettura | Scrittura |
+|---|---|---|---|---|
+| 1ª (a freddo) | 163 s | 22 s | 97 s | 44 s |
+| 2ª | 126 s | 0 | 70 s | 55 s |
+| 3ª (giro C) | 99 s | 0 | 65 s | 34 s |
+| 4ª (giro C, affermazioni) | 119 s | 0 | 55 s | 64 s |
+| 5ª (giro D: Ollama riavviato da un altro servizio, vedi D5) | **342 s** | **184 s** | 62 s | 96 s |
+
+Media sulle prime quattro **127 s** (non i 251 s del calcolo del disegno: i prompt erano più corti, 840-1.500 token).
+Con il caricamento rifatto, 342 s. Nessuna chiamata è arrivata vicino al tetto di 1.500 s.
+Qualità del 7b: JSON valido e italiano leggibile sui 3 reel; ma su un reel traduce «brain fog» con «fuga del cervello»
+(il 120b aveva scritto «brain fog»). I temi sono più generici, come previsto dal disegno.
+
+**C. Un job di link mentre un giro lavora** (giro locale in corso con il lucchetto preso; `POST /uploads/from-links/`
+con una pagina NHS): il job `link_transcribe` finisce in <10 s su Groq (2 chiamate `job:link_transcribe`, 0,8 s e 1,4 s), crea l'articolo 2269
+(`owner_type=competitor`). Il lucchetto non lo tocca e il suo lavoro non passa dal 7b. (Provato con un link, non con un file audio/video.)
+
+### 5. Lucchetto (percorso a lato in `PIPELINE_LOCK_PATH`, mai quello vero)
+
+```
+giro 1 in corso (enrich locale)  ->  secondo giro:
+[10:16:53 UTC] ✗ un altro giro sta già lavorando: questo non parte (uno alla volta; riprova quando ha finito)
+exit=3        (nessuna riga in stage_runs dal secondo giro)
+POST /ops/run/ (bottone «Aggiorna ora») con un giro vivo -> {"detail":"L'aggiornamento automatico è già in corso in questo momento. Riprova quando è finito.","already_running":true}
+kill -9 del primo giro (cluster, dopo 12 s) -> il file del lucchetto resta (0 byte) ma un terzo giro parte subito e finisce exit=0
+```
+Dopo il `kill -9` la riga `stage_runs` del giro ucciso (id 40, cluster) resta `running` per sempre; la pagina Avanzamento
+la ignora e dice «Non sta girando niente» (comportamento già così; lo scrivo perché si vede nei dati).
+
+### 6. L'app da utente vero (Chromium headless a 1280 px e a 380 px, accesso dalla pagina di login)
+
+- **La chat non c'è più**: il menu (desktop e mobile, aperto con l'hamburger) ha Libreria, Analytics, Timeline, Cluster,
+  Piano editoriale, Mappa (DAG), Workspace, Fonti, Documentazione, Stato pipeline, Avanzamento. `/knowledge-bank` e
+  `/knowledge-bank?q=x` finiscono in Home (desktop e mobile). Su 11 pagine controllate il testo non contiene mai «chat»;
+  17 link interni distinti raccolti: nessuno verso `knowledge`/`chat`. `POST /knowledge/ask/` = 404, `GET /knowledge/search/` = 200.
+- **Pagina `Documentazione`**: nessuna parola su Anthropic, Sonnet, Opus, Claude (salvo «il tuo Claude» del connettore), batch, flow,
+  HuggingFace; «Analisi in blocco (non più in uso)» compare solo nello storico dei giri vecchi. La tabella dei modelli dice:
+  Analisi `gpt-oss-120b -> riserva: qwen2.5:7b-instruct-q4_K_M`; Piano editoriale e Riordino «solo Groq, nessuna riserva».
+- **`ContentDetail`** (`/content/blog/275`, `/content/reel/415`) si apre da link diretto, desktop e mobile; il tasto «Chiudi» porta
+  in `/`; un id inesistente (`/content/blog/99999999`) mostra «Questo contenuto non esiste più...» e «Torna alla Home» porta in `/`.
+- **Stato e Avanzamento**: lo storico dei giri (15 nov 10:07, 03:30...) disegna i giri vecchi con «Analisi in blocco (non più in uso)»,
+  senza riquadro «In consegna». Durante il giro B la pagina Avanzamento mostrava lo stadio «Analisi dei contenuti — In corso — modello
+  locale», la riga «@manupausa · ... sta scrivendo qwen2.5:7b... 2 min 160 token», e dopo il giro D la nota **«Fermato: usate le 1 chiamate
+  al modello locale del giro. 1 restano in attesa per il giro dopo.»** (desktop e mobile). Stato mostra «3 reel da lavorare» (i `pending`).
+- **Vuoto / caricamento / errore**: Workspace vuoto «Niente qui ancora.»; piano editoriale in caricamento («Costruisco il piano...», pulsante
+  con rotellina, toast con barra) e in errore (toast rosso «Fallita»).
+- **Funzioni di scrittura con Groq vero** (`openai/gpt-oss-120b`), una prova ciascuna:
+  - **Piano editoriale** (dal bottone «Genera un piano», 6 contenuti): 6,1 s, 2.643 token su 3.600. **Usabile.** Italiano corretto, argomenti
+    plausibili con il «perché» ancorato ai numeri (es. «Competitor ha 12 reel su cortisol e sonno, Medyca non ha contenuti...»).
+    Piccolo difetto: trattini non separabili (U+2011) in «anti‑aging», «GLP‑1».
+  - **Ideazione** (4 idee): 1,4 s, 509 token. **Usabile** (argomento e motivazione ok; gancio e formato vuoti, come da prompt attuale).
+  - **Brief di strategia** («progesterone bioidentico e sonno in perimenopausa»): 2,2 s, **900 token su 900 = tagliato** (3.177 caratteri,
+    finisce con «Azione sul GABA e»). **Non usabile così com'è.**
+  - **Bozza di strategia**: 2,7 s, **1.200 su 1.200 = tagliata** (finisce dentro una tabella: «Assenza di utero + insonnia»). Contiene
+    dosaggi precisi («100 mg mattina + 100 mg sera»): il testo medico va riletto da una persona.
+  - **Bozza blog** («Espandi articolo» da `ClusterDetail`, via UI): 3,0 s, **1.200 su 1.200 = tagliata** a metà frase («...per via transdermica o vaginale,»).
+  - **Piano con Groq che rifiuta**: il lavoro fallisce subito con **«Errore: Il servizio dei modelli ha raggiunto il suo limite in questo
+    momento. Riprova più tardi.»** (job 98: `LLMRemoteUnavailable`, 1 riga `groq failed`, 0 chiamate ollama). I 38 s del job sono il caricamento
+    dei vettori a freddo, non l'attesa di Groq.
+
+Screenshot guardati (cartella `.../scratchpad/coll/shots/`): home, libreria, menu mobile aperto, Avanzamento (in corso, fermo, con nota del tetto),
+Stato (coda e storico), Documentazione (storico e modelli), ContentDetail (desktop/mobile/404), piano in caricamento e in errore (380 px).
+
+### 7. Ambiente vecchio con codice nuovo (`LLM_ENDPOINTS=anthropic,groq,flow`, `BATCH_*`, `ANTHROPIC_*`, `HF_*`)
+
+```
+manage.py check                   -> System check identified no issues (0 silenced).
+client._providers()               -> [anthropic(base https://api.anthropic.com), groq, flow]   (le chiavi Anthropic/flow erano finte)
+chat_json x3                      -> {'ok': True} in 0,48 / 0,62 / 0,50 s
+WARNING llm.client [llm] anthropic: anthropic has no model 'claude-sonnet-5'      (ad ogni chiamata)
+llm_calls: anthropic failed x3 (LLMModelMissing) + groq done x3
+```
+**Va avanti, senza errore e senza crash**, ma *rumoroso e sprecone*: l'endpoint `anthropic` resta il primo della catena, viene tentato con il
+dialetto OpenAI (`/chat/completions` su `api.anthropic.com`, risposta 404), scrive una riga `failed` in `llm_calls` e un WARNING **a ogni chiamata**,
+poi passa a Groq. Con la chiave vera sarebbe stata mandata a Anthropic a ogni chiamata (D2). Dimenticare il `.env` quindi non rompe nulla, ma sporca
+`llm_calls` (le righe `anthropic` non sparirebbero dal controllo del passo 7 del rilascio) e allunga ogni chiamata di ~0,3 s.
+
+### Difetti
+
+**Bloccanti: nessuno.**
+
+**Non bloccanti (in ordine di gravità)**
+
+- **D1 (serio). Brief di strategia, bozza di strategia e bozza blog escono tagliati a metà frase con Groq** (900/900, 1.200/1.200, 1.200/1.200 token).
+  Tre prove su tre: è il caso normale, non un caso raro. Sul 120b i token di ragionamento contano nel tetto. In più `llm_calls.truncated` resta `false`
+  (la risposta Groq tagliata torna come stringa: è il limite già scritto nella sezione 3), quindi nessuno se ne accorge e la pagina Avanzamento non lo mostra.
+  Non è una regressione del ramo (su `main` la catena `anthropic -> groq` darebbe lo stesso), ma il ramo dichiara che queste funzioni restano su Groq.
+  Da decidere: alzare i tetti (strategia 900 -> ~1.800, bozze 1.200 -> ~2.400) e/o trattare `finish_reason=length` di Groq come `truncated`.
+- **D2. Ambiente vecchio: ogni chiamata prova prima `anthropic`** (sezione 7). Basta il passo 3 del rilascio (pulire il `.env`) o ignorare nel codice
+  gli endpoint con nome sconosciuto. Se il `.env` non viene pulito, la chiave Anthropic vecchia continua a uscire verso `api.anthropic.com`.
+- **D3. Mobile 380 px: il toast di errore taglia «Riprova più tardi»** («Errore: Il servizio dei modelli ha raggiunto il suo...»): la frase che dice
+  cosa fare è proprio quella nascosta. Il messaggio dice «limite» anche quando la chiave è rifiutata (401).
+- **D4. Avanzamento, stima del 7b ottimistica**: durante una chiamata locale la pagina diceva «MANCANO circa 12 s» e «velocità 5,2 al min» mentre la riga
+  sotto diceva «di solito ancora circa 4 min · al massimo 21 min». Testo: «le 1 chiamate» (singolare).
+- **D5. Il 7b condivide la macchina**: durante il giro D un altro servizio (`medyca-crm-dev/transcriber`, 226% CPU) girava e Ollama si è riavviato alle 11:43: la
+  chiamata ha chiesto 342 s (184 s di solo caricamento) contro 99-163 s delle altre. Il tetto di 40 chiamate vale quindi 1,1-3,8 ore, non 2,8.
+- **D6. Qualità del 7b** su un reel («fuga del cervello» per «brain fog»); atteso dal disegno, ma conferma che i temi generati dal locale vanno guardati.
+
+**Già presenti su `main`, non del ramo (non verificati su main, solo visto che i file non sono toccati)**: tabella «Ultime esecuzioni» di `Documentazione`
+tagliata a destra a 380 px (colonne «Quando/Durata»); nella stessa pagina «ogni giorno alle 04:00 — Aggiornamento completo» mentre il crontab alle 04:00 lancia
+`prune_llm_calls`; titoli di fonti con testo rovinato («â» al posto del trattino) nei brief; riga `stage_runs` che resta `running` dopo un `kill -9`;
+immagini dei reel rotte nella mia copia (mancano i file in `media/`: è la copia, non il ramo).
+
+### Cosa NON ho potuto provare, e perché
+
+- **Stadi `scrape` e `blogscrape`**: saltati nel giro (non volevo fare richieste vere a Instagram dall'IP di produzione né ai blog). Il dry-run li elenca; il loro
+  codice non è toccato da questo ramo, salvo che `blogscrape`/`knowledge` usano la catena nuova.
+- **Trascrizione vera**: nella copia non ci sono i file audio (6 reel «da trascrivere» parcheggiati). Provato solo un link-articolo; **non un upload di file audio/video** né un link YouTube.
+- **Il servizio vero `medycabrain-mcp`** (riavvio, passaggio da Caddy/Cloudflare, accesso OAuth di claude.ai): ho provato il codice del ramo in un bridge a lato; il riavvio dei due
+  servizi, il `.env` pulito e la ricerca «vera» dal Claude del cliente restano al rilascio.
+- **Il cron vero** (03:30/14:15) contro il lucchetto: provato con processi a mano e un percorso di lucchetto a lato, non con due `cron` reali.
+- **Un 429 di Groq sul riordino MCP** (provato solo il 401), e il tetto *giornaliero* di Groq con i modelli fratelli (coperto da test, non provocabile senza consumare il tetto).
+- **Giro grosso e tetto di 40 chiamate**: usato 1-2 come tetto; non 40 in fila (sarebbero ore). Le ore reali vanno guardate in `llm_calls` il 29/11, come deciso.
+- **Il rientro del CSV** nel «tornare indietro» e `ollama rm` / `pip uninstall anthropic` (passi di rilascio, non toccati).
+- **La rete di test** resta sottile sulla parte visiva: un verde dei 317 test non dice nulla sul toast a 380 px o sul testo tagliato; li ho visti solo guardando.
+
+### Fine prova
+
+Postgres a lato fermato e cartella dati cancellata; backend (:9193), ponti MCP (:8125, :8126) e interfaccia (:9194) spenti, porte libere; file di ambiente con le chiavi,
+token di prova, copie dati e log con il percorso segreto cancellati; `BEC/logs` della copia cancellato; `/tmp/medycabrain-test-*.lock` tolto. Cartella principale: ancora su
+`main`, `git status` vuoto, `BEC/.env` non toccato; `:9093` risponde 200. In `/tmp` resta solo `medycabrain-ollama.lock` (è il lucchetto vero di Ollama, non mio).
+Il file `.claude/tasks/2026-11-14-analisi-in-casa.md` **della copia** ha la sezione 5 scritta e non è committato.
 ## 6. Rilascio           (rilasciatore)
 ## Registro delle decisioni
 
@@ -1141,3 +1484,13 @@ Un campione solo, prompt piccolo (905 token, non i 1.500 di un'analisi media).
      Groq → locale (lettura del capo, non contestata da Giuseppe).
   Vale solo la sezione «Revisione del disegno (15/11)»; tutto il disegno sopra
   è superato, tranne i fatti misurati.
+- 2026-11-15 - **Primo giro: revisione passa (R1-R6), collaudo passa (D1-D6).**
+  Nessun bloccante, ma il capo rimanda allo sviluppatore per un giro di
+  correzione prima della PR, perché quattro punti toccano il cliente:
+  R1 (ricerca MCP che può aspettare 120 s), R2 (Groq fuori uso senza dirlo),
+  R3 (contenuti `failed` senza colpa), D1 (strategia e bozze tagliate a metà
+  frase su Groq, 3 prove su 3, senza segnale). Si correggono anche D2 (nomi
+  di fornitore sconosciuti nel `.env` ignorati con un avviso, così una chiave
+  vecchia non esce più), D3, D4. R4, R5, R6, D5, D6 vanno nei limiti noti e
+  nei passi di rilascio. D6 e i dosaggi nella bozza di strategia: la qualità
+  dei testi va riletta da una persona, è scritto tra i limiti.

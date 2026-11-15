@@ -35,7 +35,7 @@ from django.db.models import Q
 from core import progress
 from core.models import DONE, FAILED, PENDING, SKIPPED, Enrichment, Reel, ReelArgument
 from llm import client, prompts
-from llm.client import LLMLocalBudget, LLMRateLimit
+from llm.client import NOT_THE_ITEMS_FAULT, LLMLocalBudget, LLMRateLimit
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def _tracked(call, item):
     progress.start_item(*progress.describe(item))
     try:
         out = call()
-    except LLMLocalBudget:
+    except NOT_THE_ITEMS_FAULT:
         # Not tried, not failed: it stays pending for the next round.
         progress.item_done("skipped")
         raise
@@ -119,16 +119,34 @@ def _parallel(reels, fn):
                 yield reel, None, exc
 
 
-def note_local_budget(deferred: int) -> str:
-    """Say, on the stage and in the log, that the round stopped on its cap of
-    local calls and what it left for the next one."""
+def note_stopped(deferred: int, exc: BaseException | None = None) -> str:
+    """Say, on the stage and in the log, that the round stopped without being
+    able to try some items — and why — and what it left for the next one.
+
+    Two reasons, neither a failure of the content: the round used its cap of
+    local calls, or the local model could not be reached (busy, stopped). If a
+    remote provider is switched off (refused key) that is said too: it is the
+    reason the work was on the slow model at all."""
     from django.conf import settings
 
-    text = (f"Fermato: usate le {settings.PIPELINE_LOCAL_MAX_CALLS} chiamate al "
-            f"modello locale del giro. {deferred} restano in attesa per il giro dopo.")
+    if isinstance(exc, client.LLMLocalUnavailable):
+        why = "il modello locale non era disponibile (occupato o spento)"
+    else:
+        n = settings.PIPELINE_LOCAL_MAX_CALLS
+        why = (f"usate le {n} chiamate al modello locale del giro" if n != 1 else
+               "usata la chiamata al modello locale del giro")
+    text = f"Fermato: {why}. {deferred} restano in attesa per il giro dopo."
+    if client.remote_problem():
+        text = f"{client.remote_problem()}. {text}"
     progress.note(text)
     logger.warning("[pipeline] %s", text)
     return text
+
+
+def note_remote_problem() -> None:
+    """A stage that finished normally still says if Groq was switched off."""
+    if client.remote_problem():
+        progress.note(client.remote_problem())
 
 
 _MIN_CAPTION_CHARS = 80  # below this a caption is hashtags/greetings, not content
@@ -356,11 +374,11 @@ def run(ctx) -> dict:
     # be re-evaluated per worker.
     reels = list(qs)
     progress.open(len(reels), "reel", "Analisi")
-    stopped = False
+    stopped, stop_exc = False, None
     for reel, _res, exc in _parallel(reels, _enrich_one):
-        if isinstance(exc, LLMLocalBudget):
+        if isinstance(exc, NOT_THE_ITEMS_FAULT):
             # Left pending on purpose, and the rest of the list with it.
-            stopped = True
+            stopped, stop_exc = True, exc
             deferred = sum(1 for r in reels if r.enrich_status == PENDING)
             break
         if exc is None:
@@ -383,8 +401,8 @@ def run(ctx) -> dict:
     arg_list = list(qs2)
     progress.open(len(arg_list), "reel", "Affermazioni")
     for reel, n, exc in _parallel(arg_list, _extract_arguments):
-        if isinstance(exc, LLMLocalBudget):
-            stopped = True
+        if isinstance(exc, NOT_THE_ITEMS_FAULT):
+            stopped, stop_exc = True, exc
             deferred += sum(1 for r in arg_list if r.argument_status == PENDING)
             break
         if exc is None:
@@ -406,7 +424,11 @@ def run(ctx) -> dict:
     out = {"enriched": enriched, "enrich_failed": failed,
            "arg_reels": arg_reels, "arguments": total_args, "arg_failed": arg_failed}
     if stopped:
-        note_local_budget(deferred)
+        note_stopped(deferred, stop_exc)
         out["deferred"] = deferred
-        out["stopped"] = "tetto di chiamate al modello locale"
+        out["stopped"] = ("modello locale non disponibile"
+                          if isinstance(stop_exc, client.LLMLocalUnavailable)
+                          else "tetto di chiamate al modello locale")
+    else:
+        note_remote_problem()
     return out

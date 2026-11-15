@@ -250,6 +250,7 @@ def _rank(index: list[dict], query: str, qvec) -> list[tuple[float, dict, float]
 
 
 RERANK_POOL = 15  # candidates the LLM reranker reorders before the top_k cut
+RERANK_TIMEOUT = 10  # seconds the search waits for Groq's reorder, then plain order
 
 
 def semantic_search(query: str, top_k: int = 6, scope: str = "all",
@@ -408,7 +409,11 @@ def _rerank(query: str, hits: list[dict]) -> list[dict]:
                 # remote_only: the local 7b would need ~1m45 for this and queue
                 # behind the pipeline for up to 15 min; the client would see a
                 # frozen search. If Groq refuses we answer at once in plain order.
-                model=client.model_for("bulk"), retries=0, remote_only=True)
+                model=client.model_for("bulk"), retries=0, remote_only=True,
+                # timeout: Groq answers this in 2-3 s. A slow answer must not
+                # hold the client's search for the 120 s a remote call may
+                # take: after RERANK_TIMEOUT the plain order answers.
+                timeout=RERANK_TIMEOUT)
         order = data.get("ordine") if isinstance(data, dict) else None
         if not order:
             return hits

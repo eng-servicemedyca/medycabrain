@@ -61,11 +61,13 @@ Errors, and what each one does to the chain:
 |---|---|---|
 | 429, per minute | `LLMRateLimit` | **waited out, up to `LLM_RATE_WAITS` (6) times**, each as long as `retry-after` says (1-60 s; Groq said 1-21 s on 2026-11-15), and only then the next link. `retries=0` means «fail fast»: no waiting (the search reranker) |
 | 429, per day | `LLMRateLimit(daily=True)` | not waited for (it will not refill): walks that provider's own `_MODEL_CHAIN` — free tiers cap tokens per model per day, so a sibling model still has budget — then the local model |
-| 401 / 402 / 403 | `LLMCreditError` | **that endpoint only** is skipped for the rest of the process; the next one answers |
+| 401 / 402 / 403 | `LLMCreditError` | that endpoint is **skipped for `LLM_RETRY_DISABLED_AFTER` (600 s), then tried again** (the MCP connector is a long process: one passing 403 must not switch its reranker off until a restart); the next link answers meanwhile. It is **said**, not only logged: the running stage's note reads «Groq non risponde: chiave rifiutata; il lavoro va sul modello locale» (`client.remote_problem()`), on Avanzamento |
 | 404 | `LLMModelMissing` | the provider is fine, the model name is not on it: move to the next endpoint **without** disabling this one |
 | anything else | logged at WARNING, retried (`retries`, backoff 1-2 s), then next endpoint | a misconfigured provider must never fail silently |
 | local answer cut (token ceiling or time ceiling) | `LLMTruncated` | **an error, not a half string**; **not retried**; the call row is `failed` + `truncated` |
-| local slot taken, wait ran out | `LLMBusy` | **not retried** (it used to be, up to 3 × 900 s = 45 min before failing) |
+| local slot taken, wait ran out | `LLMBusy` (a `LLMLocalUnavailable`) | **not retried** (it used to be, up to 3 × 900 s = 45 min before failing); does not use the round's allowance |
+| Ollama not reachable (stopped, restarting) | `LLMLocalUnavailable` | not retried; no allowance used. **Not the content's fault**: with the budget error it is in `NOT_THE_ITEMS_FAULT`, and the stage leaves the item `pending` |
+| Groq answer cut (`finish_reason: length`) | `LLMTruncated` | **raised at once** (not sent to the 7b, which would be cut at the same place minutes later); row `failed` + `truncated`; the job says «Riprova: la risposta del modello è stata tagliata…». A free text (strategy, drafts) is never handed over half written |
 | round used its local calls | `LLMLocalBudget` | not retried; reaches the stage as itself — see below |
 | `remote_only` and no remote link answered | `LLMRemoteUnavailable` | the caller decides (plain order / «Riprova più tardi»); the local model is never asked |
 
@@ -132,10 +134,16 @@ What that forces, all in `llm/client.py` and `config/settings/base.py`:
 | `OLLAMA_PIPELINE_TIMEOUT` | 1500 s | ceiling of one local answer when the caller gave none (533 s writing + 123 s load, with room). It used to be 240: an average answer needs 251 |
 | `PIPELINE_LOCAL_MAX_CALLS` | 40 | ≈ 2.8 h of local work per round; `0` = no cap. Without it a night with Groq down asks for ~9 h and lands on the 14:15 round |
 | `LLM_RATE_WAITS` | 6 | waits on Groq's per-minute cap before going local |
+| `LLM_RETRY_DISABLED_AFTER` | 600 s | a refused key is tried again after this long |
 | `ENRICH_WORKERS` | **1** (was 5) | the limit is Groq's per-minute token cap, not the thread count: five threads retrying together pushed 169 of 287 Groq calls into a refusal on 2026-11-15 |
 
-Callers with their own ceiling: strategy brief/draft 900 s, ideation 900 s (was 600), blog
-interview/expand/draft 1200 s (was 600-700), editorial plan 900 s but **Groq only**.
+Callers with their own ceilings (second round, after the test: on `gpt-oss-120b` the reasoning tokens
+count against `max_tokens`, and strategy brief, strategy draft and blog draft came back **cut
+mid-sentence 3 times out of 3**): strategy brief 900→**1800** tokens, strategy draft 1200→**2400**,
+blog interview 1600→**3200**, expand 1200→**2400**, draft 1400→**2800**; time ceilings 1800 s for those
+and 900 s for ideation (was 600) and the editorial plan (Groq only). Real check on Groq, 2026-11-15:
+brief 834 tokens used of 1800, strategy draft 1429 of 2400 (it would have been cut at the old 1200),
+blog draft 672 of 2800, all `finish_reason` ≠ `length`.
 
 **Work that never goes local** (`chat(..., remote_only=True)`): the editorial plan (3,600 tokens ≈
 21 min + reading, against a 15 min ceiling, and a JSON that long breaks easily on a 7b), the MCP
@@ -177,9 +185,21 @@ Known limits (written the moment they were known):
   themes and invented quotes; the quote check drops invented quotes, generic themes pass. Groq's
   `gpt-oss-120b` has never written strategy, plan or drafts for this project (the last ones, in
   July-August, came from Claude through the removed reseller): read one of each.
-- A truncated **Groq** answer (`finish_reason: length`) is still returned as is; only the local
-  model raises `LLMTruncated`.
-
+- **Waiting on Groq has no overall ceiling**: up to 6 waits × 60 s = 360 s per call, about 1,080 s
+  when the daily cap walks the sibling models; a «request too large for the minute» 429 wastes all
+  six waits. Acceptable for a night round, not measured for a job a person is waiting for.
+- **The local model slows down a lot if another program shares the machine** (2026-11-15: a
+  service at 226% CPU, Ollama restarted by itself, 342 s for one call against 99-163 s): the cap of
+  40 local calls is **1.1-3.8 hours**, not a fixed 2.8.
+- **Texts written by a model must be re-read by a person** (strategy brief and draft, blog drafts,
+  editorial plan). Drafts can contain **dosages and medical statements**; no check verifies them.
+  The 7b also garbles terms (a reel's «brain fog» became «fuga del cervello»): its themes and
+  analyses are to be looked at.
+- `LLM_ENDPOINTS` accepts only the names the code knows (`groq`). Any other (`anthropic`, `flow`,
+  `hf`…) is **ignored with one warning at startup and no request is ever made**, so a key left in an
+  old `.env` cannot leave the machine.
+- The search reranker waits **10 s at most** for Groq (`knowledge.RERANK_TIMEOUT`), then answers in
+  plain order.
 ### What is recorded for each call
 
 `llm/usage.py`, hooked in `chat()` (`llm/client.py`) — the one place all 16 callers pass

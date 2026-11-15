@@ -97,7 +97,7 @@ return [_hit(h) for h in hits]   # "reel" | "blog" | None
   (~2.6s vs 11–14s) and nothing survives the rerank only to be discarded. See
   [03-llm-and-embeddings](03-llm-and-embeddings.md#semantic_searchquery-top_k-scope-rerank).
 - `rerank=True` — Claude gets an LLM-sharpened order. Since 2026-11-15 the reranker is
-  **Groq only** (`remote_only=True` on the `chat()` call, `gpt-oss-20b`, 2-3 s): it **never falls
+  **Groq only** (`remote_only=True` on the `chat()` call, `gpt-oss-20b`, 2-3 s, **waits 10 s at most**: `RERANK_TIMEOUT`, then plain order; a refused key switches it off only for 10 minutes): it **never falls
   to the local model** (a 7b would take minutes and the client would see a frozen search). If
   Groq refuses (per-minute cap, daily cap, key) the search answers **at once with the plain
   order** — `0.75·cosine + 0.25·lexical`, owned/competitor quotas — and never with an error.

@@ -97,6 +97,12 @@ def _stage_dict(s: models.StageRun, now, calls: list[models.LLMCall],
             spi = _previous_rates().get(s.stage)
             if spi:
                 rate, rate_source = 1 / spi, "previous"
+        if any(c.is_local for c in calls):
+            # A local call is under way: one item takes ~4 minutes (up to 9) and
+            # the speed so far came from the fast items (Groq, 1-2 s each). On
+            # 2026-11-15 the page said "mancano circa 12 s" under a line that
+            # said "di solito ancora circa 4 min". No estimate beats a false one.
+            rate = rate_source = None
         if rate:
             eta = round(max(s.total - processed, 0) / rate)
 

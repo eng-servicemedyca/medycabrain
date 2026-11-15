@@ -370,7 +370,9 @@
         "Le analisi dipendono da Groq, un servizio esterno gratuito. Ha un limite di lavoro al minuto e uno al giorno, e può cambiarlo o ritirare un modello senza avvisare. Un giro grosso usa da solo quasi tutto il limite di una giornata: il giro del pomeriggio e le funzioni che premi a mano (piano editoriale, ideazione) possono trovarne poco.",
         "Quando Groq non basta lavora il modello installato sul nostro server. È molto più lento (una singola analisi può chiedere fino a 9 minuti) e la sua qualità su questi contenuti non è ancora stata provata: con le prove fatte finora i temi sono usciti più generici e a volte le citazioni erano inventate; il controllo scarta quelle che non si ritrovano nel testo, ma i temi generici passano. Ogni giro può usarlo al massimo 40 volte: ciò che resta aspetta il giro dopo, resta «in attesa» (non «fallito») e la pagina Avanzamento lo scrive.",
         "Il piano editoriale e il riordino dei risultati della ricerca usano solo Groq, senza riserva sul server. Se Groq è al limite il piano dice «Riprova più tardi» e la ricerca risponde subito con l'ordine semplice, senza dare errore.",
-        "Parte un solo aggiornamento alla volta: se ne parte un secondo mentre il primo lavora, il secondo si ferma e lo scrive nel registro."
+        "Parte un solo aggiornamento alla volta: se ne parte un secondo mentre il primo lavora, il secondo si ferma e lo scrive nel registro.",
+        "Un testo scritto da un modello (brief e bozza di strategia, bozze del blog, piano editoriale) va sempre riletto da una persona prima di usarlo. Nelle bozze compaiono anche dosaggi e indicazioni mediche: il modello può sbagliarli, e nessun controllo automatico li verifica. Se la risposta del modello viene tagliata prima della fine, la piattaforma lo dice e non ti mostra il testo a metà.",
+        "Se sullo stesso server lavora un altro programma, il modello locale rallenta molto (anche il doppio) e il limite di 40 chiamate per giro può voler dire da circa un'ora a quasi quattro. Quando Groq rifiuta la chiave, la pagina Avanzamento lo scrive sullo stadio: «Groq non risponde: chiave rifiutata; il lavoro va sul modello locale»."
       ]
     },
     "models": {
@@ -791,11 +793,12 @@
     "machineTime": "{{duration}} di macchina",
     "waitedFor": "in attesa {{duration}}",
     "tokensInOut": "{{tin}} token letti, {{tout}} scritti",
-    "calls": "{{n}} chiamate",
+    "calls_one": "{{count}} chiamata",
+    "calls_other": "{{count}} chiamate",
     "failedCalls": "{{n}} non riuscite",
     "total": "Totale",
     "remoteTitle": "Modelli remoti, per confronto",
-    "remoteLine": "{{calls}} chiamate · {{tokens}} token · {{duration}} di attesa della risposta",
+    "remoteLine": "{{calls}} · {{tokens}} token · {{duration}} di attesa della risposta",
     "speedLine": "Velocità del modello locale nelle ultime 24 ore: {{n}} token al secondo ({{model}}).",
     "speedNone": "Velocità del modello locale: nessuna chiamata nelle ultime 24 ore."
   }
