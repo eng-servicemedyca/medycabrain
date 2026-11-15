@@ -1430,6 +1430,123 @@ Postgres a lato fermato e cartella dati cancellata; backend (:9193), ponti MCP (
 token di prova, copie dati e log con il percorso segreto cancellati; `BEC/logs` della copia cancellato; `/tmp/medycabrain-test-*.lock` tolto. Cartella principale: ancora su
 `main`, `git status` vuoto, `BEC/.env` non toccato; `:9093` risponde 200. In `/tmp` resta solo `medycabrain-ollama.lock` (è il lucchetto vero di Ollama, non mio).
 Il file `.claude/tasks/2026-11-14-analisi-in-casa.md` **della copia** ha la sezione 5 scritta e non è committato.
+### Secondo giro (collaudo del 15/11, 12:00-12:25, commit `8e5d1bd`)
+
+Stessa impostazione del primo giro: copia a lato, Postgres usa-e-getta (porta 55461) con una copia nuova di sola lettura dei dati di
+produzione, backend :9193, ponte MCP :8125, interfaccia :9194. Per forzare i casi difficili ho scritto un **finto Groq a lato** (:9300, compatibile
+OpenAI) che a comando inoltra al Groq vero, risponde «tagliata» (`finish_reason: length`), risponde 401 o accetta e non risponde mai; e due
+**ascoltatori finti** (:9291, :9292) al posto di Anthropic e flow per contare le richieste. Controllato `pgrep -af run_pipeline`: nessun giro vero
+(il cron delle 14:15 è lontano). Produzione, `.env` (ultima modifica 13/11), crontab, servizi, `FEC/dist`: non toccati.
+
+**Verdetto: PASSA.** Nessun bloccante; tutti i rilievi del primo giro sono risolti nei casi provati. Restano tre osservazioni piccole (sotto).
+
+**1. Suite, migrazione, tipi, build**
+```
+Found 336 test(s).   Ran 336 tests in 39.400s   OK
+makemigrations --check --dry-run -> No changes detected      manage.py check -> no issues
+npx tsc --noEmit -> tsc=0                                    npm run build -> ✓ built in 20.55s
+/tmp dopo la suite: solo medycabrain-ollama.lock (quello vero di Ollama); nessun medycabrain-test-*.lock
+migrate sulla copia nuova -> Applying core.0027_drop_batchrun... OK
+```
+
+**2. D1 da utente vero.** Con Groq vero (note: il limite giornaliero del 120b a un certo punto si è esaurito per i miei test e la catena è passata ai modelli fratelli, vedi sotto):
+- Brief di strategia: 2,8 s, 1.172 token su tetto 1.800, 4.187 caratteri, finisce con una frase intera («...sul timing di assunzione.»).
+- Bozza di strategia: 4,1 s, 1.727 su 2.400 (col vecchio tetto 1.200 sarebbe stata tagliata), 5.981 caratteri, finisce con l'elenco delle fonti, completo.
+- Bozza blog (bottone «Espandi articolo» nell'interfaccia, `ClusterDetail`): 3,4 s, 1.399 su 2.400, 5.099 caratteri, chiude con una nota entro la frase.
+- (Il brief e la bozza di strategia non hanno un bottone nell'interfaccia: li ho lanciati con `POST /second-brain/briefs/analyze/` e `/briefs/<id>/draft/`, come nel primo giro.)
+
+Taglio forzato (finto Groq in modalità `length`):
+```
+job 95 strategy        failed  «Errore: Riprova: la risposta del modello è stata tagliata prima della fine e non la mostro a metà.»
+job 96 strategy_draft  failed  idem
+job 97 blog            failed  idem
+llm_calls: 3 righe groq status=failed, truncated=TRUE, error "LLMTruncated: groq: risposta tagliata al tetto di 2400 (1800) token"
+strategy_briefs 8 -> 8, blog_drafts 5 -> 5, draft_md del brief invariato (5.981): nessun testo a metà salvato
+risposte HTTP: tutte 202; nessun 500 nel log del backend; nessuna riga `ollama` (non va al 7b)
+```
+Screenshot a 380 px (`shots/blog2-len-mob-2.png`): il toast «Generazione articolo blog — Fallita» mostra il messaggio intero, a capo.
+Piccola cosa: sulle righe `failed+truncated` la colonna `output_tokens` resta vuota (si vede solo il tetto).
+
+**3. R1, ricerca MCP con Groq che pende** (finto Groq che accetta e non risponde; `cerca_tutto` da client MCP vero):
+```
+Groq normale (a caldo)          3,65 s
+Groq pende, ricerca 1          13,69 s   risultati veri (4.887 caratteri), isError=False
+Groq pende, ricerca 2          13,28 s
+llm_calls: mcp:cerca failed 10,0 s «ReadTimeout ...»; log «[llm] groq timed out after 10s — not retrying» e «[rerank] fallito, tengo l'ordine del blend»
+righe ollama: 0
+```
+Circa 10 s di attesa Groq più 3 s di lavoro di ricerca (stessi 3 s della ricerca normale): non più 120 s.
+
+**4. R2, chiave rifiutata, e ripartenza senza riavvio** (bridge a lato con `LLM_RETRY_DISABLED_AFTER=20`):
+```
+chiave 401 -> ricerca 2,03 s (ordine semplice); 1 richiesta arrivata al finto Groq; log «groq key rejected/depleted — disabling it»
+ricerca subito dopo, e con la chiave già tornata buona ma dentro i 20 s -> richieste al finto Groq ancora 1 (Groq saltato)
+dopo 22 s, ricerca -> richieste 2, ultima riga llm_calls «groq done mcp:cerca»: il riordino è ripartito senza riavviare il bridge
+```
+Nota di stadio e pagina Avanzamento (giro con chiave finta):
+```
+stage_runs enrich: «Groq non risponde: chiave rifiutata; il lavoro va sul modello locale. Fermato: usata la chiamata al modello locale del giro. 3 restano in attesa per il giro dopo.»
+stage_runs knowledge: «Groq non risponde: chiave rifiutata; il lavoro va sul modello locale»
+```
+La stessa frase è nella pagina Avanzamento (box dello stadio, 380 px e 1280 px, `shots/av2-end-mob.png`).
+
+**5. R3, locale non disponibile, Groq che rifiuta** (3 reel + 3 articoli in attesa):
+```
+Ollama irraggiungibile (OLLAMA_URL su porta morta): enrich 0,2 s {'deferred': 3, 'stopped': 'modello locale non disponibile'}
+  llm_calls: groq failed (401) + ollama failed «LLMLocalUnavailable: Ollama non raggiungibile: ConnectionError»
+  nota: «...Fermato: il modello locale non era disponibile (occupato o spento). 3 restano in attesa per il giro dopo.»
+Slot occupato (lucchetto di Ollama a lato tenuto da un'altra processo, attesa 8 s): enrich 8,1 s e knowledge 8,2 s, ciascuno
+  «LLMBusy: ollama busy: no free slot after 8s», nota uguale
+stato dopo entrambi: reel 3 x pending/pending, articoli 3 x pending/pending, FAILED = 0
+giro dopo con tutto a posto (Groq vero): enrich {'enriched': 3, 'arguments': 16}, knowledge {'enriched': 3, 'arguments': 17}, cluster ok
+  -> reel 3 x done/done, articoli 3 x done/done
+```
+Non ho fermato il vero Ollama: per «spento» ho usato l'indirizzo sbagliato, per «occupato» il lucchetto a lato. Piccola cosa: se Groq è spento e Ollama
+irraggiungibile, lo stadio `knowledge` salta da solo (`client.available()` falso) in 0,0 s e la sua nota dice solo la frase su Groq, non «3 restano in
+attesa»; i contenuti restano comunque `pending`.
+
+**6. D2, ambiente vecchio** (`LLM_ENDPOINTS=anthropic,groq,flow`, chiavi finte, `BATCH_*`, `HF_*`; i finti Anthropic e flow su :9291/:9292):
+```
+LLM_ENDPOINTS: fornitori sconosciuti ignorati (anthropic, flow); ammessi: groq. Si possono togliere dal .env.     <- un solo avviso per processo
+catena: [('fast','groq'), ('ollama', None)]
+chat_json x3 -> {'ok': True}; richieste arrivate ai finti Anthropic e flow: NESSUNA (0)  (il finto risponde: verificato a mano con una richiesta di prova)
+la chiave vecchia non compare nell'avviso né nei log
+```
+- `LLM_ENDPOINTS` con **solo nomi sconosciuti** (`anthropic,flow,hf`): stesso avviso, nessun crash, `check` pulito; la catena diventa il vecchio endpoint
+  «fast» (indirizzo e chiave `FAST_LLM_*`, modello `llama-3.3-70b-versatile`, che Groq ora non serve: «fast has no model...») e poi Ollama.
+- `LLM_ENDPOINTS` **vuoto**: **nessun avviso**, stessa catena («fast» e poi Ollama). Non crasha, ma tutto va a finire sul modello locale senza che nessuno lo dica.
+  Il caso reale (`.env` con la riga persa) darebbe un sistema «tutto sul 7b» silenzioso: osservazione, non bloccante.
+
+**7. D3 e D4** (Chromium, 380 px e 1280 px):
+- Piano editoriale con Groq che rifiuta, 380 px: toast «Piano editoriale — Fallita — **Errore: Riprova più tardi: il servizio dei modelli non risponde o è al suo limite.**» intero, a capo (`shots/plan2-401-mob-2-fine.png`).
+- Avanzamento durante una chiamata locale (380 px): «Analisi dei contenuti — In corso — modello locale», FATTI 0/3, **VELOCITÀ —**, **MANCANO —**,
+  «sta leggendo qwen2.5:7b... 49 s», nessuna stima «mancano circa 12 s» (`shots/av2-mid-mob.png`). Al secondo controllo: «sta scrivendo ... 3 min 177 token 0,9 token/s
+  di solito ancora circa 5 min · al massimo 34 min» (il 7b era rallentato da un altro servizio sulla macchina: la chiamata è durata 190 s).
+- Plurale: «Fermato: usata **la chiamata** al modello locale del giro» (prima «le 1 chiamate»).
+
+**8. Non-regressione**
+- Ricerca MCP normale: `cerca_articoli` 3,65 s a caldo con Groq vero (via finto che inoltra), `cerca_tutto` 2-3 s; risultati veri.
+- Giro corto con Groq vero (`--limit 3`, salta scrape/blogscrape): download 0 s, transcribe 0 s, enrich 17,3 s (3 reel, 16 affermazioni), embed 33 s, knowledge 109,7 s
+  (3 articoli, 17 affermazioni), cluster 60 s; tutti `done`, nessun `failed`, nessuna chiamata riuscita su Ollama.
+- Costo dei miei test: il 120b ha esaurito il suo tetto giornaliero («daily token budget exhausted», 9 chiamate) e la catena è passata a `qwen/qwen3.8-27b`,
+  che ha lavorato (9 chiamate riuscite, 7 rifiutate al minuto e aspettate): conferma dal vivo che sul tetto giornaliero si passa ai fratelli. Avverto che **la chiave è la stessa
+  di produzione**: i miei test (due giri e le prove di D1) hanno consumato token del giorno anche per il cron delle 14:15.
+
+**Cosa NON ho potuto provare**
+- Il servizio vero `medycabrain-mcp` e il suo riavvio, il `.env` vero, `migrate` e riavvio «uno dopo l'altro» di R6 (passi di rilascio).
+- Ollama davvero spento (non l'ho fermato, come chiesto): coperto da indirizzo sbagliato e slot occupato.
+- Un taglio vero di Groq (non l'ho visto accadere con i tetti nuovi: l'ho forzato con il finto `finish_reason: length`).
+- 429 di Groq sul riordino MCP (solo 401 e attesa).
+- Il toast a 1280 px nel caso di errore (guardato solo a 380 px; il codice è lo stesso, ma non ho aperto lo screenshot desktop).
+- Una chiamata vera con la chiave Anthropic/flow: non è stata e non doveva essere fatta (chiavi finte).
+
+**Osservazioni non bloccanti**: (a) `LLM_ENDPOINTS` vuoto cade in silenzio su «fast» + locale (sezione 6); (b) `knowledge` salta senza «N restano in attesa» quando nulla può servire;
+(c) `llm_calls.output_tokens` vuoto sulle chiamate tagliate.
+
+**Fine prova**: backend, ponte MCP, interfaccia, finto Groq e ascoltatori spenti, porte libere; Postgres a lato fermato e cartella dati cancellata; file di ambiente con le chiavi,
+token, copie dati e log cancellati; `BEC/logs` della copia cancellato; in `/tmp` solo `medycabrain-ollama.lock` (vero). Cartella principale su `main`, `git status` vuoto, `BEC/.env` non toccato;
+`:9093` risponde 200.
+
 ## 6. Rilascio           (rilasciatore)
 ## Registro delle decisioni
 
