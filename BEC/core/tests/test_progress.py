@@ -348,7 +348,8 @@ class ProgressSnapshotTests(TestCase):
         LLMCall.objects.create(process="web:chat", provider="ollama", is_local=True,
                                status="waiting", pid=self.pid)
         snap = progress_report.progress_snapshot()
-        self.assertEqual(snap["other_calls"][0]["process_label"], "Chat sui contenuti")
+        # The chat is gone, but 90 days of old rows still carry its label.
+        self.assertIn("Chat sui contenuti", snap["other_calls"][0]["process_label"])
         self.assertTrue(snap["running"])
 
     def test_query_count_stays_small(self):

@@ -1,19 +1,20 @@
 """
 core/knowledge.py
 =================
-Retrieval over the Medyca knowledge bank — the "second brain" (MEDYC-10)
-and the interface downstream agents use (MEDYC-13).
+Retrieval over the Medyca knowledge bank — the "second brain" (MEDYC-10).
 
 The knowledge bank has two content types:
-  - KnowledgeDocument  (blog articles from medyca.it)
-  - OWNED Reels        (owner_type='owned', e.g. @medyca.menopausa) — their
-                        transcripts + captions
+  - KnowledgeDocument  (blog articles: Medyca's own and the competitors')
+  - Reels              (Medyca's and the competitors') — transcripts + captions
 
 `semantic_search` embeds a query and cosine-ranks it against both sources,
-returning unified hits with a snippet + score. `answer` layers an LLM on
-top (RAG) to produce a grounded Italian answer with citations — the call
-an agent makes to "write copy / an article / find content gaps" from
-Medyca's own material.
+returning unified hits with a snippet + score. It is the engine of the MCP
+connector (`mcp_bridge/server.py`, the client's way in) and of
+`GET knowledge/search/`, and it calls NO model except the optional reranker.
+
+The in-app chat that used to sit on top (`answer`, RAG with citations) was
+removed 2026-11-15: the client uses the connector. Its prompt, the pasted-page
+references and `knowledge/ask/` went with it.
 """
 
 from __future__ import annotations
@@ -74,7 +75,7 @@ def _corpus_stamp() -> tuple:
     from core.models import ReelEmbedding
 
     # Max(updated_at), not created_at: an in-place re-embed reuses rows and
-    # leaves created_at and the counts unchanged, which used to let the chat
+    # leaves created_at and the counts unchanged, which used to let the search
     # serve a stale index until a restart. updated_at bumps on every save.
     agg = ReelEmbedding.objects.aggregate(n=Count("id"), last=Max("updated_at"))
     docs = KnowledgeDocument.objects.filter(is_active=True).aggregate(
@@ -84,7 +85,7 @@ def _corpus_stamp() -> tuple:
 
 
 def _load_index(scope: str = "all") -> list[dict]:
-    """Every embedded item the chat can answer from.
+    """Every embedded item the search can return.
 
     `scope`: "medyca" (own content only), "competitor", or "all". Competitor
     reels carry their account, because "who said this" is half the answer when
@@ -102,7 +103,7 @@ def _load_index(scope: str = "all") -> list[dict]:
     docs = (KnowledgeDocument.objects
             # is_on_topic=False is the model's own verdict that this page is
             # not editorial content (cookie walls, event pages, recipes):
-            # letting it into the index means the chat can cite a banner.
+            # letting it into the index means a search can return a banner.
             # Material the client added on purpose is exempt: the verdict is
             # made against a menopause-centred prompt, which rejected 404 of
             # 835 articles on 2026-09-13 — a TV episode on prediabetes would
@@ -205,7 +206,7 @@ def _lexical_score(query: str, text: str) -> float:
 # Medyca's own material is 70 items against 835 competitor ones. On one global
 # ranking those odds decide the outcome: measured, the first Medyca result for
 # "Bijuva" landed 27th, for "perimenopausa" 66th, for "cosa manca ai nostri
-# contenuti" 99th — so the chat, asked to compare, truthfully reported having no
+# contenuti" 99th — so the assistant, asked to compare, truthfully reported having no
 # Medyca material and looked disconnected from its own knowledge bank.
 #
 # The two sides are therefore ranked separately and merged. This is a deliberate
@@ -398,8 +399,8 @@ def _rerank(query: str, hits: list[dict]) -> list[dict]:
         # truncation fail *fast* — it is deterministic, so retrying it 3× only
         # multiplies the latency the client feels as "search not working"
         # before this same except-block falls back to the blend order anyway.
-        # `default=True`: from the chat this stays "web:chat"; from the MCP
-        # search (its own process, no other label) it is "mcp:cerca".
+        # `default=True`: the MCP search is its own process with no other
+        # label, so its calls say "mcp:cerca".
         with usage.scope("mcp:cerca", default=True):
             data = client.chat_json(
                 "Sei un valutatore di pertinenza per una ricerca. Solo JSON valido.",
@@ -426,7 +427,7 @@ def _best_passage(text: str, qvec, cached=None) -> str:
 
     `cached` are the passage vectors computed once by the embed stage, in the
     order _chunks produces them. Encoding them per question instead cost
-    15-18s — the whole of the chat's latency — so they are only computed here
+    15-18s — the whole of a search's latency — so they are only computed here
     when a document predates the change or its text moved on since.
     """
     parts = _chunks(text)
@@ -444,237 +445,3 @@ def _best_passage(text: str, qvec, cached=None) -> str:
         )
     sims = vecs @ qvec
     return parts[int(np.argmax(sims))]
-
-
-ANSWER_SYSTEM = (
-    "Sei l'assistente della knowledge bank di Medyca (terapie ormonali "
-    "bioidentiche, menopausa, salute femminile). Parli a una professionista "
-    "del settore: rispondi in italiano, in modo chiaro e concreto.\n\n"
-    "REGOLE NON NEGOZIABILI:\n"
-    "- Usa ESCLUSIVAMENTE le fonti fornite. Non aggiungere conoscenza medica "
-    "esterna, nemmeno se corretta: questa knowledge bank serve a sapere cosa "
-    "Medyca ha detto, non cosa è vero in generale.\n"
-    "- Cita ogni affermazione con [n]. Un'affermazione senza citazione è un "
-    "errore.\n"
-    "- Se le fonti non rispondono, dillo apertamente e indica cosa manca. "
-    "Una risposta mancante è preferibile a una inventata.\n"
-    "- Se le fonti si contraddicono, segnalalo invece di sceglierne una.\n"
-    "- Ogni fonte indica se \u00e8 di Medyca o di un COMPETITOR: distinguilo "
-    "sempre nella risposta. Confondere ci\u00f2 che dice Medyca con ci\u00f2 che dicono "
-    "gli altri \u00e8 l'errore peggiore che puoi fare qui.\n"
-    "- Una fonte marcata RIFERIMENTO ESTERNO \u00e8 una pagina che l'utente ti ha "
-    "indicato in questa conversazione: non fa parte della knowledge bank e non "
-    "\u00e8 materiale di Medyca. Serve per il confronto. Quando \u00e8 presente, dì "
-    "esplicitamente cosa il riferimento tratta e il materiale di Medyca no: "
-    "\u00e8 questa la risposta utile, non il riassunto della pagina.\n"
-    "- Le fonti sono una SELEZIONE per questa domanda, non l'inventario della "
-    "knowledge bank. Se fra le fonti non c'\u00e8 materiale di Medyca, scrivi che "
-    "non \u00e8 emerso nulla di Medyca su questo punto \u2014 NON che Medyca non ha "
-    "pubblicato nulla in merito. Sono due affermazioni diverse e la seconda "
-    "non la puoi sapere.\n\n"
-    "FORMATO: usa markdown \u2014 grassetto per i punti chiave, elenchi puntati, "
-    "tabelle dove servono. Niente titoli di primo livello (#): la risposta vive "
-    "gi\u00e0 dentro una scheda. Vai al punto: chi legge \u00e8 una professionista."
-)
-ANSWER_USER = """\
-DOMANDA:
-{query}
-
-{inventory}
-FONTI SELEZIONATE per questa domanda, raggruppate per origine:
-{sources}
-
-Rispondi alla domanda basandoti SOLO sulle fonti, citando con [n].
-Chiudi con una riga "Copertura:" che dice se le fonti coprono la domanda
-in modo completo, parziale o nullo.
-Scrivi ESCLUSIVAMENTE in lingua italiana."""
-
-
-MAX_REFERENCES = 3
-
-
-def _reference_hits(urls: list[str], qvec, per_ref: int = 3) -> tuple[list[dict], list[dict]]:
-    """Read the pages the user pasted, and pull the passages that match.
-
-    Returns (hits, problems). A page that cannot be read is reported rather
-    than dropped: silently answering from Medyca's material alone, when the
-    user asked for a comparison, looks like an answer and is not one.
-    """
-    from core.external_ref import RefusedURL, fetch_reference
-
-    hits, problems = [], []
-    for url in urls[:MAX_REFERENCES]:
-        try:
-            ref = fetch_reference(url)
-        except RefusedURL as exc:
-            problems.append({"url": url, "error": str(exc)})
-            continue
-        except Exception as exc:  # noqa: BLE001 — a bad page must not break the chat
-            problems.append({"url": url, "error": f"Non raggiungibile ({type(exc).__name__})."})
-            continue
-        parts = _chunks(ref["text"])
-        if not parts:
-            continue
-        vecs = np.asarray(
-            _get_embedder().encode(parts, normalize_embeddings=True,
-                                   show_progress_bar=False),
-            dtype=np.float32,
-        )
-        sims = vecs @ qvec
-        for i in np.argsort(-sims)[:per_ref]:
-            hits.append({
-                "kind": "reference", "owner": "external", "account": "",
-                "id": f"{url}#{int(i)}", "title": ref["title"], "url": url,
-                "summary": "", "topics": [], "snippet": parts[int(i)],
-                "score": round(float(sims[int(i)]), 3), "keyword_match": 0.0,
-            })
-    return hits, problems
-
-
-def _inventory_line() -> str:
-    """What the knowledge bank actually holds, told to the model.
-
-    Without it the model can only see the handful of sources it was handed,
-    and when none of them are Medyca's it concludes Medyca has published
-    nothing — which is what the client read, and what made the chat look
-    disconnected from its own data.
-    """
-    index = _load_index("all")
-
-    def _count(kind, owner):
-        comp = owner == "competitor"
-        return sum(1 for i in index if i["kind"] == kind
-                   and (i.get("owner") == "competitor") == comp)
-
-    return (f"LA KNOWLEDGE BANK CONTIENE: {_count('reel', 'owned')} reel di Medyca, "
-            f"{_count('blog', 'owned')} articoli del blog Medyca, "
-            f"{_count('reel', 'competitor')} reel dei competitor, "
-            f"{_count('blog', 'competitor')} articoli dei blog dei competitor.\n")
-
-
-_GROUPS = (
-    ("external", "RIFERIMENTI ESTERNI indicati dall'utente (non sono materiale Medyca)"),
-    ("owned", "MATERIALE DI MEDYCA"),
-    ("competitor", "MATERIALE DEI COMPETITOR"),
-)
-
-
-def _sources_block(hits: list[dict]) -> str:
-    """The sources, grouped by whose they are.
-
-    A flat list let the model lose track of which side a passage came from —
-    the one confusion this screen must never make.
-    """
-    numbered = {id(h): i + 1 for i, h in enumerate(hits)}
-    blocks = []
-    for key, heading in _GROUPS:
-        group = [h for h in hits
-                 if (h.get("owner") if h.get("owner") in ("external", "competitor")
-                     else "owned") == key]
-        if not group:
-            continue
-        lines = []
-        for h in group:
-            what = "articolo blog" if h["kind"] == "blog" else "reel"
-            # A blog source carries a site name, a reel an IG handle: the @
-            # only belongs on the latter.
-            acct = h.get("account") or ""
-            who = f" di {acct}" if (acct and h["kind"] == "blog") else (f" @{acct}" if acct else "")
-            lines.append(f"[{numbered[id(h)]}] {h['title']} ({what}{who})\n{h['snippet']}")
-        blocks.append(f"### {heading}\n" + "\n\n".join(lines))
-    if not any(h.get("owner") not in ("external", "competitor") for h in hits):
-        blocks.append("### MATERIALE DI MEDYCA\n(nessuna fonte di Medyca è emersa "
-                      "per questa domanda)")
-    return "\n\n".join(blocks)
-
-
-def _prepare(query: str, top_k: int, scope: str,
-             history: list | None, references: list[str] | None,
-             content_type: str = "all") -> dict:
-    """Everything that happens before the model speaks.
-
-    Shared by `answer` and `answer_stream` so the prompt cannot drift between
-    the blocking and the streaming path and produce two different styles of
-    answer depending on which endpoint was called.
-
-    The chat always reranks (it answers a handful of questions a day, the
-    precision is worth one LLM call). `content_type` lets the UI ask for
-    only reels or only articles, replacing the fragile "does the query say
-    blog?" regex.
-    """
-    ref_hits, ref_problems = [], []
-    if references:
-        ref_hits, ref_problems = _reference_hits(references, _embed_query(query))
-    # The pasted page leads — it is the thing being asked about — but it must
-    # not push the internal material out of the context in exactly the
-    # comparison it was needed for. So the retrieval budget is reduced FIRST
-    # and the quota applied to what remains, rather than trimming afterwards.
-    budget = max(top_k - len(ref_hits), top_k // 2) if ref_hits else top_k
-    hits = semantic_search(query, top_k=budget, scope=scope, rerank=True)
-    if content_type == "reel":
-        hits = [h for h in hits if h["kind"] == "reel"]
-    elif content_type == "article":
-        hits = [h for h in hits if h["kind"] == "blog"]
-    hits = ref_hits + hits
-
-    convo = ""
-    for turn in (history or [])[-6:]:
-        role = "UTENTE" if turn.get("role") == "user" else "ASSISTENTE"
-        convo += f"{role}: {str(turn.get('content', ''))[:500]}\n"
-    if convo:
-        convo = f"CONVERSAZIONE FINORA:\n{convo}\n"
-
-    return {
-        "hits": hits,
-        "ref_problems": ref_problems,
-        "system": ANSWER_SYSTEM,
-        "user": convo + ANSWER_USER.format(
-            query=query, inventory=_inventory_line(),
-            sources=_sources_block(hits)),
-    }
-
-
-def _mark_cited(text: str, hits: list[dict]) -> None:
-    """Flag the sources the answer actually leaned on."""
-    cited = {int(n) for n in re.findall(r"\[(\d+)\]", text or "")}
-    for i, h in enumerate(hits, start=1):
-        h["cited"] = i in cited
-
-
-def answer(query: str, top_k: int = 8, scope: str = "all",
-           history: list | None = None,
-           references: list[str] | None = None,
-           content_type: str = "all") -> dict:
-    """RAG over the knowledge bank.
-
-    Retrieval is hybrid (embeddings + verbatim keywords) and sends the
-    passage that matches, not the head of the document. Generation runs on
-    the reasoning model — the same one that analyses transcripts — because
-    reading several sources and refusing to over-claim is judgement work.
-    """
-    # The retrieval's reranker calls the model too: it belongs to the chat.
-    with usage.scope("web:chat"):
-        p = _prepare(query, top_k, scope, history, references, content_type)
-    hits = p["hits"]
-    if not hits:
-        return {"answer": "La knowledge bank è ancora vuota o non indicizzata.",
-                "sources": [], "model": "", "reference_problems": p["ref_problems"]}
-    if not client.available():
-        return {"answer": "(LLM non disponibile — mostro solo le fonti recuperate.)",
-                "sources": hits, "model": "",
-                "reference_problems": p["ref_problems"]}
-    try:
-        with usage.scope("web:chat"):
-            text = client.chat(
-                p["system"], p["user"],
-                max_tokens=900, temperature=0.2, priority=True, timeout=600,
-                # Deliberately the reasoning tier, not the analysis one: the chat
-                # answers many questions a day and does not need the deepest model.
-                model=client.model_for("reasoning"),
-            )
-        used = client.last_model_used()
-    except Exception as exc:  # noqa: BLE001
-        text, used = f"(Errore nella generazione: {exc!r})", ""
-    _mark_cited(text, hits)
-    return {"answer": (text or "").strip(), "sources": hits, "model": used,
-            "reference_problems": p["ref_problems"]}

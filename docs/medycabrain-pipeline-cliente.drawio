@@ -154,7 +154,7 @@
         <mxCell id="l_bw" value="blog_workflow.py&#10;espande un articolo esistente oppure&#10;ne scrive uno nuovo, fondato sui transcript" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A6FAC;fontColor=#2C4984;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;arcSize=12;" vertex="1" parent="1">
           <mxGeometry x="1290" y="254" width="340" height="66" as="geometry" />
         </mxCell>
-        <mxCell id="l_kn" value="knowledge.py — RAG ibrida (vettori + parole) · Opus 4.8" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A6FAC;fontColor=#2C4984;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;arcSize=12;" vertex="1" parent="1">
+        <mxCell id="l_kn" value="knowledge.py — ricerca ibrida (vettori + parole) per il connettore MCP · riordino: Groq, mai il modello locale" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A6FAC;fontColor=#2C4984;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;arcSize=12;" vertex="1" parent="1">
           <mxGeometry x="1290" y="336" width="340" height="46" as="geometry" />
         </mxCell>
 

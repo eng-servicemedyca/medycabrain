@@ -72,13 +72,6 @@ export const IconMap = svg(
   </>
 );
 
-export const IconChat = svg(
-  <>
-    <path d="M21 12a8 8 0 0 1-8 8H7l-4 3V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z" />
-    <path d="M9 11h6M9 14.5h3.5" />
-  </>
-);
-
 export const IconStar = svg(
   <path d="m12 3.6 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" />
 );

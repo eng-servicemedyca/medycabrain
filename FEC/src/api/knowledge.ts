@@ -25,30 +25,6 @@ export interface KnowledgeDocDetail extends KnowledgeDoc {
   arguments?: { id: number; text_it: string; quote: string }[];
 }
 
-export interface KnowledgeHit {
-  /** "external" is a page pasted into the chat, not knowledge-bank material. */
-  owner?: "owned" | "competitor" | "external";
-  account?: string;
-  cited?: boolean;
-  keyword_match?: number;
-  kind: "blog" | "reel";
-  id: number;
-  title: string;
-  url: string;
-  summary: string;
-  topics: string[];
-  snippet: string;
-  score: number;
-}
-
-export interface AskResult {
-  /** Pages that could not be read, with the reason. */
-  reference_problems?: { url: string; error: string }[];
-  model?: string;
-  answer: string;
-  sources: KnowledgeHit[];
-}
-
 export async function fetchKnowledgeDoc(id: number): Promise<KnowledgeDocDetail> {
   const { data } = await apiClient.get<KnowledgeDocDetail>(`/knowledge/documents/${id}/`);
   return data;
@@ -75,39 +51,5 @@ export async function fetchClusterDocs(
   const { data } = await apiClient.get<Paginated<KnowledgeDoc>>("/knowledge/documents/", {
     params: { cluster: clusterId, page, page_size: 30 },
   });
-  return data;
-}
-
-export async function searchKnowledge(query: string, topK = 6): Promise<KnowledgeHit[]> {
-  const { data } = await apiClient.post<{ results: KnowledgeHit[] }>("/knowledge/search/", {
-    query,
-    top_k: topK,
-  });
-  return data.results;
-}
-
-export interface AskOptions {
-  scope?: "all" | "medyca" | "competitor";
-  content_type?: "all" | "reel" | "article";
-  history?: { role: "user" | "assistant"; content: string }[];
-  topK?: number;
-  /** Pages to read for this question only. Never added to the knowledge bank. */
-  references?: string[];
-}
-
-export async function askKnowledge(query: string, opts: AskOptions = {}): Promise<AskResult> {
-  // No streaming: the whole answer arrives at once, in roughly 30s.
-  const { data } = await apiClient.post<AskResult>(
-    "/knowledge/ask/",
-    {
-      query,
-      top_k: opts.topK ?? 8,
-      scope: opts.scope ?? "all",
-      content_type: opts.content_type ?? "all",
-      history: opts.history ?? [],
-      references: opts.references ?? [],
-    },
-    { timeout: 300000 }
-  );
   return data;
 }

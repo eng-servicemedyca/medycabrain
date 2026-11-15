@@ -67,7 +67,7 @@ In words:
 Every piece of content carries an `owner_type` of either `owned` (Medyca) or `competitor`.
 This single label decides what feeds the client's own knowledge (their reels + their blog +
 their uploads) versus what is only *inspiration/comparison* (competitors). Clustering runs
-once per side, the chat keeps sources labelled, and the whole system treats confusing the two
+once per side, the MCP search keeps sources labelled, and the whole system treats confusing the two
 as its worst possible mistake.
 
 ## What comes out
@@ -78,8 +78,6 @@ Stored in one PostgreSQL database (the **knowledge bank**) and reachable two way
 - **Library** — every reel/article, searchable.
 - **Analytics** — engagement, weighted by real performance.
 - **Themes / Brain Map** — the clusters, and a graph of how themes connect.
-- **Knowledge Bank chat** — ask a question, get an answer grounded only in the content, with
-  clickable `[n]` citations.
 - **Second Brain** — an editorial planner: content ideas, gaps competitors cover that Medyca
   doesn't, strategy briefs, and blog drafts.
 

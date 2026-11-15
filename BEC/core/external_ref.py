@@ -1,12 +1,12 @@
 """
 core/external_ref.py
 ====================
-Reading a web page the user pastes into the chat, safely.
+Fetching a web page from a URL somebody typed, safely (`safe_get`).
 
-The chat can only answer from what it has indexed. The client's real question
-is comparative — "look at this page and tell me what our material is missing"
-— which needs a source that is deliberately NOT ours, read once, for one
-conversation, and never mixed into the knowledge bank.
+Used by the blog importer (`blog_agent`, `blog_discovery`) and by the places
+that check a pasted link (`link_ingest`, serializers). It used to feed the
+in-app chat too (`fetch_reference`: read a pasted page for one answer);
+the chat was removed 2026-11-15 and that function went with it.
 
 Why this is not just requests.get
 ---------------------------------
@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import re
 import socket
 from urllib.parse import urlparse
 
@@ -40,7 +39,6 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 MAX_BYTES = 3_000_000      # a page, not a download
 MAX_REDIRECTS = 3
 TIMEOUT = 20
-MAX_TEXT = 60_000          # what we keep after extraction
 
 
 class RefusedURL(ValueError):
@@ -75,11 +73,10 @@ def safe_get(url: str, *, allow_types: tuple[str, ...] = ("html", "text"),
              user_agent: str = _UA) -> str:
     """The body of a public URL, every redirect hop re-validated, size-capped.
 
-    This is what the blog crawler uses for every body it STORES: the chat's
-    one-off fetch and the recurring crawler share the same refusal logic, so
-    there is exactly one place where "what will this server fetch" is decided.
-    `allow_types` exists because the crawler also reads sitemap/feed XML,
-    which the chat's html-only rule would refuse.
+    This is what the blog crawler uses for every body it STORES: every
+    caller shares the same refusal logic, so there is exactly one place where
+    "what will this server fetch" is decided. `allow_types` exists because the
+    crawler also reads sitemap/feed XML, which an html-only rule would refuse.
     """
     seen = url
     for _ in range(MAX_REDIRECTS + 1):
@@ -111,31 +108,3 @@ def safe_get(url: str, *, allow_types: tuple[str, ...] = ("html", "text"),
         raw = b"".join(chunks)
         return raw.decode(resp.encoding or "utf-8", errors="replace")
     raise RefusedURL("Troppi reindirizzamenti.")
-
-
-def _get(url: str) -> str:
-    return safe_get(url)
-
-
-def fetch_reference(url: str) -> dict:
-    """{url, title, text} for a public web page. Raises RefusedURL."""
-    html = _get(url)
-    import trafilatura
-
-    text = trafilatura.extract(
-        html, favor_precision=True, include_links=False, include_images=False,
-    ) or ""
-    text = re.sub(r"\n{2,}", "\n", text).strip()
-    if len(text) < 120:
-        raise RefusedURL(
-            "Non sono riuscito a estrarre testo leggibile da questa pagina."
-        )
-    title = ""
-    try:
-        meta = trafilatura.extract_metadata(html)
-        if meta and meta.title:
-            title = meta.title.strip()
-    except Exception:  # noqa: BLE001 — the title is a nicety
-        pass
-    return {"url": url, "title": title or urlparse(url).netloc,
-            "text": text[:MAX_TEXT]}

@@ -93,7 +93,7 @@ def scope(process: str, stage: str = "", job_id: int | None = None,
 
     Inner blocks inherit what they leave empty (a pipeline started by a Job
     keeps the Job's id). `default=True` only labels when nothing else does, so
-    the reranker called from the chat stays `web:chat`.
+    the reranker, which has no other label, is `mcp:cerca`.
     """
     global _process_scope
     outer = _scope_var.get() or _process_scope

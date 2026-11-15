@@ -58,8 +58,9 @@ model call writes `llm_calls` (`llm/usage.py`, numbers only, never the text); th
 Vendor-neutral. Code asks for a tier via `model_for("analysis"|"reasoning"|"bulk")`
 (`llm/client.py`); the actual id is in `.env`. STT = Whisper large-v3 (remote) / faster-whisper
 (local). Embeddings = multilingual MiniLM. RAG (`core/knowledge.py`): `semantic_search` blends
-`0.75·cosine + 0.25·lexical`, keeps owned/competitor quotas, optional LLM reranker. Same engine
-powers the chat and MCP `cerca`. See `documentation/low-level/03-llm-and-embeddings.md`.
+`0.75·cosine + 0.25·lexical`, keeps owned/competitor quotas, optional LLM reranker. The engine
+powers MCP `cerca` (the in-app chat was removed 2026-11-15); its reranker is Groq-only, and when
+Groq refuses the search answers at once with the plain order. See `documentation/low-level/03-llm-and-embeddings.md`.
 
 ## MCP connector
 

@@ -13,7 +13,7 @@ import { formatDate } from "../../lib/utils";
  *
  * What a reel drawer has that makes no sense here is simply absent:
  * no transcript (the body IS the text), no STT quality bar, no annotations.
- * The body renders through the same markdown renderer as the chat, so the
+ * The body renders through the same markdown renderer as the other long texts, so the
  * whole product formats prose exactly one way.
  */
 export function ArticleDetailDrawer({

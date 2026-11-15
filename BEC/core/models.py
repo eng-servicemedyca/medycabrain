@@ -192,16 +192,16 @@ class ReelEmbedding(models.Model):
     reel = models.OneToOneField(Reel, on_delete=models.CASCADE, related_name="embedding")
     vector = models.JSONField(default=list)  # list[float]
     # One vector per passage of the text, in the order core.knowledge._chunks
-    # produces them. The chat picks the passage that answers the question
+    # produces them. Search picks the passage that answers the question
     # rather than the head of the document, and re-encoding those passages on
     # every question cost 15-18s per query — the whole of its latency. The
     # text is not stored again: chunking is deterministic from the source.
     chunk_vectors = models.JSONField(default=list, blank=True)  # list[list[float]]
     model_name = models.CharField(max_length=128, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
-    # Bumps on every re-embed, unlike created_at. The chat's index cache keys
+    # Bumps on every re-embed, unlike created_at. The search index cache keys
     # on this: a re-embed that reuses rows (update_or_create) leaves the count
-    # and created_at unchanged, so without it the chat served a stale index
+    # and created_at unchanged, so without it the search served a stale index
     # until the process restarted.
     updated_at = models.DateTimeField(auto_now=True)
 

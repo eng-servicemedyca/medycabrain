@@ -163,7 +163,7 @@ link** (a doctor interview; a TV episode on YouTube or Vimeo kept as reference).
 **`ReelEmbedding`** — `reel_embeddings`. **1:1** with `Reel`. The vectors.
 - `vector` (JSON `list[float]` — the whole-reel vector), **`chunk_vectors`** (JSON
   `list[list[float]]`, one per passage, order matches `core.knowledge._chunks`), `model_name`,
-  `created_at`, **`updated_at`** (bumped on every re-embed; the chat's index cache keys on it
+  `created_at`, **`updated_at`** (bumped on every re-embed; the search index cache keys on it
   to notice in-place changes).
 
 **`ReelArgument`** — `reel_arguments`. FK **`reel`** (CASCADE, `related_name="arguments"`). A

@@ -38,8 +38,8 @@ client; this folder is the machine that keeps it.
   (`panoramica`, `cerca`, `leggi`, `temi`), the exact query each one runs, and how the
   server is deployed and secured.
 - **[05-rest-api.md](low-level/05-rest-api.md)** — every REST endpoint and what it serves.
-- **[06-frontend.md](low-level/06-frontend.md)** — the React app: pages, how it talks to the
-  API, and the RAG chat screen.
+- **[06-frontend.md](low-level/06-frontend.md)** — the React app: pages, and how it talks to the
+  API.
 - **[07-content-lineage.md](low-level/07-content-lineage.md)** — follows **one Instagram reel**
   end to end: what is produced at each step, where it is stored (disk vs Postgres vs discarded),
   and how the vectors become the search index. Read this for "where did this field come from?"
@@ -54,7 +54,7 @@ Instagram reels, blog articles, client audio/video uploads, and client-named top
 A nightly pipeline downloads them, transcribes audio, reads the text with an LLM, turns each
 piece into a vector, and groups everything into themes — keeping **Medyca's own content**
 strictly separate from **competitors'**. The result is a searchable *knowledge bank* that
-powers a web UI (library, analytics, themes, a grounded chat, and an editorial planner) and a
+powers a web UI (library, analytics, themes, and an editorial planner) and a
 read-only **MCP connector** so Claude can query the same knowledge from claude.ai.
 
 ## Repository map (top level)

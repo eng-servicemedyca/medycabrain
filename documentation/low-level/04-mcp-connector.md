@@ -49,14 +49,14 @@ flowchart TD
         t4["cerca_reel · cerca_articoli · cerca_tutto → core.knowledge.semantic_search"]
     end
     DJ --> tools
-    t4 --> KN["semantic_search(rerank=True)<br/>same engine as the in-app chat"]
+    t4 --> KN["semantic_search(rerank=True)<br/>Groq reorders; if refused, plain order"]
 ```
 
 Both paths run **in one process**. There is **no internal HTTP call** to the REST API —
 `panoramica`, `fonti_blog`, the `leggi*` tools and `temi` are plain ORM queries; the
 `cerca*` tools go through the
-`semantic_search()` + reranker path in `core.knowledge` (the same retrieval the web chat uses,
-so Claude gets the same ranked results the app would show).
+`semantic_search()` + reranker path in `core.knowledge` (the same retrieval `GET knowledge/search/` uses; the in-app chat that shared it
+was removed 2026-11-15, the connector is now the only consumer of the reranker).
 
 All ten tools are registered with `@server.tool(...)` on an `MCPServer` named
 **"Medyca Content Intelligence"**. All four are read-only.
@@ -96,8 +96,12 @@ return [_hit(h) for h in hits]   # "reel" | "blog" | None
   all the right type and of the minimum size, so a typed search runs in the `cerca_tutto` regime
   (~2.6s vs 11–14s) and nothing survives the rerank only to be discarded. See
   [03-llm-and-embeddings](03-llm-and-embeddings.md#semantic_searchquery-top_k-scope-rerank).
-- `rerank=True` — Claude gets the same LLM-sharpened order the in-app chat uses. The rerank step
-  is best-effort and **fails fast to the blend order** (`retries=0`, `max_tokens=2000`); before
+- `rerank=True` — Claude gets an LLM-sharpened order. Since 2026-11-15 the reranker is
+  **Groq only** (`remote_only=True` on the `chat()` call, `gpt-oss-20b`, 2-3 s): it **never falls
+  to the local model** (a 7b would take minutes and the client would see a frozen search). If
+  Groq refuses (per-minute cap, daily cap, key) the search answers **at once with the plain
+  order** — `0.75·cosine + 0.25·lexical`, owned/competitor quotas — and never with an error.
+  The rerank step is best-effort and **fails fast to the blend order** (`retries=0`, `max_tokens=2000`); before
   2026-09-15 a truncated rerank was retried 3× and made search hang ~30–40s, which the client
   reported as "search not working" — see [03-llm-and-embeddings](03-llm-and-embeddings.md#6-optional-rerank).
 - Each hit is shaped by `_hit(h)` into `{id, tipo, di, titolo, estratto, url, ispirazione,

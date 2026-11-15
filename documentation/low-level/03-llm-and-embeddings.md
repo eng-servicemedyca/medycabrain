@@ -22,7 +22,7 @@ Defined in `BEC/llm/client.py`. Callers ask for a task, not a model:
 |---|---|
 | `model_for("analysis")` | the *strongest* model: reading transcripts, extracting claims/themes, naming clusters |
 | `model_for("reasoning")` | strategy briefs, blog drafts, editorial plan |
-| `model_for("bulk")` | high-volume mechanical extraction, the **search reranker**, blog URL-pattern classification |
+| `model_for("bulk")` | high-volume mechanical extraction, the **search reranker** (Groq only), blog URL-pattern classification |
 
 It returns the tier's model **on the first live provider**. Callers pass that string back as
 `chat(model=...)`; `chat()` re-resolves it per provider via `_task_of()` as it walks the chain,
@@ -114,8 +114,9 @@ through, so none of them changed. Numbers and short labels only: **no prompt, no
 - **Whisper** (`transcriber_agent._transcribe`) is not a `chat()` call, but takes the same
   machine: `usage.stt()` records it (`kind='stt'`) so its hours enter the daily totals.
 - **Who asked**: `usage.scope(process, stage, job_id, run_id)` — set by `DAG.run`
-  (`pipeline:<stage>`), `run_job` (`job:<kind>`), `core/knowledge.answer` (`web:chat`) and the
-  reranker (`mcp:cerca`, only when nothing else labels it). Without a scope: `cmd:<command>` or
+  (`pipeline:<stage>`), `run_job` (`job:<kind>`) and the reranker (`mcp:cerca`, only when
+  nothing else labels it). Rows older than 2026-11-15 may carry `web:chat`; the page labels
+  them «Chat sui contenuti (funzione tolta)». Without a scope: `cmd:<command>` or
   `altro`. The label lives in a contextvar **and** a process-wide fallback set from the main
   thread, because a contextvar does not cross into a `ThreadPoolExecutor` (`enrich` uses 5
   threads); the fallback is not set from web request threads (it would leak between requests).
@@ -176,8 +177,8 @@ articles recovered on 2026-09-13: their summaries had been empty when they were 
 
 ## Retrieval / RAG — `core/knowledge.py`
 
-This one module powers both the in-app chat **and** the MCP `cerca` tool. Same code, same
-ranking.
+This module powers the MCP `cerca` tools and `GET knowledge/search/`. (It used to power the
+in-app chat too, removed 2026-11-15.)
 
 ```mermaid
 flowchart TD
@@ -205,7 +206,7 @@ flowchart TD
      `want=max(top_k, RERANK_POOL)`, instead of over-fetching a mixed pool of `top_k*3=24` and
      discarding most after the LLM ran. Measured, that cut a typed search from 11–14s into the
      `cerca_tutto` regime (~2.6s), and killed the starvation where a minority type post-filtered
-     to fewer than `top_k` results. Chat callers leave `kind=None`.
+     to fewer than `top_k` results. Callers that want both types leave `kind=None`.
 2. **Embed the query** — `_embed_query()`.
 3. **Hybrid rank** — `_rank()` blends dense and lexical: `0.75 * cosine + 0.25 * lexical_score`.
    The lexical term (`_lexical_score`) is what catches exact drug/brand names like "Bijuva"
@@ -219,8 +220,8 @@ flowchart TD
 6. **Optional rerank** — `_rerank(query, out)` makes **one** structured LLM call
    (`model_for("bulk")`, `max_tokens=2000`, `retries=0`) over a `RERANK_POOL=15` candidate
    pool, asking for a JSON `{"ordine": [...]}` ordering, then returns the top `top_k`. On *any*
-   failure it falls back to the blend order — it never errors out. Both the chat and MCP `cerca`
-   call it with `rerank=True`.
+   failure it falls back to the blend order — it never errors out. MCP `cerca` calls it with
+   `rerank=True`; it is **Groq only** (see below).
    - **Known limit / why `retries=0`:** with a full pool of long snippets Sonnet 5 sometimes
      prefaces the JSON with a line of reasoning and tips over the ceiling (`stop_reason=max_tokens`).
      At the old `max_tokens=1000` this surfaced as an intermittent **~30–40s hang** on MCP search —
@@ -229,14 +230,12 @@ flowchart TD
      headroom (the same real pool reranks in ~2–3s) and `retries=0` makes the rare truncation fall
      back to the blend order in one shot instead of multiplying the latency.
 
-### `answer()` — the grounded chat
+### The chat is gone
 
-`answer()` / `_prepare()` build the RAG chat reply:
-- Retrieve with `semantic_search`, then generate with `model_for("reasoning")`.
-- The system prompt **forbids outside knowledge**, requires numbered `[n]` citations, and
-  keeps Medyca vs competitor material strictly labelled and separated.
-- A URL pasted into a question is fetched on the fly via `core/external_ref.fetch_reference`
-  (SSRF-guarded), used **only** for that one answer, marked external, and never added to the
-  bank.
+`answer()` / `_prepare()` (the grounded RAG chat reply, its prompt, the pasted-page references
+read through `core/external_ref.fetch_reference`) and `knowledge/ask/` were **removed
+2026-11-15**: the client uses the MCP connector, and with a local fallback a chat answer would
+have taken minutes. Nothing was stored by the chat, so no migration. `core/knowledge.py` now has
+one job: `semantic_search`.
 
 Next: [the MCP connector](04-mcp-connector.md).

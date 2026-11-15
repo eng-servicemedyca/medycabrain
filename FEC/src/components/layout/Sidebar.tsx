@@ -6,7 +6,7 @@ import { useAuth } from "../../contexts/AuthContext";
 import { cn } from "../../lib/utils";
 import { EASE } from "../ui/motion";
 import {
-  IconAccounts, IconAnalytics, IconChat, IconClusters, IconDocs, IconLibrary,
+  IconAccounts, IconAnalytics, IconClusters, IconDocs, IconLibrary,
   IconLogout, IconMap, IconPlan, IconProgress, IconPulse, IconStar, IconTimeline,
 } from "../ui/icons";
 
@@ -163,7 +163,6 @@ export function NavContent({ onNavigate }: { onNavigate?: () => void }) {
 
         <GroupLabel label={t("nav.tools")} />
         <Item to="/second-brain" icon={IconPlan} label={t("nav.plan")} onNavigate={onNavigate} />
-        <Item to="/knowledge-bank" icon={IconChat} label={t("nav.knowledgeBank")} onNavigate={onNavigate} />
         <Item to="/brain-map" icon={IconMap} label={t("nav.brainMap")} onNavigate={onNavigate} />
         <Item to="/workspace" icon={IconStar} label={t("nav.workspace")} onNavigate={onNavigate} />
 

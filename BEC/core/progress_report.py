@@ -234,7 +234,7 @@ def progress_snapshot() -> dict:
     return {
         "now": now, "running": active or bool(jobs) or bool(loose),
         "rounds": rounds,
-        # Calls that belong to no stage of this round: a Job's, the chat's, a
+        # Calls that belong to no stage of this round: a Job's, the search's, a
         # command's. Shown as loose lines, never hidden.
         "other_calls": [dict(_item_dict(c, now, typical), process_label=process_label(c.process))
                         for c in loose[:MAX_ITEMS_SHOWN]],
@@ -252,7 +252,8 @@ def process_label(process: str) -> str:
     if kind == "job":
         return ops.JOB_KIND_LABELS.get(name, name)
     if process == "web:chat":
-        return "Chat sui contenuti"
+        # Only old rows (90 days of history) carry it: the chat itself is gone.
+        return "Chat sui contenuti (funzione tolta)"
     if process == "mcp:cerca":
         return "Ricerca dal connettore"
     if kind == "cmd":

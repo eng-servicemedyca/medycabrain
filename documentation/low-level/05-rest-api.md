@@ -44,7 +44,9 @@ The web app talks to the backend through this API. The MCP connector does **not*
 | `second-brain/coverage-map/` | `CoverageMapView` | Medyca themes (covered) vs competitor clusters whose centroid cosine is < 0.8 to any Medyca centroid (opportunities/gaps), plus custom topics. |
 | `second-brain/graph/` | `SecondBrainGraphView` | Built in bulk (counts annotated, top 5 reels and top 3 articles per cluster from one query each: 1221 queries / 8.9 s → 17). Only the columns the map draws are loaded (`.only()`): the embedding / chunk-vector / raw-response JSON columns were half of the remaining 5.5 s, decoded for nothing. Same response byte for byte (hash checked), **5.5 s → 0.6 s** on a scratch copy of the live data (1681 nodes, 2186 edges). A deferred field that is read anyway costs one query per row (`run` of the cluster did: 335 queries), so it is kept in the `only()` list. Graph nodes/edges: three hubs (Medyca / Competitor / Opportunità), theme→content edges, competitor→opportunity→Medyca flow edges. |
 | `knowledge/search/` | `KnowledgeSearchView` | Wraps `semantic_search`. |
-| `knowledge/ask/` | `KnowledgeAskView` | Wraps `answer` (the grounded RAG chat). |
+
+> **Removed 2026-11-15:** `knowledge/ask/` (`KnowledgeAskView`, the grounded chat). It answers
+> 404 now (a test checks it). `knowledge/search/` stays and calls no model except the optional reranker.
 
 ## Read-only by design
 
@@ -57,5 +59,5 @@ pipeline state.
 Next: [the frontend](06-frontend.md).
 
 **`knowledge/documents` list filter.** Hides documents the model judged off-topic **unless** the
-client added them on purpose (`is_inspiration=True`) — the same rule as the chat index — so
+client added them on purpose (`is_inspiration=True`) — the same rule as the search index — so
 "Vedi in Libreria" on an imported link never opens an empty list. Detail by id is unrestricted.

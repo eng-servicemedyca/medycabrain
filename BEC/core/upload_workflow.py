@@ -189,7 +189,7 @@ def _save_reference_only(up, reason: str) -> None:
     except Exception as exc:  # noqa: BLE001 — findability is a bonus here
         logger.warning("[upload] riferimento %s non indicizzato: %r", doc.id, exc)
         # Said, not left PENDING: a card without a vector is invisible to the
-        # chat, and "pending" would promise a retry nobody schedules.
+        # search, and "pending" would promise a retry nobody schedules.
         KnowledgeDocument.objects.filter(id=doc.id).update(embed_status=FAILED)
 
 
@@ -369,7 +369,7 @@ _DEFERRED_NOTE = ("Trascritto. L'analisi verrà completata nella prossima "
 
 
 def _analyse(up, doc) -> str:
-    """Enrich + arguments + embed inline, so the item is queryable in chat and
+    """Enrich + arguments + embed inline, so the item is searchable and
     a draft can be grounded now, not next nightly. Returns "done"/"deferred".
 
     Isolated from the transcription on purpose: by the time we are here the

@@ -33,7 +33,6 @@ screen shows either side without mixing them.
 | `/:scope/timeline` | `Timeline.tsx` | Content over time. The month histogram comes from `fetchEngagementOverTime` (`/analytics/?metric=engagement-over-time`, same key `an-time` as Analytics: one request serves both); the grid below pages `fetchReels` with `posted_after`/`posted_before` of the selected month, newest first. It used to ask for 400 reels, got the 200 **oldest** (API cap) and drew the histogram from them: recent months were missing. |
 | `/:scope/clusters` + `/:scope/clusters/:id` | `Clusters.tsx`, `ClusterDetail.tsx` | The themes for that side. `ClusterDetail` reads `cluster.scope` and `Navigate`s to the right side when the URL disagrees (a competitor id pasted under `/medyca/`); reels and articles load only once the side agrees, and both page with `LoadMore` (the biggest cluster has 146 reels, 60 articles). |
 | `/second-brain` | `SecondBrain.tsx` | Editorial planner: ideas, gaps, plan. Below the plan, the **«Bozze del blog»** section: `BlogDraftCard` (`components/plan/`) lists the cluster-driven drafts (`GET /second-brain/blog-drafts/`) with badge espansione/bozza, theme, collapsible body (`AnswerBody`, no citation buttons) and Copia / Tieni / Scarta. `JobsContext` already invalidates `blog-drafts` when a `blog` job ends. Ideas and drafts are read with `fetchAllPages` (they are one list with optimistic updates, not an infinite scroll). |
-| `/knowledge-bank` | `KnowledgeBank.tsx` | The grounded RAG chat (below), with the "vai al contenuto" field in its header. |
 | `/content/:kind/:id` | `ContentDetail.tsx` | Resolves a reference the MCP cited (`blog:843` / `reel:199`) to the content's detail card (below). |
 | `/brain-map` | `BrainMap.tsx` | Cytoscape graph of themes/content (`components/graph/BrainGraph.tsx`). `components/graph/layout.ts` places a hub's themes in **concentric rings** (24 in the first, +8 per ring, +90 px radius) instead of one arc: 307 competitor themes sat ~8 px apart. Still deterministic. At rest only hubs and themes carry a label: opportunities (hundreds, packed at the bottom) and the client's custom themes show their name on hover or tap. Below 640 px the dashed opportunity arrows are not drawn (a knot of lines at 380 px) and a line explains the reduced view; wider screens keep them. Not checked by eye in a browser by the developer. |
 | `/workspace` | `Workspace.tsx` | Favorites / notes. |
@@ -44,47 +43,22 @@ screen shows either side without mixing them.
 | `/` | `Home.tsx` | Landing inside the app. |
 | `/login` | `Login.tsx` | Token auth via `contexts/AuthContext.tsx`. Tells wrong credentials (400/401/403) from an unreachable server (no response) and from a server error ("codice N"). After login, `App.tsx` returns to the page asked for (below). |
 
-## The RAG chat — `KnowledgeBank.tsx`
+## The chat is gone (2026-11-15)
 
-The "Chiedi alla Knowledge Bank" screen. Chat over everything the platform knows.
+The «Chat sui contenuti» page (`/knowledge-bank`, `KnowledgeBank.tsx`), its menu entry, the
+`askKnowledge()` call, the `kb.*` texts and the «Vai a un contenuto» field (`GoToContent`) were
+removed: the client uses the MCP connector, and a local-model chat took 6-8 minutes per answer.
+An old link to `/knowledge-bank` lands on the Home (the catch-all route). Nothing else changed in
+`api/knowledge.ts`: the document calls stay (`fetchKnowledgeDocs`, `fetchKnowledgeDoc`,
+`fetchClusterDocs`). `AnswerBody.tsx` stays: the article drawer and the blog drafts render
+Markdown with it.
 
-- Two filter pills: **scope** (`all` / `medyca` / `competitor`) and **content type**
-  (`all` / `reel` / `article`).
-- Calls `askKnowledge()` → `POST /knowledge/ask/` with
-  `{query, top_k: 8, scope, content_type, history (last 6 msgs), references}` and a 300 s
-  timeout. **No streaming** — a live seconds counter is shown while it thinks (~30 s answers).
-- URLs typed into a question are auto-detected (`URL_RE`) and sent as `references` — read on
-  the fly for that one answer, badged "reading page", never added to the bank, never mixed with
-  Medyca content.
-- Answers render via `components/knowledge/AnswerBody.tsx` with clickable `[n]` citations that
-  scroll to and highlight the matching source. The `Sources` component groups hits by origin
-  (external / owned / competitor) with colour coding (**blue = Medyca, amber = competitor**) and
-  a per-source relevance %. The code stresses that confusing Medyca's content with a
-  competitor's is the worst failure this screen can make.
-- On a 504 or the browser's own timeout the chat says «La risposta ha superato il tempo
-  massimo (3 minuti)…» instead of the generic error. nginx cut `/knowledge/ask/` at 180 s
-  while the browser waits 300 s; `deploy/nginx-medycabrain.conf` now has an exact-match
-  location for it at 300 s (the live file is copied at release, with a reload).
-- `FEC/src/api/knowledge.ts` also exposes `POST /knowledge/search/`,
-  `GET /knowledge/documents/`, `GET /knowledge/documents/:id/`.
+## From a reference to the content — `ContentDetail.tsx`
 
-## From a reference to the content — `GoToContent` + `ContentDetail.tsx`
+The MCP cites content with a link (`<base>/content/blog/843`, the `apri_nel_brain` field) and a
+`kind:id` code (`blog:843`). The link opens the content's card inside the brain:
 
-The MCP cites content as `kind:id` — `blog:843`, `reel:199` (`server.py`). The
-client had no way, from the brain, to see *which* content that was. Two small
-pieces close the gap, with **no backend or MCP change**:
-
-- `components/knowledge/GoToContent.tsx` — a field in the KnowledgeBank header.
-  `parseRef()` reads the reference **forgivingly**: it keeps the kind word and the
-  id after the colon and throws away anything in between, because the client's own
-  Claude prepends a citation number (`[2] blog:843`, `blog 2:843`) that is not ours.
-  `blog`/`articolo`/`article` → the blog card, `reel` → the reel card. It also accepts
-  the **MCP's own link** (`…/content/blog/843`, the `apri_nel_brain` field), which has
-  no colon and used to be rejected. An unrecognisable input shows an inline error. A valid
-  one calls `onOpen(ref)`: `KnowledgeBank` opens `ReelDetailDrawer`/`ArticleDetailDrawer`
-  **in place**, over the chat, without navigating — navigating unmounted the page and
-  wiped the conversation. The route below stays for links opened from outside.
-- `pages/ContentDetail.tsx` — the route. It reuses the Library's own
+- `pages/ContentDetail.tsx` — the route `/content/:kind/:id`. It reuses the Library's own
   `ReelDetailDrawer` (`reelId`) / `ArticleDetailDrawer` (`docId`); no new card was
   designed. It resolves the content first (same react-query keys as the drawers, so
   no extra request) and only mounts the drawer once the data is cached. The endpoints
@@ -99,8 +73,9 @@ pieces close the gap, with **no backend or MCP change**:
   been removed while it was still there — the exact misinformation this feature exists
   to remove. 401 is not handled here: `api/client.ts` logs the client out.
 
-  Closing goes back only when the navigation carried `state.fromApp` (set by
-  `GoToContent`), otherwise it goes to `/knowledge-bank`. It must **not** use
+  Closing goes back only when the navigation carried `state.fromApp` (set by the uploads
+  list), otherwise it goes to the **Home** (label «Torna alla Home»; it used to go to the
+  chat). It must **not** use
   `window.history.length`, which counts the whole browser tab: on an MCP link opened in
   an already-used tab, stepping back sends the client out of the brain.
 
@@ -147,7 +122,7 @@ Added so the same fix is not repeated in ten pages.
 
 ## Job bar (`StatusBar`, `JobsContext`)
 
-In the flow under `<main>` (it was `fixed bottom-0` and covered the chat's send row); on the
+In the flow under `<main>` (it was `fixed bottom-0` and covered the bottom of the page); on the
 Home, which has no shell, it floats. `JobsContext` polls once on mount (a reload used to make
 a running job disappear), exposes `starting` (disables the button at once: a double click
 queued two jobs) and `lastError` (a refused start shows a dismissible red row instead of an
@@ -162,7 +137,7 @@ silently, so keep them in step.
 `FEC/src/pages/Documentation.tsx` (route `/documentazione`) is the **client's** documentation —
 all prose lives in `FEC/src/i18n/it.json` under `docs.*`, `flow.*`, `ops.*`. It explains, in
 plain Italian: what comes in, the four stages (Raccoglie / Capisce / Organizza / Consiglia),
-which model does what, how the chat works, and the known limits. It also embeds live ops
+which model does what, how the connector's search works, and the known limits. It also embeds live ops
 (`components/ops/`, reading `GET /ops/status/`) and a download of the two-page `.drawio` schema.
 
 It also has a short section, «Dove vedere cosa sta succedendo», that tells the client where the

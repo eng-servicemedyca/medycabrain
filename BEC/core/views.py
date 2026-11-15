@@ -472,7 +472,7 @@ class UploadedMediaViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         # Remove the derived doc too: an interview the client deleted must
-        # leave chat/clusters, not linger as a citable source.
+        # leave search/clusters, not linger as a citable source.
         if instance.document_id:
             models.KnowledgeDocument.objects.filter(
                 id=instance.document_id).update(is_active=False)
@@ -865,7 +865,7 @@ class KnowledgeDocumentViewSet(viewsets.ReadOnlyModelViewSet):
         # DB and reachable by id — the verdict is reviewable, not a delete.
         # …except what the client added on purpose (`is_inspiration`): the
         # model's verdict must not delete a human's choice. Same rule as the
-        # chat index (knowledge.py), or "Vedi in Libreria" opens an empty list.
+        # search index (knowledge.py), or "Vedi in Libreria" opens an empty list.
         qs = qs.filter(Q(is_on_topic=True) | Q(is_inspiration=True))
         # A cluster filter implies its own scope — the cluster was built from
         # one side's material, so the owner filter would only fight it.
@@ -931,38 +931,6 @@ class KnowledgeSearchView(APIView):
                               "top_k": request.query_params.get("top_k", 6),
                               "scope": request.query_params.get("scope", "all")}
         return self.post(request)
-
-
-class KnowledgeAskView(APIView):
-    """RAG over the knowledge bank: retrieve + grounded Italian answer with
-    citations. The "second brain" Q&A / agent task interface."""
-
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        query = (request.data.get("query") or request.data.get("q") or "").strip()
-        if not query:
-            return Response({"detail": "query richiesta."}, status=400)
-        top_k = max(3, min(int(request.data.get("top_k", 8)), 12))
-        scope = (request.data.get("scope") or "all").lower()
-        if scope not in ("all", "medyca", "competitor"):
-            scope = "all"
-        history = request.data.get("history") or []
-        if not isinstance(history, list):
-            history = []
-        # Pages the user pasted into this conversation. Read once, used for
-        # this answer only, never added to the knowledge bank.
-        from core.knowledge import MAX_REFERENCES
-        refs = request.data.get("references") or []
-        if isinstance(refs, str):
-            refs = [refs]
-        refs = [str(u).strip() for u in refs if str(u).strip()][:MAX_REFERENCES]
-        ctype = (request.data.get("content_type") or "all").lower()
-        if ctype not in ("all", "reel", "article"):
-            ctype = "all"
-        from core.knowledge import answer
-        return Response(answer(query, top_k=top_k, scope=scope, history=history,
-                               references=refs, content_type=ctype))
 
 
 def _idea_count(request, default: int) -> int:
