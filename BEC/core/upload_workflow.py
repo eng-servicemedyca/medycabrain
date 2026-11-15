@@ -54,9 +54,14 @@ def _client_message(exc: Exception) -> str:
     information we do not hand out.
     """
     from core.link_ingest import LinkRefused, ToolMissing
+    from llm.client import LLMRemoteUnavailable
 
     if isinstance(exc, (LinkRefused, ToolMissing, ClientError)):
         return str(exc)
+    if isinstance(exc, LLMRemoteUnavailable):
+        # editorial plan: Groq-only by design, so a refusal is this sentence.
+        return ("Il servizio dei modelli ha raggiunto il suo limite in questo "
+                "momento. Riprova più tardi.")
     if isinstance(exc, subprocess.CalledProcessError):
         return ("Non riesco a leggere l'audio di questo file: potrebbe essere "
                 "danneggiato o in un formato non supportato.")

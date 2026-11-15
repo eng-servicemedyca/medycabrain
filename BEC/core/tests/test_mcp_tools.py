@@ -266,6 +266,38 @@ class MCPToolsGate(TestCase):
         self.assertTrue(all(h["ispirazione"] for h in hits), hits)
         self.assertIn(f"blog:{self.doc_rif.id}", [h["id"] for h in hits])
 
+    # ── the client's road must not break when Groq refuses ─────────────────
+    def test_search_answers_in_plain_order_when_groq_refuses_and_never_asks_ollama(self):
+        """The reranker is Groq-only (2026-11-15). Whatever Groq does — per-minute
+        cap, daily cap, dead key, network — the search must still answer, at
+        once, with the blend order, and must not queue behind the local model."""
+        from django.test import override_settings
+
+        from llm import client
+        endpoint = {"name": "groq", "base_url": "http://groq.invalid/v1",
+                    "api_key": "k", "models": {"bulk": "b", "reasoning": "r",
+                                               "analysis": "a"}, "chain": ["a", "b"]}
+        plain = [h["id"] for h in
+                 server.cerca_tutto("menopausa vampate terapia", limite=8)]
+        self.assertTrue(plain)
+
+        self._p2.stop()  # the real chat_json now, so the whole chain is exercised
+        for err in (client.LLMRateLimit(5), client.LLMRateLimit(5, daily=True),
+                    client.LLMCreditError("401"), RuntimeError("rete giu'")):
+            client._fast_disabled.clear()
+            with self.subTest(err=repr(err)), \
+                 override_settings(FAST_ENDPOINTS=[endpoint],
+                                   LLM_PROVIDER_ORDER=["fast", "ollama"]), \
+                 mock.patch.object(client, "_fast_chat", side_effect=err), \
+                 mock.patch.object(client.time, "sleep") as sleep, \
+                 mock.patch.object(client, "_ollama_chat") as ollama, \
+                 mock.patch.object(client, "_ollama_slot") as slot:
+                hits = server.cerca_tutto("menopausa vampate terapia", limite=8)
+                self.assertEqual([h["id"] for h in hits], plain)
+                ollama.assert_not_called()
+                slot.assert_not_called()
+                sleep.assert_not_called()   # no waiting either: the client is waiting
+
     # ── no starvation: the minority type still comes back ──────────────────
     def test_typed_article_search_does_not_starve_against_a_reel_majority(self):
         # Eight reels, two on-topic articles: pre-fix the over-fetched pool was

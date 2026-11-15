@@ -10,6 +10,29 @@ failing for weeks, and the client wants "Groq or local, full stop").
 Ollama is pinned to OLLAMA_NUM_THREAD threads (default 6): on this VDS more
 threads make generation slower, not faster (3.8-4.0 tok/s at 6, 0.2-0.8 at 18).
 
+The local model is a BACKSTOP, and it is slow: qwen2.5 7b reads 13 tok/s and
+writes 2.8, so an average analysis (1,500 in, 400 out) takes ~250 s and the
+longest seen ~530 s (calculated 2026-11-15 from the measured speeds; the 3b the
+numbers came from is not usable commercially). What that implies, all below:
+
+  * Groq's per-minute cap is WAITED OUT (up to LLM_RATE_WAITS times, each as long
+    as Groq says, 21 s at most on 2026-11-15) instead of falling to the local
+    model after three refusals. 169 of 287 Groq calls failed that way on
+    2026-11-15 and every one was "retry in 1-21 s".
+  * The local window is OLLAMA_NUM_CTX (Ollama's own default, 4096, left 260
+    tokens of room after an analysis prompt), the model stays loaded
+    (OLLAMA_KEEP_ALIVE: reloading costs 96-123 s), silence is allowed for
+    OLLAMA_READ_TIMEOUT (reading the prompt alone is ~112 s, plus a load) and
+    the whole answer for OLLAMA_PIPELINE_TIMEOUT.
+  * A cut answer is an error with its own name (`LLMTruncated`), never half a
+    JSON returned in silence. Neither it nor a busy slot is retried: a retry
+    costs another 4-9 minutes (it used to mean up to 45 before failing).
+  * A pipeline round may make at most PIPELINE_LOCAL_MAX_CALLS local calls
+    (`LLMLocalBudget`); the stage leaves what it did not try `pending`.
+  * `remote_only=True` never reaches Ollama (the MCP search reranker, the
+    editorial plan, the eval judge): a minute of waiting is worse than an
+    answer in plain order, and a 3,600-token plan would take 20+ minutes.
+
 Every attempt is recorded in `llm_calls` by `llm/usage.py` (who asked, which
 model, how long it waited for the local lock, tokens, seconds — never the text).
 `chat()` is the single place that does it, so the callers are untouched, and a
@@ -25,6 +48,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 
 import requests
@@ -66,6 +90,28 @@ class LLMCreditError(LLMError):
     skipped for the rest of the process; the next one in the chain answers."""
 
 
+class LLMBusy(LLMError):
+    """The local slot is not free (another generation, or a person has priority)
+    and the wait ran out. Retrying only queues again behind the same thing."""
+
+
+class LLMTruncated(LLMError):
+    """The local answer was cut — at the token ceiling or by the time ceiling.
+    A cut JSON is a lost analysis, not a shorter one, so it is an error here and
+    not a string. Not retried: the same prompt is cut at the same place."""
+
+
+class LLMLocalBudget(LLMError):
+    """This pipeline round has used its local calls (PIPELINE_LOCAL_MAX_CALLS).
+    Not a failure of the item: the stage leaves it `pending` for the next round."""
+
+
+class LLMRemoteUnavailable(LLMError):
+    """`remote_only` call and no remote provider answered (cap, key, network).
+    The caller decides what to do — rerank falls back to plain order, the plan
+    says «riprova più tardi» — but it never waits for the local model."""
+
+
 class LLMModelMissing(LLMError):
     """404: this provider does not serve that model name.
 
@@ -82,11 +128,11 @@ _fast_disabled: set[str] = set()
 
 
 def _ollama_chat(system: str, user: str, max_tokens: int, temperature: float,
-                 json_mode: bool = False, timeout: int = 240, on_token=None,
+                 json_mode: bool = False, timeout: int | None = None, on_token=None,
                  rec=None) -> str:
-    """Local generation. Streams so a slow CPU still shows life: `timeout`
-    becomes a per-chunk read timeout instead of a whole-answer deadline, so a
-    long-but-progressing answer is no longer killed halfway.
+    """Local generation. Streams so a slow CPU still shows life: the silence
+    allowed between chunks is OLLAMA_READ_TIMEOUT, and `timeout` is the deadline
+    for the whole answer. Raises `LLMTruncated` if the answer is cut.
 
     `rec` is the `usage.Call` of this attempt (optional): it gets the live token
     count and, from Ollama's last line, the real numbers."""
@@ -95,7 +141,13 @@ def _ollama_chat(system: str, user: str, max_tokens: int, temperature: float,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
         "stream": True,
-        "options": {"temperature": temperature, "num_predict": max_tokens},
+        # num_ctx: Ollama opened this model with 4096 tokens (measured with
+        # /api/ps 2026-11-15) and an analysis asks for up to 1,836 in + 2,000 out:
+        # it fit by 260 tokens. keep_alive: unloaded after 5 min of silence by
+        # default, and a reload costs 96-123 s.
+        "options": {"temperature": temperature, "num_predict": max_tokens,
+                    "num_ctx": settings.OLLAMA_NUM_CTX},
+        "keep_alive": settings.OLLAMA_KEEP_ALIVE,
     }
     if settings.OLLAMA_NUM_THREAD > 0:
         # Ollama's default (all cores) collapses to <1 tok/s on this VDS; see settings.
@@ -104,9 +156,13 @@ def _ollama_chat(system: str, user: str, max_tokens: int, temperature: float,
         payload["format"] = "json"
     _last_model.set(f"ollama:{settings.OLLAMA_MODEL}")
     chunks: list[str] = []
+    timeout = timeout or settings.OLLAMA_PIPELINE_TIMEOUT
     deadline = time.time() + timeout
+    # Silence allowed: loading the model (96-123 s) and reading the prompt
+    # (~112 s for a 1,500-token one) both happen before the first token.
     with requests.post(f"{settings.OLLAMA_URL}/api/chat", json=payload,
-                       stream=True, timeout=(10, 120)) as resp:
+                       stream=True,
+                       timeout=(10, settings.OLLAMA_READ_TIMEOUT)) as resp:
         resp.raise_for_status()
         for line in resp.iter_lines():
             if not line:
@@ -128,13 +184,20 @@ def _ollama_chat(system: str, user: str, max_tokens: int, temperature: float,
             if data.get("done"):
                 if rec is not None:
                     _record_ollama_stats(rec, data)
+                if data.get("done_reason") == "length":
+                    raise LLMTruncated(
+                        f"risposta locale tagliata al tetto di {max_tokens} token")
+                if (data.get("prompt_eval_count") or 0) >= settings.OLLAMA_NUM_CTX - 8:
+                    # The window is full: Ollama drops the start of the prompt
+                    # without a word, so the answer may ignore the instructions.
+                    logger.warning("[llm] ollama: prompt of %s tokens fills the %s window",
+                                   data.get("prompt_eval_count"), settings.OLLAMA_NUM_CTX)
                 break
             if time.time() > deadline:
-                logger.warning("[llm] ollama stream exceeded %ss — returning partial", timeout)
-                # Not an error for the caller, but the answer is cut: say so.
                 if rec is not None:
                     rec.stats(truncated=True, output_tokens=len(chunks))
-                break
+                raise LLMTruncated(
+                    f"risposta locale ancora in corso dopo {timeout} secondi: interrotta")
     return "".join(chunks)
 
 
@@ -177,7 +240,7 @@ def _ollama_slot(wait: int | None = None, priority: bool = False):
             # Batch work: never start a new generation while a human waits.
             while os.path.exists(prio_path) and _prio_held(prio_path):
                 if time.time() >= deadline:
-                    raise LLMError("ollama busy: interactive work has priority")
+                    raise LLMBusy("ollama busy: interactive work has priority")
                 time.sleep(2.0)
         while True:
             try:
@@ -185,7 +248,7 @@ def _ollama_slot(wait: int | None = None, priority: bool = False):
                 break
             except BlockingIOError:
                 if time.time() >= deadline:
-                    raise LLMError(f"ollama busy: no free slot after {wait}s")
+                    raise LLMBusy(f"ollama busy: no free slot after {wait}s")
                 time.sleep(1.0)
         yield
     finally:
@@ -387,22 +450,68 @@ def _providers() -> list[tuple[str, dict | None]]:
     return order
 
 
+# Local calls made by THIS process in a pipeline round. A round is one process
+# (cron `run_pipeline`, or the `run_job` of a manual round), so a plain counter
+# is the round's counter; `DAG.run` zeroes it when a round begins.
+_local_calls = 0
+_local_calls_lock = threading.Lock()
+
+
+def reset_local_budget() -> None:
+    global _local_calls
+    with _local_calls_lock:
+        _local_calls = 0
+
+
+def local_calls_used() -> int:
+    return _local_calls
+
+
+def _take_local_call() -> None:
+    """Count a local call of a pipeline round, or refuse it when the round has
+    used PIPELINE_LOCAL_MAX_CALLS. Calls that are not a pipeline stage (a Job
+    the client started, a command) are not capped: a person is waiting for them.
+
+    Why a cap at all: with Groq switched off the 7b would need ~9 h for a big
+    round (141 calls x ~4 min) and run into the 14:15 round."""
+    global _local_calls
+    cap = settings.PIPELINE_LOCAL_MAX_CALLS
+    if cap <= 0 or not usage.current()["process"].startswith("pipeline:"):
+        return
+    with _local_calls_lock:
+        if _local_calls >= cap:
+            raise LLMLocalBudget(
+                f"tetto di {cap} chiamate al modello locale raggiunto in questo giro")
+        _local_calls += 1
+
+
 def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2,
-         retries: int = 2, json_mode: bool = False, timeout: int = 240,
-         on_token=None, priority: bool = False, model: str = "") -> str:
+         retries: int = 2, json_mode: bool = False, timeout: int | None = None,
+         on_token=None, priority: bool = False, model: str = "",
+         remote_only: bool = False) -> str:
     """Return raw assistant text, trying providers in order with retries.
 
     json_mode nudges Ollama to emit valid JSON — set only for extraction
     prompts, never for free-text answers (it degrades prose quality).
-    timeout applies to the Ollama call (long jobs pass a bigger value).
+    timeout is the ceiling of one answer: it bounds the local model (default
+    OLLAMA_PIPELINE_TIMEOUT, a 7b needs minutes) and, capped at 120 s, a remote
+    call. `retries` is for unexpected errors; a per-minute rate limit is waited
+    out up to LLM_RATE_WAITS times, except with retries=0 ("fail fast").
+    remote_only: never touch the local model; raises `LLMRemoteUnavailable`.
     """
     providers = _providers()
+    if remote_only:
+        providers = [p for p in providers if p[0] != "ollama"]
     if not providers:
-        raise LLMError("no LLM provider available (no key, Ollama disabled)")
+        raise (LLMRemoteUnavailable("nessun provider remoto disponibile (manca la chiave?)")
+               if remote_only else
+               LLMError("no LLM provider available (no key, Ollama disabled)"))
 
     # The tier the caller asked for, so every provider in the chain answers
     # with ITS model of that tier instead of a name it does not serve.
     task = _task_of(model) if model else ""
+    remote_timeout = min(timeout or 240, 120)
+    max_waits = settings.LLM_RATE_WAITS if retries > 0 else 0
 
     def _model_on(endpoint) -> str:
         if not model:
@@ -427,21 +536,43 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
         rec.done_remote(model=last_model_used())
         return text
 
+    def _patient(label: str, fn) -> str:
+        """One remote call that waits out the per-minute cap. Groq refused 169
+        of 287 calls on 2026-11-15, all with "retry in 1-21 s": waiting 20 s
+        costs 12 times less than the 4-minute local call it used to trigger. A
+        per-DAY cap is not waited for (it will not refill): it escalates at once."""
+        waits = 0
+        while True:
+            try:
+                return fn()
+            except LLMRateLimit as exc:
+                if exc.daily or waits >= max_waits:
+                    raise
+                waits += 1
+                wait = min(max(exc.retry_after, 1.0), 60.0)
+                logger.info("[llm] %s rate-limited — waiting %.0fs (%d/%d)",
+                            label, wait, waits, max_waits)
+                time.sleep(wait)
+
     def _call_alt(endpoint, alt_model: str) -> str:
         """Same endpoint, a sibling model — used when a daily cap is hit."""
-        return _recorded(endpoint["name"], alt_model, lambda: _fast_chat(
-            system, user, max_tokens, temperature, json_mode=json_mode,
-            timeout=min(timeout, 300), model=alt_model, endpoint=endpoint))
+        return _patient(endpoint["name"], lambda: _recorded(
+            endpoint["name"], alt_model, lambda: _fast_chat(
+                system, user, max_tokens, temperature, json_mode=json_mode,
+                timeout=min(timeout or 240, 300), model=alt_model, endpoint=endpoint)))
 
     def _call(provider, endpoint=None):
         if provider == "fast":
             name = _model_on(endpoint) or endpoint.get("models", {}).get("reasoning", "")
-            return _recorded(endpoint["name"], name, lambda: _fast_chat(
-                system, user, max_tokens, temperature,
-                json_mode=json_mode, timeout=min(timeout, 120),
-                model=_model_on(endpoint), endpoint=endpoint))
+            return _patient(endpoint["name"], lambda: _recorded(
+                endpoint["name"], name, lambda: _fast_chat(
+                    system, user, max_tokens, temperature,
+                    json_mode=json_mode, timeout=remote_timeout,
+                    model=_model_on(endpoint), endpoint=endpoint)))
         # Local generation: take the single CPU slot, never run two at once.
-        # The row is born BEFORE the wait: "in coda" is a state worth showing.
+        # The budget is checked before the row is born: a refused call is not
+        # a call. The row is born BEFORE the wait: "in coda" is a state worth showing.
+        _take_local_call()
         rec = usage.begin("ollama", settings.OLLAMA_MODEL, is_local=True, waiting=True,
                           max_tokens=max_tokens, prompt_chars=prompt_chars)
         try:
@@ -475,34 +606,35 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
                     _fast_disabled.add(endpoint["name"])
                 last_err = exc
                 break
+            except (LLMBusy, LLMTruncated, LLMLocalBudget) as exc:
+                # Local failures with a name. None improves on a second try: the
+                # slot is still taken, the answer is cut at the same place, the
+                # round's budget is still spent — and each try is 4-9 minutes.
+                logger.warning("[llm] %s: %s — not retrying", label, exc)
+                last_err = exc
+                break
             except LLMRateLimit as exc:
                 last_err = exc
-                if exc.daily:
+                if exc.daily and provider == "fast":
                     # Today's budget for THIS model is gone; each model has its
                     # own. Walk the chain before ever dropping to local CPU.
-                    if provider == "fast":
-                        tried = {_model_on(endpoint)
-                                 or endpoint.get("models", {}).get("reasoning")}
-                        for alt in endpoint.get("chain", []):
-                            if alt in tried:
-                                continue
-                            tried.add(alt)
-                            logger.warning("[llm] daily budget exhausted — switching to %s", alt)
-                            try:
-                                return _call_alt(endpoint, alt)
-                            except LLMRateLimit as exc2:
-                                last_err = exc2
-                                if not exc2.daily:
-                                    break
-                            except Exception as exc2:  # noqa: BLE001
-                                last_err = exc2
+                    tried = {_model_on(endpoint)
+                             or endpoint.get("models", {}).get("reasoning")}
+                    for alt in endpoint.get("chain", []):
+                        if alt in tried:
+                            continue
+                        tried.add(alt)
+                        logger.warning("[llm] daily budget exhausted — switching to %s", alt)
+                        try:
+                            return _call_alt(endpoint, alt)
+                        except LLMRateLimit as exc2:
+                            last_err = exc2
+                            if not exc2.daily:
                                 break
-                    break
-                wait = min(exc.retry_after, 60.0)
-                logger.info("[llm] %s rate-limited — waiting %.0fs", label, wait)
-                if attempt < retries:
-                    time.sleep(wait)
-                    continue
+                        except Exception as exc2:  # noqa: BLE001
+                            last_err = exc2
+                            break
+                # Not daily: `_patient` already waited as many times as allowed.
                 break
             except requests.exceptions.Timeout as exc:
                 # Retrying a timeout means asking a machine that is already
@@ -519,6 +651,11 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
                 last_err = exc
                 if attempt < retries:
                     time.sleep(2 ** attempt)
+    if isinstance(last_err, LLMLocalBudget):
+        # The stage must be able to tell "we stopped trying" from "it failed".
+        raise last_err
+    if remote_only:
+        raise LLMRemoteUnavailable(f"remote providers failed: {last_err!r}")
     raise LLMError(f"all providers failed: {last_err!r}")
 
 

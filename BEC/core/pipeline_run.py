@@ -20,7 +20,9 @@ does not:
 Only one run at a time. Two concurrent runs are not merely wasteful: the
 downloader paces itself against Instagram's quota, and a second run doubles the
 request rate against a limit that is already the bottleneck. The caller
-(`core/views.py`) refuses to start one when another is alive.
+(`core/views.py`) refuses to start one when another is alive, and `DAG.run`
+holds a file lock (`PIPELINE_LOCK_PATH`) so that cron-vs-cron and cron-vs-button
+are covered too: the loser exits with ROUND_BUSY and says so in the log.
 """
 
 from __future__ import annotations
@@ -80,6 +82,13 @@ def run_pipeline_job(job, only: list[str] | None = None,
         with contextlib.redirect_stdout(_Tee(sys.stdout, pipeline_log)):
             code = DAG(steps).run(ctx, only=only_set, on_step=on_step,
                                   source="manual", job_id=job.id)
+
+    from pipeline.dag import ROUND_BUSY
+    if code == ROUND_BUSY:
+        # Not "completed, but without everything": nothing ran at all.
+        from core.upload_workflow import ClientError
+        raise ClientError("Un altro aggiornamento sta già lavorando. "
+                          "Riprova quando ha finito.")
 
     stats = ctx.stats
     done_stages = list(stats)

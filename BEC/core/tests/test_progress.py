@@ -19,7 +19,7 @@ from unittest import mock
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.db import OperationalError, ProgrammingError
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
@@ -150,6 +150,9 @@ class DatabaseDownTests(TestCase):
             self.assertEqual(progress.plan_stages("r", ["scrape"], "cron"), {})
 
 
+# A test must never hold the real round lock: a cron round starting at that
+# moment would be refused, and a real round running would fail these tests.
+@override_settings(PIPELINE_LOCK_PATH=f"/tmp/medycabrain-test-{os.getpid()}.lock")
 class DagWritesStageRunsTests(TestCase):
     def setUp(self):
         usage._reset_breaker()

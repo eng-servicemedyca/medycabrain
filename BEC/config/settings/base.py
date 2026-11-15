@@ -152,6 +152,28 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct-q4_K_M")
 # Q4_K_M does 0.2-0.8 tok/s at 18 threads, 1.4-1.9 at 12, 3.8-4.0 at 6, 2.9-3.2
 # at 4. 0 = do not send the option (let Ollama decide). Re-measure on new hardware.
 OLLAMA_NUM_THREAD = int(os.environ.get("OLLAMA_NUM_THREAD", "6"))
+# The 7b is a BACKSTOP and slow here (reads 13 tok/s, writes 2.8: ~250 s for an
+# average analysis, ~530 s for the longest seen — calculated 2026-11-15 from the
+# measured speeds, not timed on analysis prompts). So:
+#  - window: Ollama opened it at 4096 tokens, an analysis needs up to ~3,800;
+#    8192 costs 5.5 GB of the 82 free;
+#  - keep_alive: a reload costs 96-123 s, the default drops the model after 5 min;
+#  - read timeout: silence allowed before the first token (model load + reading
+#    the prompt >200 s; it was 120 s);
+#  - pipeline timeout: the whole answer (533 s writing + 123 s load, with room).
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
+OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
+OLLAMA_READ_TIMEOUT = int(os.environ.get("OLLAMA_READ_TIMEOUT", "600"))
+OLLAMA_PIPELINE_TIMEOUT = int(os.environ.get("OLLAMA_PIPELINE_TIMEOUT", "1500"))
+# Local calls one pipeline round may make before the stage stops and leaves the
+# rest `pending` (40 x ~4 min = ~2.8 h). 0 = no cap. Without it, a night with
+# Groq down would ask for ~9 h and run into the 14:15 round.
+PIPELINE_LOCAL_MAX_CALLS = int(os.environ.get("PIPELINE_LOCAL_MAX_CALLS", "40"))
+# Groq's per-minute cap is waited out this many times (each as long as Groq says,
+# 21 s at most on 2026-11-15) before the local model is asked.
+LLM_RATE_WAITS = int(os.environ.get("LLM_RATE_WAITS", "6"))
+# One pipeline round at a time, across cron and "Aggiorna ora".
+PIPELINE_LOCK_PATH = os.environ.get("PIPELINE_LOCK_PATH", "/tmp/medycabrain-pipeline.lock")
 # Fast remote provider (OpenAI-compatible): Groq / Cerebras / OpenRouter /
 # DeepSeek / Together. ~100-300 tok/s vs ~1-3 tok/s for a 7B on this CPU, so
 # it is tried FIRST whenever a key is present. Ollama stays as the offline

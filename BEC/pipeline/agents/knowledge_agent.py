@@ -33,6 +33,7 @@ from django.conf import settings
 from core import progress
 from core.models import DONE, FAILED, PENDING, DocumentArgument, KnowledgeDocument
 from llm import client, prompts
+from llm.client import LLMLocalBudget
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +199,8 @@ def run(ctx) -> dict:
     from pipeline.agents.enrich_agent import _parallel
 
     enriched = enrich_failed = embedded = embed_failed = 0
-    arg_docs = total_args = arg_failed = 0
+    arg_docs = total_args = arg_failed = deferred = 0
+    stopped = False
 
     if client.available():
         qs = KnowledgeDocument.objects.filter(
@@ -209,7 +211,14 @@ def run(ctx) -> dict:
         # the reel stage's thread pool applies unchanged.
         docs = list(qs)
         progress.open(len(docs), "articoli", "Analisi")
+        done_ids = set()
         for doc, _res, exc in _parallel(docs, _enrich_one):
+            if isinstance(exc, LLMLocalBudget):
+                # Not tried, not failed: stays pending for the next round.
+                stopped = True
+                deferred += len(docs) - len(done_ids)
+                break
+            done_ids.add(doc.id)
             if exc is None:
                 enriched += 1
             else:
@@ -225,7 +234,13 @@ def run(ctx) -> dict:
             qs_a = qs_a[: ctx.limit]
         arg_list = list(qs_a)
         progress.open(len(arg_list), "articoli", "Affermazioni")
+        arg_done = 0
         for doc, n, exc in _parallel(arg_list, _extract_arguments):
+            if isinstance(exc, LLMLocalBudget):
+                stopped = True
+                deferred += len(arg_list) - arg_done
+                break
+            arg_done += 1
             if exc is None:
                 doc.argument_status = DONE
                 doc.save(update_fields=["argument_status"])
@@ -263,7 +278,13 @@ def run(ctx) -> dict:
     # NOTE: failures stay FAILED, per project rule. The blanket reset that
     # used to live here re-queued every permanently broken doc on every run —
     # an infinite retry that also hid the failure from every status page.
-    return {"enriched": enriched, "enrich_failed": enrich_failed,
-            "arg_docs": arg_docs, "arguments": total_args,
-            "arg_failed": arg_failed,
-            "embedded": embedded, "embed_failed": embed_failed}
+    out = {"enriched": enriched, "enrich_failed": enrich_failed,
+           "arg_docs": arg_docs, "arguments": total_args,
+           "arg_failed": arg_failed,
+           "embedded": embedded, "embed_failed": embed_failed}
+    if stopped:
+        from pipeline.agents.enrich_agent import note_local_budget
+        note_local_budget(deferred)
+        out["deferred"] = deferred
+        out["stopped"] = "tetto di chiamate al modello locale"
+    return out

@@ -405,7 +405,10 @@ def _rerank(query: str, hits: list[dict]) -> list[dict]:
             data = client.chat_json(
                 "Sei un valutatore di pertinenza per una ricerca. Solo JSON valido.",
                 user, max_tokens=2000, temperature=0.0,
-                model=client.model_for("bulk"), retries=0)
+                # remote_only: the local 7b would need ~1m45 for this and queue
+                # behind the pipeline for up to 15 min; the client would see a
+                # frozen search. If Groq refuses we answer at once in plain order.
+                model=client.model_for("bulk"), retries=0, remote_only=True)
         order = data.get("ordine") if isinstance(data, dict) else None
         if not order:
             return hits

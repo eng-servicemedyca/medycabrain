@@ -44,11 +44,24 @@ flowchart LR
 | 1 | **scrape** | `scraper_agent.py` | For each active `TrackedAccount` (Medyca's own first): read the **public embed page** through the residential proxy (`embed_provider.py`, [below](#where-the-list-of-reels-comes-from)) — the last 6 posts, only the videos the account **owns** — dump raw JSON to `data/raw/{account}/{shortcode}.json`, upsert `Reel` rows. 5-10 s between accounts; at most `embed_max_new_per_run` (5) new reels per run; 3 blocked accounts in a row stop the run; **if every account failed the stage is `failed`** with the reason. Apify is **not called any more** (code kept, off). | `media_status=pending` |
 | 2 | **download** | `downloader_agent.py` | For `media_status=pending`: get the mp4 (three sources, cheapest first — [below](#how-a-reels-video-actually-arrives)), ffmpeg-extract audio → `media/audio/{account}/{shortcode}.mp3`, save thumbnail → `media/thumbs/…`, delete the mp4. 3 attempts then `skipped`; a block defers the reel instead of charging it an attempt. | `media_status=done`, `transcribe_status=pending` |
 | 3 | **transcribe** | `transcriber_agent.py` | faster-whisper (local CPU, int8) over each mp3 → `Transcript`. Remote STT (`llm.client.transcribe_audio`) is used instead when `USE_REMOTE_STT`. Also processes `UploadedMedia`. | `transcribe_status=done`, `enrich_status=pending` |
-| 4 | **enrich** | `enrich_agent.py` | One LLM call per `enrich_status=pending` reel → `Enrichment` (summary, topics, hook, target, format, `primary_topic`, `evidence`). The model is Groq first, the local model as backstop (`03-llm-and-embeddings.md`). Then extracts `ReelArgument`s for `argument_status=pending` — each with a required **verbatim quote**. | `enrich_status=done`, `argument_status` advanced |
+| 4 | **enrich** | `enrich_agent.py` | One LLM call per `enrich_status=pending` reel → `Enrichment` (summary, topics, hook, target, format, `primary_topic`, `evidence`). The model is Groq first, the local model as backstop (`03-llm-and-embeddings.md`). **One reel at a time** (`ENRICH_WORKERS=1`; it was 5). If the round has used its `PIPELINE_LOCAL_MAX_CALLS` (40) local calls the stage stops, writes a note, and leaves the reels it did not try `pending` (not `failed`). Then extracts `ReelArgument`s for `argument_status=pending` — each with a required **verbatim quote**. | `enrich_status=done`, `argument_status` advanced |
 | 5 | **embed** | `embed_agent.py` | Give every enriched reel a `vector` (via `cluster_agent._ensure_reel_embeddings`) and compute `chunk_vectors` passage embeddings for reels **and** documents (`_embed_passages`). Split from `enrich` on purpose so "analysed" and "searchable" can never drift apart. | embeddings written |
 | 6 | **blogscrape** | `blogscrape_agent.py` | For each active `BlogSource`, self-throttling on `crawl_interval_h`: discover article URLs (`blog_discovery.py`) and ingest new ones (`blog_agent.py` — trafilatura → Markdown → `KnowledgeDocument`). Deactivates a source after N consecutive failures. | new `KnowledgeDocument` rows |
 | 7 | **knowledge** | `knowledge_agent.py` | Enrich + embed blog articles (Medyca's and competitors'), using `model_for("analysis")`: `primary_topic`, on-topic verdict, `DocumentArgument` extraction (verbatim quote required). No hook/format — those are video-craft only. | `enrich_status`/`embed_status`/`argument_status=done` |
 | 8 | **cluster** | `cluster_agent.py` | Two-layer clustering (below). Writes a fresh `ClusterRun` **per scope**, flips `is_current` atomically, then refreshes `CustomTopic` matches (`core/custom_topics.recompute_matches`). | new current `ClusterRun` per scope |
+
+## One round at a time, and what a round may spend locally (2026-11-15)
+
+- `DAG.run` takes a file lock (`PIPELINE_LOCK_PATH`, default `/tmp/medycabrain-pipeline.lock`) for
+  the whole round. Before, only the «Aggiorna ora» button checked for a running round, and only
+  when pressed: cron could start the 14:15 round on top of a 03:30 one still working (nothing in
+  `run_pipeline.py` stopped it). Now the second round writes «un altro giro sta già lavorando:
+  questo non parte» in `logs/pipeline.log`, plans nothing, and exits with code 3 (`ROUND_BUSY`);
+  a Job fails with «Un altro aggiornamento sta già lavorando. Riprova quando ha finito.». A dry
+  run takes no lock. The lock dies with the process: a crashed round never leaves it stuck.
+- `DAG.run` zeroes the round's counter of local-model calls; `enrich` and `knowledge` stop on
+  `PIPELINE_LOCAL_MAX_CALLS` and leave the untried items `pending` (stage `note`, return keys
+  `deferred` and `stopped`). Details and numbers: [03-llm-and-embeddings.md](03-llm-and-embeddings.md#the-local-backstop-qwen25-7b-2026-11-15).
 
 ## Video taken from a link (the fourth door, widened)
 
@@ -816,7 +829,7 @@ stage (done/total, speed, elapsed, remaining). Mechanism:
   counters.
 - `enrich` and `knowledge` count **inside the worker thread** (`_tracked` in `enrich_agent.py`,
   once per item, not per rate-limit retry), because their results arrive in submission order
-  and late; the counters are behind a lock (5 threads by default).
+  and late; the counters are behind a lock (one thread by default since 2026-11-15, `ENRICH_WORKERS`).
 
 | Stage | Total declared | Phases | Who works |
 |---|---|---|---|

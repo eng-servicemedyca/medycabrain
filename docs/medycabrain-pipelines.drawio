@@ -56,7 +56,7 @@
         </mxCell>
 
         <!-- ============ INFRA (LLM/ML) ============ -->
-        <mxCell id="infra" value="Infrastruttura ML&#10;&#10;Ollama mistral:7b (primario)&#10;HuggingFace (fallback)&#10;faster-whisper&#10;sentence-transformers&#10;(paraphrase-multilingual)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#B7791F;fontColor=#7A5200;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;" vertex="1" parent="1">
+        <mxCell id="infra" value="Infrastruttura ML&#10;&#10;Groq (primario, gratuito)&#10;Ollama qwen2.5:7b (riserva)&#10;faster-whisper&#10;sentence-transformers&#10;(paraphrase-multilingual)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#B7791F;fontColor=#7A5200;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;" vertex="1" parent="1">
           <mxGeometry x="1180" y="270" width="220" height="320" as="geometry" />
         </mxCell>
 
@@ -99,7 +99,7 @@
         <mxCell id="sb_idea" value="ideation — motore di idee&#10;competitor (temi+argomenti) vs copertura Medyca (reel+blog)&#10;→ argomenti proposti, GAP evidenziati" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C93B42;strokeColor=#A93037;fontColor=#FFFFFF;" vertex="1" parent="1">
           <mxGeometry x="330" y="640" width="380" height="56" as="geometry" />
         </mxCell>
-        <mxCell id="sb_ask" value="RAG ask&#10;retrieve + risposta LLM&#10;con citazioni" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C93B42;strokeColor=#A93037;fontColor=#FFFFFF;" vertex="1" parent="1">
+        <mxCell id="sb_ask" value="Ricerca per il connettore MCP&#10;retrieve + riordino (Groq)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C93B42;strokeColor=#A93037;fontColor=#FFFFFF;" vertex="1" parent="1">
           <mxGeometry x="750" y="640" width="200" height="56" as="geometry" />
         </mxCell>
 

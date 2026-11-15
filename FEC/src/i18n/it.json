@@ -366,7 +366,11 @@
         "Dei video presi da un link non sempre riusciamo a ottenere l'audio: YouTube e Vimeo bloccano i server come il nostro, quindi scarichiamo passando da una connessione residenziale italiana, senza bisogno di accessi o cookie. Se quella connessione non risponde (o è finito il traffico), il download fallisce. In quel caso il video resta comunque in piattaforma con titolo, canale e link — cercabile e citabile come riferimento — ma senza trascrizione, e la riga te lo dice in chiaro. Se ti serve la trascrizione subito, carica il file video a mano.",
         "Se una pagina non riesce a caricare i dati, vedi un messaggio chiaro con il pulsante «Riprova»: una lista vuota vuol dire che non c'è niente, mai che qualcosa si è rotto.",
         "Nella mappa del Second Brain i temi oltre i primi si dispongono in cerchi concentrici attorno al loro gruppo: così nessuno si sovrappone, anche quando sono centinaia.",
-        "Avanzamento: gli stadi «indicizzazione» e «raggruppamento per tema» non dicono quanti elementi mancano, mostrano solo «in corso da…». I lavori avviati dal sito mostrano solo la percentuale. I dettagli si tengono 90 giorni."
+        "Avanzamento: gli stadi «indicizzazione» e «raggruppamento per tema» non dicono quanti elementi mancano, mostrano solo «in corso da…». I lavori avviati dal sito mostrano solo la percentuale. I dettagli si tengono 90 giorni.",
+        "Le analisi dipendono da Groq, un servizio esterno gratuito. Ha un limite di lavoro al minuto e uno al giorno, e può cambiarlo o ritirare un modello senza avvisare. Un giro grosso usa da solo quasi tutto il limite di una giornata: il giro del pomeriggio e le funzioni che premi a mano (piano editoriale, ideazione) possono trovarne poco.",
+        "Quando Groq non basta lavora il modello installato sul nostro server. È molto più lento (una singola analisi può chiedere fino a 9 minuti) e la sua qualità su questi contenuti non è ancora stata provata: con le prove fatte finora i temi sono usciti più generici e a volte le citazioni erano inventate; il controllo scarta quelle che non si ritrovano nel testo, ma i temi generici passano. Ogni giro può usarlo al massimo 40 volte: ciò che resta aspetta il giro dopo, resta «in attesa» (non «fallito») e la pagina Avanzamento lo scrive.",
+        "Il piano editoriale e il riordino dei risultati della ricerca usano solo Groq, senza riserva sul server. Se Groq è al limite il piano dice «Riprova più tardi» e la ricerca risponde subito con l'ordine semplice, senza dare errore.",
+        "Parte un solo aggiornamento alla volta: se ne parte un secondo mentre il primo lavora, il secondo si ferma e lo scrive nel registro."
       ]
     },
     "models": {
@@ -390,8 +394,13 @@
         },
         {
           "step": "Piano editoriale",
-          "model": "Groq · gpt-oss-120b",
+          "model": "Groq · gpt-oss-120b (solo Groq)",
           "why": "Confronta la copertura di Medyca con quella dei competitor e propone idee girabili: angolo, gancio, scaletta e chiusura."
+        },
+        {
+          "step": "Riordino dei risultati di ricerca",
+          "model": "Groq · gpt-oss-20b (solo Groq)",
+          "why": "Sistema in ordine di pertinenza i risultati che il connettore dà a Claude. Se Groq non risponde, i risultati arrivano subito nell'ordine semplice."
         },
         {
           "step": "Indicizzazione per la ricerca",

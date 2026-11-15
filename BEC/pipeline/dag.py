@@ -12,6 +12,8 @@ still lets yesterday's downloads get transcribed, etc.
 
 from __future__ import annotations
 
+import fcntl
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -52,6 +54,30 @@ class Step:
     fatal: bool = False
 
 
+# Exit code of a round that refused to start because another one is working.
+ROUND_BUSY = 3
+
+
+def _take_round_lock():
+    """The file lock that makes it one round at a time, or None if it is held.
+
+    Cron (03:30 and 14:15) and "Aggiorna ora" are separate processes, and until
+    2026-11-15 nothing stopped a round from starting while another still worked:
+    the page's own check sees the manual job and the cron process only when the
+    BUTTON is pressed, not when cron starts. With the local model a round can
+    last hours, so the 14:15 one would land on top of the 03:30 one. flock goes
+    away with the process, so a crashed round never leaves it stuck."""
+    from django.conf import settings
+
+    fd = os.open(settings.PIPELINE_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o666)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    return fd
+
+
 class DAG:
     def __init__(self, steps: list[Step]):
         self.steps = steps
@@ -60,7 +86,28 @@ class DAG:
             skip: set[str] | None = None,
             on_step: Callable[[int, int, str], None] | None = None,
             source: str = "cron", job_id: int | None = None) -> int:
-        """Run the steps in order.
+        """Run the steps in order — one round at a time.
+
+        Returns ROUND_BUSY (and writes why in the log) when another round holds
+        the lock; nothing is planned or recorded in that case.
+        """
+        if ctx.dry_run:
+            return self._run(ctx, only, skip, on_step, source, job_id)
+        fd = _take_round_lock()
+        if fd is None:
+            _fail("un altro giro sta già lavorando: questo non parte "
+                  "(uno alla volta; riprova quando ha finito)")
+            return ROUND_BUSY
+        try:
+            return self._run(ctx, only, skip, on_step, source, job_id)
+        finally:
+            os.close(fd)  # closing the descriptor releases the flock
+
+    def _run(self, ctx: Context, only: set[str] | None,
+             skip: set[str] | None,
+             on_step: Callable[[int, int, str], None] | None,
+             source: str, job_id: int | None) -> int:
+        """The round itself.
 
         `on_step(index, total, stage)` is called as each stage begins, so a
         caller that is not a terminal — a `Job` row the UI polls — can report
@@ -74,8 +121,10 @@ class DAG:
         none of it can stop a stage.
         """
         from core import progress
-        from llm import usage
+        from llm import client, usage
 
+        # A new round, a new allowance of local calls (PIPELINE_LOCAL_MAX_CALLS).
+        client.reset_local_budget()
         only = only or set()
         skip = skip or set()
         failed: list[str] = []

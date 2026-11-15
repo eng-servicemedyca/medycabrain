@@ -8,12 +8,19 @@ Then extracts standalone arguments/claims (layer-2) for reels with
 argument_status='pending'. Both stages are idempotent and skip gracefully
 when no model can answer (pipeline continues).
 
-Both stages run several reels at once (ENRICH_WORKERS, default 5). The cost
-of a reel is ~17s of waiting for the model to answer, not local computation:
-measured sequentially on 2026-07-27 with the machine at 12% of eight cores.
-Five at a time brought it to 3.6s per reel on the same workload. The ceiling
-is the provider's rate limit, which is retried rather than recorded as a
-failed reel — a 429 says nothing about the content.
+Both stages run ONE reel at a time by default (ENRICH_WORKERS=1). They used to
+run five (measured 2026-07-27: 17 s -> 3.6 s a reel on Anthropic), but the
+ceiling is Groq's per-minute token cap, not the number of threads, and five
+threads retrying together were what pushed 169 of 287 Groq calls into a refusal
+on 2026-11-15 (and then onto the local model). It also matters for the local
+backstop, which does one generation at a time. The cap is WAITED OUT inside
+`client.chat()` (a 429 says nothing about the content), so a rate limit never
+becomes a failed reel.
+
+A round may make only PIPELINE_LOCAL_MAX_CALLS local calls (settings.py). When
+that runs out (`LLMLocalBudget`) the stage stops, says so in its note, and the
+reels it did not try STAY `pending` for the next round — they are not `failed`.
+Real failures stay `failed`; this is not one.
 """
 
 from __future__ import annotations
@@ -28,7 +35,7 @@ from django.db.models import Q
 from core import progress
 from core.models import DONE, FAILED, PENDING, SKIPPED, Enrichment, Reel, ReelArgument
 from llm import client, prompts
-from llm.client import LLMRateLimit
+from llm.client import LLMLocalBudget, LLMRateLimit
 
 logger = logging.getLogger(__name__)
 
@@ -38,15 +45,14 @@ VALID_FORMATS = {
 }
 _DELAY = 0.3
 
-# Each reel costs ~17s, and almost all of it is spent waiting for the model to
-# answer — measured on 2026-07-27 with the machine at 12% of eight cores. The
-# work is network-bound, so running several at once costs nothing locally and
-# divides the wall clock. Conservative by default: the ceiling here is the
-# provider's rate limit, not this machine.
-_WORKERS = max(1, int(os.environ.get("ENRICH_WORKERS", "5")))
+# One by default (see the module docstring): the ceiling is Groq's per-minute
+# token cap and the local model's single slot, not the thread count. The rate
+# limit itself is waited out in `client.chat()`; `_with_retry` below only matters
+# if someone raises this above 1 and a limit still escapes.
+_WORKERS = max(1, int(os.environ.get("ENRICH_WORKERS", "1")))
 # A 429 is not a failure of the reel. Marking it FAILED would be permanent —
 # failures are deliberately never auto-retried — so a rate limit has to be
-# waited out here rather than recorded as a defect in the content.
+# waited out rather than recorded as a defect in the content.
 _RATE_RETRIES = 4
 
 
@@ -59,6 +65,10 @@ def _tracked(call, item):
     progress.start_item(*progress.describe(item))
     try:
         out = call()
+    except LLMLocalBudget:
+        # Not tried, not failed: it stays pending for the next round.
+        progress.item_done("skipped")
+        raise
     except BaseException:
         progress.item_done("failed")
         raise
@@ -107,6 +117,18 @@ def _parallel(reels, fn):
                 yield reel, fut.result(), None
             except Exception as exc:  # noqa: BLE001
                 yield reel, None, exc
+
+
+def note_local_budget(deferred: int) -> str:
+    """Say, on the stage and in the log, that the round stopped on its cap of
+    local calls and what it left for the next one."""
+    from django.conf import settings
+
+    text = (f"Fermato: usate le {settings.PIPELINE_LOCAL_MAX_CALLS} chiamate al "
+            f"modello locale del giro. {deferred} restano in attesa per il giro dopo.")
+    progress.note(text)
+    logger.warning("[pipeline] %s", text)
+    return text
 
 
 _MIN_CAPTION_CHARS = 80  # below this a caption is hashtags/greetings, not content
@@ -329,12 +351,18 @@ def run(ctx) -> dict:
     )
     if ctx.limit:
         qs = qs[: ctx.limit]
-    enriched = failed = 0
+    enriched = failed = deferred = 0
     # Materialise before handing out to threads: a lazy, sliced queryset would
     # be re-evaluated per worker.
     reels = list(qs)
     progress.open(len(reels), "reel", "Analisi")
+    stopped = False
     for reel, _res, exc in _parallel(reels, _enrich_one):
+        if isinstance(exc, LLMLocalBudget):
+            # Left pending on purpose, and the rest of the list with it.
+            stopped = True
+            deferred = sum(1 for r in reels if r.enrich_status == PENDING)
+            break
         if exc is None:
             reel.enrich_status = DONE
             reel.last_error = ""
@@ -355,6 +383,10 @@ def run(ctx) -> dict:
     arg_list = list(qs2)
     progress.open(len(arg_list), "reel", "Affermazioni")
     for reel, n, exc in _parallel(arg_list, _extract_arguments):
+        if isinstance(exc, LLMLocalBudget):
+            stopped = True
+            deferred += sum(1 for r in arg_list if r.argument_status == PENDING)
+            break
         if exc is None:
             reel.argument_status = DONE
             reel.save(update_fields=["argument_status"])
@@ -371,5 +403,10 @@ def run(ctx) -> dict:
     # NOTE: failures are deliberately left as FAILED. Resetting them to
     # PENDING (as this used to) hid every error and retried it forever.
 
-    return {"enriched": enriched, "enrich_failed": failed,
-            "arg_reels": arg_reels, "arguments": total_args, "arg_failed": arg_failed}
+    out = {"enriched": enriched, "enrich_failed": failed,
+           "arg_reels": arg_reels, "arguments": total_args, "arg_failed": arg_failed}
+    if stopped:
+        note_local_budget(deferred)
+        out["deferred"] = deferred
+        out["stopped"] = "tetto di chiamate al modello locale"
+    return out

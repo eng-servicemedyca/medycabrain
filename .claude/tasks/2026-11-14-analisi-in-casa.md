@@ -1,7 +1,7 @@
 ---
 id: 2026-11-14-analisi-in-casa
 titolo: Groq o modello locale, niente Anthropic, niente chat (PR 2 di "pipeline in casa")
-stato: approvato
+stato: revisione
 ramo: feat/analisi-in-casa
 pr: ""
 ticket: ""
@@ -858,6 +858,233 @@ Anthropic e `flow` fallivano comunque.
    presso i fornitori la può fare solo Giuseppe.
 
 ## 3. Sviluppo           (sviluppatore)
+
+Sviluppo del 15/11/2026, ramo `feat/analisi-in-casa`, tre commit come da disegno
+(`7f4a7cb`, `e2345fa`, `c2aa079`). Vale solo la «Revisione del disegno (15/11)» e le
+sei scelte chiuse. Niente push, niente PR. Produzione non toccata: nessuna modifica a
+`BEC/.env`, crontab, servizi, database vero, `FEC/dist`; niente `ollama rm` né
+`pip uninstall` (`anthropic` è tolto da `requirements.txt` ma installato).
+
+### Cosa è stato fatto
+
+**Commit 1 - via Anthropic, `flow`, `hf`, stadio `batch`**
+- Cancellati: `llm/batch.py`, `pipeline/agents/batch_agent.py`,
+  `core/management/commands/sonnet_batch.py`, `FEC/.../BatchBlock.tsx`.
+- `llm/client.py`: via `_anthropic_chat`, `_hf_chat`, `_get_hf_client`, il ramo `hf` in
+  `_providers()`/`available()`, i due rami `dialect`. Testata riscritta.
+  `settings/base.py`: via `HF_*`, `BATCH_*`, `dialect`. `requirements.txt`: via `anthropic`
+  (`huggingface_hub` resta, serve ai vettori).
+- `pipeline/dag.py`: 8 stadi. **Nuovo `HISTORY_ORDER`** (i vecchi nove) e `STAGE_LABELS["batch"]`
+  = «Analisi in blocco (non più in uso)», usati da `ops.py` (due punti) e `progress_report.py`
+  solo per disegnare i giri vecchi. `_STAGE_WHO["batch"]` e il colore in `RunTimeline` restano.
+- `core/models.py`: via `BatchRun` e `BATCHED`. **Migrazione `0027_drop_batchrun`**: prima un
+  controllo che si rifiuta di partire se una sola riga è `batched` (in 8 colonne di stato),
+  poi le 8 `AlterField` e `DeleteModel`. Reversibile nella struttura.
+- `progress_report.py`: via il blocco `batches` (cinque letture invece di sei: test e doc
+  aggiornati). Frontend: via `BatchBlock`, il tipo `BatchData`, lo stato `batched` degli upload.
+- `.env.example`, `it.json`, pagina `Documentazione`, `README.md`, `CLAUDE.md`,
+  `architecture-summary.md`, `01/02/03/05/06`, drawio (due file).
+
+**Commit 2 - via la chat**
+- Via `KnowledgeBank.tsx`, `GoToContent.tsx`, la rotta, la voce di menu, `IconChat`,
+  `askKnowledge`/`searchKnowledge`/`AskResult`/`KnowledgeHit`, le chiavi `kb.*` (resta
+  `kb.untitled`: la usa `ArticleCard`), `nav.knowledgeBank`, `content.goto*`.
+- Backend: via `KnowledgeAskView` e `knowledge/ask/` (ora **404**, c'è un test); da
+  `core/knowledge.py` via `answer`, `_prepare`, `_sources_block`, `_mark_cited`,
+  `_reference_hits`, `_inventory_line`, `ANSWER_*`, `MAX_REFERENCES`, `_GROUPS`. `grep` una
+  per una: nessun altro le usava. Resta `semantic_search` con `_rerank`.
+- Nessun testo né link restano sulla chat (grep su `FEC/src`: zero in codice e `it.json`).
+  `ContentDetail` torna alla **Home** («Torna alla Home»; se arrivi da un upload resta
+  «Torna indietro»). Il campo «vai al contenuto» non lascia buchi: la sezione `docs.goto` è
+  riscritta (il link del connettore apre il contenuto; un codice nudo `blog:843` non si apre
+  da solo, e lo dice). `docs.rag` è riscritta come «Come funziona la ricerca del connettore».
+- Un vecchio link a `/knowledge-bank` finisce in Home (rotta `*` già presente).
+
+**Commit 3 - la riserva locale che regge** (tutto in `llm/client.py` salvo dove detto)
+- Sul tetto AL MINUTO si aspetta fino a `LLM_RATE_WAITS`=6 volte (quanto dice Groq, 1-60 s)
+  prima del locale (`_patient`); sul tetto GIORNALIERO si passano i modelli fratelli come prima.
+  Con `retries=0` non si aspetta (è il caso del riordino MCP).
+- `ENRICH_WORKERS` predefinito 1. `OLLAMA_NUM_CTX`=8192 e `keep_alive`=30m nel payload;
+  silenzio `OLLAMA_READ_TIMEOUT`=600 (era 120); risposta intera `OLLAMA_PIPELINE_TIMEOUT`=1500
+  (`chat(timeout=None)` ora significa «il tetto della pipeline»).
+- Risposta locale tagliata (tetto di token o di tempo) = `LLMTruncated`; slot occupato =
+  `LLMBusy`; nessuno dei due si riprova. `usage.Call.fail` ora conserva `truncated` e i token,
+  così la riga dice «fallita + tagliata».
+- Tetto di chiamate locali per giro `PIPELINE_LOCAL_MAX_CALLS`=40 (solo processi `pipeline:*`,
+  un Job del cliente non è mai limitato). `enrich` e `knowledge` si fermano, scrivono la nota
+  sullo stadio («Fermato: usate le 40 chiamate… N restano in attesa per il giro dopo») e
+  **lasciano `pending`**; il resto torna come `deferred`/`stopped`. Gli errori veri restano `failed`.
+- `chat(remote_only=True)` per `_rerank` (MCP), piano editoriale, giudice di `eval_mcp`.
+  `LLMRemoteUnavailable`: il piano dice «Riprova più tardi» (`_client_message`), la ricerca
+  usa l'ordine semplice. Attese: ideazione 600→900, bozze blog 600/700→1200.
+- Un giro alla volta: lucchetto `flock` in `DAG.run` (`PIPELINE_LOCK_PATH`), il secondo giro
+  scrive «un altro giro sta già lavorando» nel log e esce con codice 3 (`ROUND_BUSY`); il Job
+  manuale fallisce con una frase chiara. Dry run senza lucchetto.
+- `ops.models()` dice la catena vera («modello → riserva: qwen…», «solo Groq» dove è così).
+- Doc: `02`, `03` (sezione nuova «The local backstop», con i limiti), `04`, `05`, drawio.
+
+### Scelte e differenze dal disegno
+
+- **Il lucchetto sta in `DAG.run`, non in `run_pipeline.py`/`pipeline_run.py`**: così copre
+  cron-contro-cron e cron-contro-bottone con un punto solo (il disegno diceva «da verificare»;
+  verificato: in `run_pipeline.py` non c'era nulla). `pipeline_run.py` trasforma il «rifiutato»
+  in una frase per il Job.
+- **`HISTORY_ORDER`** non era nel disegno: serve perché `run_history()` capisce che comincia
+  un nuovo giro quando uno stadio parte «prima» del precedente, e senza `batch` nell'ordine i
+  log vecchi si disegnerebbero doppi. C'è un test con un log vecchio e uno nuovo.
+- **`fetch_reference`/`_get`/`MAX_TEXT`** (`core/external_ref.py`) tolti: servivano solo alla
+  chat. `safe_get` e `_check_public` restano (blog, link).
+- **Etichetta `web:chat`** in `process_label` resta («Chat sui contenuti (funzione tolta)»):
+  `llm_calls` tiene 90 giorni e ha righe vecchie con quel nome.
+- Aggiunte rispetto alle quattro impostazioni del disegno: `OLLAMA_READ_TIMEOUT`,
+  `LLM_RATE_WAITS`, `PIPELINE_LOCK_PATH` (tutte con valore predefinito; `ENRICH_WORKERS` e le
+  altre sono in `.env.example`).
+- Il timeout locale predefinito (1500 s) vale per **ogni** chiamata che non ne dichiara uno,
+  non solo per la pipeline: gli unici chiamanti senza timeout sono i quattro della pipeline e
+  il riordino (che non va mai al locale). Strategia (900) e gli altri hanno il loro.
+- `_with_retry`/`_RATE_RETRIES` in `enrich_agent` restano ma sono quasi morti: `chat()` non
+  lascia più uscire un `LLMRateLimit`. Non l'ho tolto (fuori portata; con `ENRICH_WORKERS=1`
+  non gira nemmeno).
+- Una risposta **Groq** tagliata (`finish_reason: length`) torna ancora come stringa: il
+  disegno parla della risposta locale. Scritto nei limiti di `03`.
+- I test dei giri (`test_progress.py`) usano un file di lucchetto proprio: la prima versione
+  prendeva quello vero in `/tmp` (lasciando un file vuoto) e avrebbe potuto far rifiutare un cron
+  che partiva in quel momento. Corretto prima del commit.
+- Per il «solo Groq» del riordino ho usato un parametro (`remote_only`) come proposto, ma
+  il riordino con `retries=0` non aspetta nemmeno il minuto di Groq: risponde subito in ordine
+  semplice (il cliente aspetta).
+
+### Prove (output vero)
+
+```
+$ manage.py test core --noinput          (Postgres 16 usa-e-getta a lato, porta 55451)
+Ran 317 tests in 34.612s
+OK
+$ manage.py makemigrations --check --dry-run
+No changes detected
+$ npx tsc --noEmit -p tsconfig.json
+tsc=0
+```
+Erano 277 test nella PR precedente; ora 317 (+40: `test_llm_chain.py` 33, `test_migration_0027.py` 2,
+chat rimossa 3, ricerca MCP con Groq che rifiuta 1, giro vecchio con `batch` 1; altri vecchi
+test adattati: tetto di token = errore, cinque letture invece di sei, 8 stadi). I test non escono
+dalla macchina: chiavi svuotate e `OLLAMA_URL` verso una porta morta.
+
+I test che il disegno chiedeva, uno per uno: catena di `.env.example` = solo Groq + locale;
+`num_ctx`/`keep_alive`/silenzio nel payload; tagliata = errore (anche per tempo);
+niente secondo tentativo su «occupato» e «tagliata»; «solo remoto» non chiama mai Ollama né
+il lucchetto (4 tipi di rifiuto di Groq); **sei attese** sul tetto al minuto e poi il locale;
+il tetto lascia `pending` (4 reel, uno fatto, tre `pending`, zero `failed`) e un errore vero
+resta `failed`; `knowledge/ask/` 404; il DAG ha 8 stadi; **la ricerca MCP restituisce gli
+stessi risultati quando Groq rifiuta, senza chiamare Ollama né aspettare**; un giro vecchio
+con lo stadio `batch` si disegna al suo posto.
+
+**Migrazione 0027 su Postgres vero a lato** (righe finte, non quelle di produzione):
+```
+migrate core 0026 -> INSERT 0 26 (righe finte in batch_runs)
+manage.py dbshell -- -c "\copy (select * from batch_runs order by id) to '...csv' csv header"  -> COPY 26 (27 righe col titolo)
+migrate core 0027 -> Applying core.0027_drop_batchrun... OK
+migrate core 0026 -> Unapplying core.0027_drop_batchrun... OK ; select count(*) from batch_runs -> 0
+```
+Il rifiuto con una riga `batched` è un test (`test_migration_0027`): errore chiaro, tabella
+ancora lì.
+
+**Prove vere ai modelli** (database a lato, `LLM_ENDPOINTS=groq` e `OLLAMA_MODEL` del 7b dati a
+mano, chiave di Groq letta dal `.env` senza stamparla; ore 10:50, lontano da 03:30 e 14:15):
+```
+chain: [('fast','groq'), ('ollama',None)]   analysis: openai/gpt-oss-120b | bulk: openai/gpt-oss-20b
+Groq 1 (analisi di un reel finto): 1.1s, 9 chiavi giuste, primary_topic "vampate di calore"   in/out 912/378
+Groq 2 (remote_only, retries=0):  0.3s -> {'ordine': [1, 0, 2]}                                 in/out 146/54
+7b locale (client.chat_json, senza timeout dato): 145s, JSON completo, nulla tagliato
+   riga llm_calls: ollama qwen2.5:7b-instruct-q4_K_M done, prompt/out 905/174,
+   carico 38s, lettura 55s (16,5 tok/s), scrittura 52s (3,3 tok/s)
+```
+Un campione solo, prompt piccolo (905 token, non i 1.500 di un'analisi media).
+
+### Cosa NON ho potuto provare
+
+- **Nessun giro vero della pipeline**, né sul database vero né a lato: la riserva è provata
+  con test e con una chiamata, non con 40 analisi in fila. Il lucchetto «un giro alla volta» è
+  provato con un lock tenuto da un altro descrittore, non con due processi cron reali.
+- **L'attesa su un vero 429 di Groq** non l'ho vista accadere (Groq oggi non rifiutava): è
+  provata con un finto che solleva `LLMRateLimit`.
+- **Tempi del 7b su un'analisi vera** (1.500 token in, 400 fuori): restano calcolati
+  (~251 s); la mia misura è un campione piccolo. **Qualità del 7b non valutata.** Qualità di
+  `gpt-oss-120b` su strategia, piano, bozze: non guardata (un campione di analisi sì).
+- **Nessun gesto vero sull'interfaccia** (browser, mobile, desktop): solo `tsc`. Non ho
+  eseguito `npm run build` (scriverebbe `FEC/dist`, di produzione). Tocca al collaudatore:
+  menu senza «Chat sui contenuti», `/knowledge-bank` in Home, una scheda aperta da un link,
+  pagina Avanzamento con un giro vecchio che ha `batch`, pagina `Documentazione`.
+- **Il connettore MCP vivo** non l'ho interrogato: il servizio gira con il codice vecchio in
+  memoria e non l'ho riavviato. Provata solo la funzione (`cerca_tutto`) con Groq finto che
+  rifiuta. «Una ricerca vera prima e dopo» è lavoro del collaudo e del rilascio.
+- `ProgressView` su un giro vecchio vero: provato con righe `stage_runs` finte (`batch`).
+- Dopo la mia prova il 7b resta caricato in Ollama per 30 minuti (`keep_alive` nuovo): si
+  scarica da solo, non ho toccato altro.
+
+### Rimasto fuori (come da disegno, o scoperto)
+
+- Whisper in casa, `LOCAL_ONLY`, chat a flusso, `eval_local`: non fatti, come detto.
+- I blocchi nginx per `knowledge/ask/`: restano, inutili e innocui (serve `sudo`).
+- Il codice di Apify spento: com'è. Un elenco chiuso di fornitori ammessi nel codice: no.
+- `_with_retry` quasi morto (sopra). `eval_mcp` stampa «nessun voto del giudice» se Groq
+  rifiuta (già così: `except Exception: return None`).
+- Una risposta Groq tagliata torna ancora come stringa (sopra).
+- I falliti storici (310 reel, 34 analisi e 159 affermazioni di articoli): non toccati.
+- Se un cron parte e trova il lucchetto occupato, esce con codice 3: cron può mandare una
+  mail di errore. È voluto (si vede), ma Giuseppe lo sappia.
+
+### Da fare in produzione al rilascio (nell'ordine; il rilasciatore chiede conferma a ogni passo)
+
+0. **Prima di tutto**: nessun giro in corso (`pgrep -af 'run_pipeline|run_job'` vuoto) e non
+   tra le 03:15-06:00 né vicino alle 14:15.
+1. **Copia del `.env`**: `cp -p BEC/.env BEC/.env.bak.20261115` (i `.env.bak*` sono già fuori da git).
+2. **Sola lettura, prima di `migrate`: nessuna riga `batched` e salvataggio delle 26 righe.**
+   ```
+   cd /home/medyca-admin/projects/medycabrain/BEC
+   venv/bin/python manage.py dbshell -- -At -c "select 'reels', count(*) from reels where 'batched' in (enrich_status, argument_status, media_status, transcribe_status) union all select 'knowledge_documents', count(*) from knowledge_documents where 'batched' in (enrich_status, argument_status, embed_status) union all select 'uploaded_media', count(*) from uploaded_media where transcribe_status='batched'"
+   # atteso: tre righe con 0
+   venv/bin/python manage.py dbshell -- -v ON_ERROR_STOP=1 -c "\copy (select * from batch_runs order by id) to 'logs/batch_runs-2026-11.csv' csv header"
+   wc -l logs/batch_runs-2026-11.csv       # atteso 27 (titolo + 26)
+   ```
+   Il file va in `BEC/logs/` (fuori da git: dentro ci sono id dei contenuti e il testo degli
+   errori del fornitore). Se `COPY` non dice 26, **ci si ferma**.
+3. **`.env`, subito prima di cambiare il codice** (funziona sia con il codice vecchio sia con
+   il nuovo): `LLM_ENDPOINTS=groq`; via le 5 `LLM_ANTHROPIC_*`, le 2 `BATCH_*`, le 5
+   `LLM_FLOW_*`, le 2 `HF_*`; `OLLAMA_MODEL=qwen2.5:7b-instruct-q4_K_M`;
+   `LLM_PROVIDER_ORDER=fast,ollama` (oggi già così). Le nuove impostazioni hanno un valore
+   predefinito giusto: non serve scriverle. Senza questo passo, col codice nuovo gli endpoint
+   `anthropic` e `flow` verrebbero tentati con il dialetto sbagliato (404/401, saltati ma rumorosi).
+4. Merge della PR (lo fa Giuseppe), poi nella cartella di produzione `git checkout main && git pull`.
+5. `venv/bin/python manage.py migrate` (applica `0027`; se trova righe `batched` si rifiuta).
+6. Build del frontend (`FEC`: `npm run build`) e **riavvio dei due servizi**:
+   `medycabrain-backend` e `medycabrain-mcp` (il connettore carica lo stesso `client.py`).
+7. **Controlli**: una ricerca vera dal connettore (risultati e tempo, confrontati con una
+   fatta prima del passo 4); la pagina Avanzamento e Stato con un giro vecchio; il menu senza
+   la chat; `/knowledge-bank` porta in Home; poi un giro a mano («Aggiorna ora») e
+   `select provider, count(*) from llm_calls where created_at > now() - interval '1 day' group by 1`:
+   devono comparire solo `groq`, `whisper`, `ollama`. Il crontab **non cambia** (le due righe
+   non nominano `batch`).
+8. **Solo dopo i controlli** (decisione 4 di Giuseppe, a conferma): `ollama rm
+   qwen2.5:3b-instruct-q4_K_M` (1,9 GB, licenza non commerciale) e `venv/bin/pip uninstall -y
+   anthropic`. Il 3b non va rimosso prima di aver riavviato con `OLLAMA_MODEL` del 7b.
+9. La revoca delle chiavi di Anthropic, `flow` e HuggingFace presso i fornitori la può fare
+   solo Giuseppe (restano nei due `.env.bak*`).
+10. **Circa il 29/11**: guardare in `llm_calls` quante chiamate sono finite su `ollama`
+    (e `select count(*) from llm_calls where truncated`), come deciso.
+
+**Tornare indietro** (dieci minuti), **in questo ordine**:
+1. Con il codice NUOVO ancora in cartella: `venv/bin/python manage.py migrate core 0026`
+   (ricrea `batch_runs` vuota; serve il file `0027` per annullarla, quindi prima di cambiare codice).
+2. Poi il codice precedente (`git revert` della PR via una nuova PR, o `git checkout` del
+   commit di prima, a scelta di Giuseppe) e `npm run build`.
+3. Rimettere `BEC/.env.bak.20261115` come `BEC/.env`.
+4. Se serve la storia: `venv/bin/python manage.py dbshell -- -c "\copy batch_runs from 'logs/batch_runs-2026-11.csv' csv header"`, poi
+   `select setval(pg_get_serial_sequence('batch_runs','id'), (select max(id) from batch_runs))`.
+5. Se il passo 8 è già stato fatto: `venv/bin/pip install anthropic==1.5.0` (e `ollama pull` del
+   3b solo se serve davvero; si tornerebbe a uno stato in cui Anthropic e `flow` fallivano comunque).
+6. Riavvio di `medycabrain-backend` e `medycabrain-mcp`.
+
 ## 4. Revisione          (revisore)
 ## 5. Collaudo           (collaudatore)
 ## 6. Rilascio           (rilasciatore)

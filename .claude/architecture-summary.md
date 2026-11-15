@@ -56,7 +56,10 @@ model call writes `llm_calls` (`llm/usage.py`, numbers only, never the text); th
 ## Models
 
 Vendor-neutral. Code asks for a tier via `model_for("analysis"|"reasoning"|"bulk")`
-(`llm/client.py`); the actual id is in `.env`. STT = Whisper large-v3 (remote) / faster-whisper
+(`llm/client.py`); the actual id is in `.env`. The chain is Groq → local `qwen2.5:7b` (slow: ~4 min per analysis, hence one worker,
+Groq's per-minute cap is waited out 6 times before going local, a cap of 40 local calls per round that
+leaves the rest `pending`, one round at a time by file lock). `chat(remote_only=True)` never reaches
+the local model: editorial plan, search reranker, `eval_mcp` judge. STT = Whisper large-v3 (remote) / faster-whisper
 (local). Embeddings = multilingual MiniLM. RAG (`core/knowledge.py`): `semantic_search` blends
 `0.75·cosine + 0.25·lexical`, keeps owned/competitor quotas, optional LLM reranker. The engine
 powers MCP `cerca` (the in-app chat was removed 2026-11-15); its reranker is Groq-only, and when

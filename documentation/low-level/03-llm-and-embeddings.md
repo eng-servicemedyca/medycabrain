@@ -59,10 +59,15 @@ Errors, and what each one does to the chain:
 
 | Response | Exception | Effect |
 |---|---|---|
-| 429 | `LLMRateLimit` | waits `retry-after` (≤60s); if the cap is *daily*, walks that provider's own `_MODEL_CHAIN` — free tiers cap tokens per model per day, so a sibling model still has budget |
+| 429, per minute | `LLMRateLimit` | **waited out, up to `LLM_RATE_WAITS` (6) times**, each as long as `retry-after` says (1-60 s; Groq said 1-21 s on 2026-11-15), and only then the next link. `retries=0` means «fail fast»: no waiting (the search reranker) |
+| 429, per day | `LLMRateLimit(daily=True)` | not waited for (it will not refill): walks that provider's own `_MODEL_CHAIN` — free tiers cap tokens per model per day, so a sibling model still has budget — then the local model |
 | 401 / 402 / 403 | `LLMCreditError` | **that endpoint only** is skipped for the rest of the process; the next one answers |
 | 404 | `LLMModelMissing` | the provider is fine, the model name is not on it: move to the next endpoint **without** disabling this one |
-| anything else | logged at WARNING, retried, then next endpoint | a misconfigured provider must never fail silently |
+| anything else | logged at WARNING, retried (`retries`, backoff 1-2 s), then next endpoint | a misconfigured provider must never fail silently |
+| local answer cut (token ceiling or time ceiling) | `LLMTruncated` | **an error, not a half string**; **not retried**; the call row is `failed` + `truncated` |
+| local slot taken, wait ran out | `LLMBusy` | **not retried** (it used to be, up to 3 × 900 s = 45 min before failing) |
+| round used its local calls | `LLMLocalBudget` | not retried; reaches the stage as itself — see below |
+| `remote_only` and no remote link answered | `LLMRemoteUnavailable` | the caller decides (plain order / «Riprova più tardi»); the local model is never asked |
 
 > **Why per-endpoint and not global.** Until 2026-09-13 one flag disabled the whole remote
 > layer, so a single dead gateway dropped everything to the local 3B model — silently. Measured
@@ -96,6 +101,84 @@ Known limits, measured rather than assumed:
 - **Every call is now recorded** (since 2026-11-13) in `llm_calls` — see
   [«What is recorded for each call»](#what-is-recorded-for-each-call). Money is still read on
   the provider's own dashboard; what the table gives is calls, tokens and **seconds per process**.
+
+### The local backstop: qwen2.5 7b (2026-11-15)
+
+Groq is first, the local model second, and it is **slow**. Numbers (speeds measured on this VDS
+with the old 3b's real token counts; **the 7b times below are calculated, not timed on analysis
+prompts** — the first real round replaces them with `llm_calls` data):
+
+| | Reads | Writes | Total |
+|---|---|---|---|
+| average call (1,507 prompt + 389 answer tokens) | 112 s | 139 s | **~251 s** |
+| longest seen on 2026-11-15 (1,180 answer tokens) | 112 s | 421 s | **~533 s** |
+| first call, model to load | | | **+96-123 s** |
+
+(7b: reads 13.4 tok/s, writes 2.8. The 3b took 97 s on average; the 7b is ~2.6× slower. It is the
+model because it is already on the machine and **Apache 2.0**; the 3b is "Qwen Research", non-commercial.)
+
+One real check of the code path (2026-11-15, `client.chat_json` with the 7b, a synthetic reel
+prompt, a scratch database): 905 prompt + 174 answer tokens in **145 s** — model load 38 s, reading
+55 s (16.5 tok/s), writing 52 s (3.3 tok/s), JSON complete, nothing cut. The same prompt on Groq
+`gpt-oss-120b`: 1.1 s (912 + 378 tokens). One sample, not a benchmark.
+
+What that forces, all in `llm/client.py` and `config/settings/base.py`:
+
+| Setting | Default | Why |
+|---|---|---|
+| `OLLAMA_NUM_CTX` | 8192 | Ollama opened the model with a 4096 window; an analysis asks for up to 1,836 in + 2,000 out. 5.5 GB of the 82 free |
+| `OLLAMA_KEEP_ALIVE` | `30m` | the default unloads after 5 min; a reload is 96-123 s |
+| `OLLAMA_READ_TIMEOUT` | 600 s | silence allowed before the first token (load + reading the prompt >200 s; it was 120) |
+| `OLLAMA_PIPELINE_TIMEOUT` | 1500 s | ceiling of one local answer when the caller gave none (533 s writing + 123 s load, with room). It used to be 240: an average answer needs 251 |
+| `PIPELINE_LOCAL_MAX_CALLS` | 40 | ≈ 2.8 h of local work per round; `0` = no cap. Without it a night with Groq down asks for ~9 h and lands on the 14:15 round |
+| `LLM_RATE_WAITS` | 6 | waits on Groq's per-minute cap before going local |
+| `ENRICH_WORKERS` | **1** (was 5) | the limit is Groq's per-minute token cap, not the thread count: five threads retrying together pushed 169 of 287 Groq calls into a refusal on 2026-11-15 |
+
+Callers with their own ceiling: strategy brief/draft 900 s, ideation 900 s (was 600), blog
+interview/expand/draft 1200 s (was 600-700), editorial plan 900 s but **Groq only**.
+
+**Work that never goes local** (`chat(..., remote_only=True)`): the editorial plan (3,600 tokens ≈
+21 min + reading, against a 15 min ceiling, and a JSON that long breaks easily on a 7b), the MCP
+search reranker (≈ 1m45 on the 7b, queued behind the pipeline for up to 15 min: the client would
+see a frozen search) and `eval_mcp`'s judge (4,000 tokens). If Groq refuses: the plan job says
+«Il servizio dei modelli ha raggiunto il suo limite in questo momento. Riprova più tardi.», the
+search answers at once with the plain order, the eval prints no judge score.
+
+**The cap of local calls leaves work `pending`, never `failed`.** `chat()` counts local calls made
+by a *pipeline* process (`process` starts with `pipeline:`; a Job the client started is never
+capped: a person is waiting). When the round has used them, `LLMLocalBudget` reaches the stage
+(`enrich`, `knowledge`): it stops, leaves what it did not try `pending`, writes a note on the
+stage («Fermato: usate le 40 chiamate al modello locale del giro. N restano in attesa per il giro
+dopo.», shown on the Avanzamento card and in the log) and returns `deferred` / `stopped`. Real errors
+stay `failed`. `DAG.run` zeroes the counter at the start of each round. `cluster` naming that hits
+the cap simply gets no name from the model (it already falls back).
+
+**One round at a time.** `DAG.run` holds a file lock (`PIPELINE_LOCK_PATH`, `flock`, gone with the
+process) for the whole round, so cron-vs-cron (03:30 still working at 14:15) and cron-vs-«Aggiorna
+ora» cannot overlap. The loser writes «un altro giro sta già lavorando: questo non parte» in the log
+and exits with code 3 (`ROUND_BUSY`); a manual job fails with «Un altro aggiornamento sta già
+lavorando. Riprova quando ha finito.».
+
+Expected hours of local work per round with the 7b (estimates: tokens measured, speed from one
+test, on a machine whose speed varies by up to 70%):
+
+| Round | Calls, tokens | Groq refusing like on 15/11 (no change) | With one thread + waiting | Groq off entirely |
+|---|---|---|---|---|
+| typical: 8 reels + 11 articles | 38, ~62,000 | 0-0.5 h | **0 h** | 2.7 h |
+| large: 10 reels + 54 articles | 141, ~230,000 | **1.6 h** | **0-1.3 h** | 9.2 h, stopped at 2.8 h by the cap |
+
+Known limits (written the moment they were known):
+- **Groq's free tier is the whole first link.** Public limit for `gpt-oss-120b`: 8,000 tokens/min,
+  200,000/day (the limit of *our* account was not verified; it is read only in the Groq console).
+  A large round used 170,240 tokens on 15/11, 85% of a day: the 14:15 round and the buttons find
+  little. Groq can change limits or retire a model without notice (it did twice).
+- **The editorial plan and the search reranker have no backstop** (by design, above).
+- **The 7b's quality on these prompts is not proven.** The 3b's three-content test gave more generic
+  themes and invented quotes; the quote check drops invented quotes, generic themes pass. Groq's
+  `gpt-oss-120b` has never written strategy, plan or drafts for this project (the last ones, in
+  July-August, came from Claude through the removed reseller): read one of each.
+- A truncated **Groq** answer (`finish_reason: length`) is still returned as is; only the local
+  model raises `LLMTruncated`.
 
 ### What is recorded for each call
 

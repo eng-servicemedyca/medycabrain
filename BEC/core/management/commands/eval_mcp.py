@@ -345,7 +345,9 @@ class Command(BaseCommand):
             # tutto. Anche 2500 troncava a volte; 4000 dà margine comodo.
             data = client.chat_json(
                 "Sei un valutatore di sistemi di ricerca. Rispondi SOLO con JSON valido.",
-                user, max_tokens=4000, model=client.model_for("reasoning"))
+                user, max_tokens=4000, model=client.model_for("reasoning"),
+                # Groq only: 4,000 tokens on the local model would be ~25 minutes.
+                remote_only=True)
             votes = [int(v["voto"]) for v in data.get("voti", [])
                      if str(v.get("voto")) in ("0", "1", "2")]
             return round(sum(votes) / len(votes), 2) if votes else None

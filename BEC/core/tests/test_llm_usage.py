@@ -95,23 +95,29 @@ class OllamaRecordingTests(TestCase):
         self.assertEqual(seen["status"], "waiting")
         self.assertEqual(LLMCall.objects.get().status, "done")
 
-    def test_length_cut_is_marked_truncated(self):
+    def test_length_cut_is_a_named_error_and_the_row_says_truncated(self):
+        # Until 2026-11-15 a cut answer came back as a string (and half a JSON
+        # surfaced as a parse error that hid the cause): now it is `LLMTruncated`.
         cut = [dict(_STREAM[-1], done_reason="length")]
         with mock.patch.object(client.requests, "post",
                                return_value=_ollama_response(cut)):
-            client.chat("s", "u", retries=0)
-        self.assertTrue(LLMCall.objects.get().truncated)
+            with self.assertRaisesRegex(client.LLMError, "LLMTruncated"):
+                client.chat("s", "u", retries=0)
+        c = LLMCall.objects.get()
+        self.assertTrue(c.truncated)
+        self.assertEqual(c.status, "failed")
 
-    def test_a_timeout_that_returns_partial_text_is_marked_truncated(self):
-        # Ollama keeps streaming past the deadline: the answer is cut and the
-        # caller never knew (fact 13 of the design).
+    def test_a_timeout_is_a_named_error_and_the_row_says_truncated(self):
+        # Ollama keeps streaming past the deadline: the answer is cut, and now
+        # the caller is told (fact 13 of the design).
         endless = [{"message": {"content": "x"}, "done": False}] * 3
         with mock.patch.object(client.requests, "post",
                                return_value=_ollama_response(endless)):
-            client.chat("s", "u", retries=0, timeout=-1)
+            with self.assertRaisesRegex(client.LLMError, "LLMTruncated"):
+                client.chat("s", "u", retries=0, timeout=-1)
         c = LLMCall.objects.get()
         self.assertTrue(c.truncated)
-        self.assertEqual(c.status, "done")
+        self.assertEqual(c.status, "failed")
 
     def test_an_error_closes_the_row_as_failed(self):
         with mock.patch.object(client.requests, "post", side_effect=OSError("giù")):
