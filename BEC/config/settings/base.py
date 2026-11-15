@@ -304,7 +304,15 @@ YT_JS_RUNTIME = os.environ.get("YT_JS_RUNTIME", "node")
 # Contiene una password: solo in .env, mai nei log né nei messaggi al cliente.
 # Vuoto = niente proxy, si torna ai cookie.
 YTDLP_PROXY = os.environ.get("YTDLP_PROXY", "")
+# Proxy per leggere gli account Instagram (scraper/embed_provider.py) e, solo se
+# Instagram blocca il download diretto, per scaricare un reel. Vuoto = usa
+# YTDLP_PROXY: stesso servizio, nessun segreto in più. Stesso avviso: contiene
+# una password, mai nei log. Il proxy si paga a gigabyte: ~245 KB per account
+# letto, ~13 MB per un video scaricato dal proxy (i video vanno diretti).
+IG_PROXY = os.environ.get("IG_PROXY", "")
 
+# DISATTIVATO dal 2026-11-14: la raccolta non chiama più Apify (rispondeva 401
+# e prima si fermava per il tetto di spesa). Il codice resta, spento.
 # Apify supplies reel metadata and a working CDN video url from its own
 # proxied infrastructure, which is what unblocks the download backlog: our own
 # calls to Instagram's media/info throttle after ~35 and then answer HTML.

@@ -10,7 +10,7 @@ import { LiveActivity, type Job, type Reanalysis } from "../components/ops/LiveA
 import { EvalsPanel, type EvalRun } from "../components/ops/EvalsPanel";
 import {
   PipelineQueue,
-  type Budget,
+  type Collection,
   type LastPipelineJob,
   type QueueData,
 } from "../components/ops/PipelineQueue";
@@ -34,7 +34,7 @@ interface StatusPayload {
     evals?: EvalRun[];
   };
   queue?: QueueData;
-  budget?: Budget | null;
+  collection?: Collection | null;
   totals: Record<string, number>;
   stages: Stage[];
   jobs: {
@@ -136,7 +136,7 @@ export default function Status() {
                   queue={data.queue}
                   job={data.jobs.find((j) => j.kind === "pipeline")}
                   lastJob={data.last_pipeline_job}
-                  budget={data.budget}
+                  collection={data.collection}
                   onStarted={() => refetch()}
                 />
 

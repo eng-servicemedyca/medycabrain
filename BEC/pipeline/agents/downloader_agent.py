@@ -7,9 +7,16 @@ DownloaderAgent — for each reel with media_status='pending':
   3. download thumbnail → media/thumbs/{account}/{shortcode}.jpg
   4. delete the mp4, set media_status='done', transcribe_status='pending'
 
-CDN video URLs expire (hours/days). On a 403, re-fetch the single reel's
-fresh video_url via the GraphQL client before giving up. 3 attempts then
-media_status='skipped'.
+Where the video comes from: a cached, unexpired CDN url if the reel has one
+(the embed collection gives none), else yt-dlp on the public permalink.
+yt-dlp goes DIRECT from this server first: measured 2026-11-14, a 17 MB reel
+downloaded in a second with no proxy. Only if Instagram blocks that does it
+retry once through the residential proxy (the proxy is paid per GB, ~13 MB per
+video, so going through it for every reel would be pure cost). Apify is not
+called any more: the old url "pre-fill" is gone.
+
+The embed page gives no duration, so it is read from the downloaded file with
+ffprobe. 3 attempts then media_status='skipped'.
 """
 
 from __future__ import annotations
@@ -36,12 +43,6 @@ _UA = (
 )
 _MAX_ATTEMPTS = 3
 _THROTTLE_STREAK = 3  # consecutive quota errors that end a run
-
-# Hard cap on how many reels the url prefetch may ask Apify for, per account.
-# Every result is billed whether or not we needed it — see _prefetch_urls.
-# 30 reels = $0.079 per account; the old uncapped depth reached $0.48.
-_PREFETCH_MAX_DEPTH = 30
-
 
 def _download(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -169,19 +170,24 @@ def _url_expired(url: str, margin_s: int = 900) -> bool:
         return False
 
 
-def _ytdlp_fetch(reel: Reel, mp4: Path) -> None:
-    """Fetch a public reel by permalink, anonymously, via yt-dlp.
+def _ytdlp_fetch(reel: Reel, mp4: Path, proxy: str = "") -> dict:
+    """Fetch a public reel by permalink, anonymously, via yt-dlp. Returns the
+    info yt-dlp read (view/like/comment counts when it has them).
 
     Replaces the media/info renewal path, which needed a logged-in session —
     removed 2026-07-29 because it ran as Giuseppe's personal account. This
     path involves no account at all: measured 2026-07-30 from this VPS,
-    3/3 reels, 6-8s each, valid MP4s with correct durations.
+    3/3 reels, 6-8s each, valid MP4s with correct durations; and again on
+    2026-11-14 from the new server, direct, no proxy.
 
     Still unofficial: Instagram can block the IP or change the page. A block
     surfaces as a DownloadError mentioning login/rate — mapped to IGThrottled
-    so the run defers instead of burning three attempts per reel.
+    so the run defers instead of burning three attempts per reel. With a
+    `proxy` the address holds a password: every message goes through `scrub`.
     """
     import yt_dlp
+
+    from scraper.proxy import scrub
 
     opts = {
         "outtmpl": str(mp4.with_suffix("")) + ".%(ext)s",
@@ -190,17 +196,52 @@ def _ytdlp_fetch(reel: Reel, mp4: Path) -> None:
         "socket_timeout": 60,
         "retries": 1,
     }
+    if proxy:
+        opts["proxy"] = proxy
     url = f"https://www.instagram.com/reel/{reel.shortcode}/"
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
+            info = ydl.extract_info(url, download=True) or {}
     except yt_dlp.utils.DownloadError as exc:
-        msg = str(exc).lower()
-        if any(k in msg for k in ("login", "rate", "429", "wait a few minutes")):
-            raise IGThrottled(f"yt-dlp bloccato: {str(exc)[:120]}") from exc
-        raise
+        msg = scrub(str(exc), proxy)
+        if any(k in msg.lower() for k in ("login", "rate", "429", "wait a few minutes")):
+            raise IGThrottled(f"yt-dlp bloccato: {msg[:120]}") from None
+        raise RuntimeError(msg[:300]) from None
     if not mp4.exists():
         raise RuntimeError("yt-dlp: nessun file prodotto")
+    return info
+
+
+def _media_duration(mp4: Path) -> float | None:
+    """Duration in seconds read from the file (the embed page does not give it)."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(mp4)],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(out.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _better_count(attr: str, current, new):
+    """The count to keep: yt-dlp's only if it is sane and not worse than ours.
+
+    Never negative, never lower than what the row already holds. And NEVER a
+    like count for a reel whose likes are hidden (`current is None`: the embed
+    page said so on purpose): measured 2026-11-14, yt-dlp answers like_count=3
+    on two different reels of an account with 3000 followers that hides its
+    likes (same 3, while the comments differ), so it is not a real count and
+    would make the reel look weaker than a reel with no number at all.
+    """
+    if not isinstance(new, (int, float)) or new < 0:
+        return current
+    if attr == "like_count" and current is None:
+        return current
+    if current is not None and new < current:
+        return current
+    return new
 
 
 def _process_one(reel: Reel) -> bool:
@@ -225,9 +266,22 @@ def _process_one(reel: Reel) -> bool:
         except Exception as exc:  # noqa: BLE001 — expired early or revoked
             logger.debug("[downloader] %s: url in cache morto (%r), provo yt-dlp",
                          reel.shortcode, exc)
+    info: dict = {}
     if not fetched:
-        _ytdlp_fetch(reel, mp4)
         used_api = True  # web hit on Instagram: it deserves the pacing delay
+        try:
+            info = _ytdlp_fetch(reel, mp4)
+        except IGThrottled as exc:
+            # Direct was refused: one retry through the proxy, which is paid
+            # per GB and so is the exception, not the rule. Still refused: the
+            # IGThrottled goes up and the run defers instead of charging the reel.
+            from scraper.proxy import ig_proxy
+            proxy = ig_proxy()
+            if not proxy:
+                raise
+            logger.info("[downloader] %s: diretto bloccato (%s), provo dal proxy",
+                        reel.shortcode, exc)
+            info = _ytdlp_fetch(reel, mp4, proxy=proxy)
 
     # Defensive: a reel can ship a video-only stream.
     has_audio = _has_audio(mp4)
@@ -240,6 +294,13 @@ def _process_one(reel: Reel) -> bool:
             reel.thumbnail_file = rel_thumb
         except Exception as exc:  # noqa: BLE001 — non-fatal
             logger.warning("[downloader] thumb failed %s: %r", reel.shortcode, exc)
+
+    # The collection by embed gives no duration and no view count: take what
+    # the file and yt-dlp know. Never overwrite a known value with a blank.
+    if not reel.duration_s:
+        reel.duration_s = _media_duration(mp4)
+    for attr in ("view_count", "like_count", "comment_count"):
+        setattr(reel, attr, _better_count(attr, getattr(reel, attr), info.get(attr)))
 
     mp4.unlink(missing_ok=True)
     reel.media_status = DONE
@@ -256,93 +317,9 @@ def _process_one(reel: Reel) -> bool:
         logger.info("[downloader] %s has no audio stream — skipping transcription",
                     reel.shortcode)
     reel.save(update_fields=["audio_file", "thumbnail_file", "media_status",
-                             "transcribe_status", "enrich_status", "last_error"])
+                             "transcribe_status", "enrich_status", "last_error",
+                             "duration_s", "view_count", "like_count", "comment_count"])
     return used_api
-
-
-def _prefetch_urls(batch: list[Reel]) -> dict:
-    """Fill in video_url for a whole batch from Apify, one call per account.
-
-    This is what keeps the run off Instagram's throttled media/info endpoint:
-    _process_one already prefers a cached, unexpired url and only calls the
-    API when one is missing, so a batch that arrives with fresh urls makes
-    zero throttled calls.
-
-    Depth is measured against the account's whole known history, not against
-    the reels in this batch. The actor returns the N most recent reels of the
-    account, and our pending rows are scattered through that timeline rather
-    than sitting at the top of it: a first attempt sized from the batch asked
-    for 7 and matched 0 of them.
-
-    **The depth is capped, and the cap is a money decision.** The original
-    `known + 60` was written when Apify was a cheap insurance policy against
-    Instagram's quota. On the $5/cycle plan it is the single most expensive
-    thing the pipeline can do: `menopausa_insieme` alone has 124 known reels,
-    so `known + 60` asks for 184 results — $0.48 for one account, one night —
-    and across twelve accounts one run would ask for roughly $3.70. The whole
-    cycle, in a night, to fetch urls that yt-dlp does not need.
-
-    It is also mostly redundant now. The scrape stage fetches through Apify
-    too, so a freshly collected reel already arrives carrying its `videoUrl`
-    from that same call, and `_process_one` prefers a cached url anyway. What
-    is left is the narrow case of a reel whose url expired before the download
-    stage reached it — and for that, yt-dlp is the free answer.
-    """
-    from scraper import apify_provider
-
-    by_account: dict[str, list[Reel]] = {}
-    for reel in batch:
-        if reel.video_url and not _url_expired(reel.video_url):
-            continue  # already usable, costs nothing
-        by_account.setdefault(reel.account.username, []).append(reel)
-    if not by_account:
-        return {"apify_accounts": 0, "apify_urls": 0}
-
-    filled = accounts = 0
-    for username, reels in by_account.items():
-        # A flat margin, not a ratio: our rows can sit deeper in the account's
-        # real timeline than their own count suggests, and a run that comes
-        # back short is wasted entirely rather than partially.
-        known = Reel.objects.filter(account__username=username).count()
-        depth = min(max(known, len(reels)) + 20, _PREFETCH_MAX_DEPTH)
-        try:
-            items = apify_provider.fetch_reels(username, limit=depth)
-        except apify_provider.ApifyUnavailable as exc:
-            # Includes the budget ceiling refusing to spend. Not an incident:
-            # yt-dlp fetches these reels without Apify, just more slowly.
-            logger.warning("[downloader] apify non disponibile per @%s: %s", username, exc)
-            continue
-        accounts += 1
-
-        found = {i["shortcode"]: i for i in items}
-        for reel in reels:
-            item = found.get(reel.shortcode)
-            if not item or not item["video_url"]:
-                continue
-            reel.video_url = item["video_url"]
-            fields = ["video_url"]
-            # Backfill only what is missing or newer — never overwrite a real
-            # value with a blank one the actor happened not to return.
-            for attr, key in (("thumbnail_url", "thumbnail_url"),
-                              ("caption", "caption"),
-                              ("duration_s", "duration_s")):
-                if item[key] and not getattr(reel, attr):
-                    setattr(reel, attr, item[key])
-                    fields.append(attr)
-            for attr in ("view_count", "like_count", "comment_count"):
-                if item[attr] is not None:
-                    setattr(reel, attr, item[attr])
-                    fields.append(attr)
-            if item["posted_at"] and not reel.posted_at:
-                reel.posted_at = item["posted_at"]
-                fields.append("posted_at")
-            reel.save(update_fields=fields)
-            filled += 1
-
-    if accounts:
-        logger.info("[downloader] apify: %s url pronti su %s account",
-                    filled, accounts)
-    return {"apify_accounts": accounts, "apify_urls": filled}
 
 
 def run(ctx) -> dict:
@@ -361,6 +338,9 @@ def run(ctx) -> dict:
         .select_related("account")
         .annotate(is_owned=Case(When(account__owner_type="owned", then=Value(0)),
                                 default=Value(1), output_field=IntegerField()))
+        # NULL views sort FIRST here, on purpose: reels from the embed page have
+        # no view count and are the NEW ones; nulls_last would park them behind
+        # every old reel that still has a number.
         .order_by("is_owned", "-view_count", "-posted_at")
     )
     # Instagram throttles media/info after a few hundred rapid calls: it starts
@@ -372,11 +352,9 @@ def run(ctx) -> dict:
         qs = qs[: ctx.limit]
     elif cap:
         qs = qs[:cap]
-    # Materialise before prefetching: the batch is iterated twice, and a
-    # sliced queryset would run the whole query again.
+    # Materialise: the batch is iterated more than once, and a sliced
+    # queryset would run the whole query again.
     batch = list(qs)
-    from scraper import apify_provider
-    stats = _prefetch_urls(batch) if apify_provider.enabled() else {}
 
     done = failed = skipped = 0
     throttled_streak = 0
@@ -453,4 +431,4 @@ def run(ctx) -> dict:
         media_status=PENDING
     )
     return {"downloaded": done, "failed": failed, "skipped": skipped,
-            "stopped_early": stopped_early, "deferred": deferred, **stats}
+            "stopped_early": stopped_early, "deferred": deferred}

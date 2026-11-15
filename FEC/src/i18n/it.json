@@ -356,7 +356,7 @@
       "title": "Cosa fa la piattaforma",
       "collect": {
         "title": "Raccoglie",
-        "body": "Scarica ogni reel con le sue statistiche reali: visualizzazioni, like, commenti. L'elenco dei reel nuovi arriva da un servizio esterno (Apify) che parla con Instagram al posto nostro: nessun account Instagram tuo viene usato dalla piattaforma. I video li scarica poi uno strumento gratuito. La raccolta ha un tetto di spesa e si ferma da sola prima di superarlo — lo vedi nella pagina «Stato pipeline»."
+        "body": "Legge i profili Instagram che segui e scarica i reel nuovi, con like e commenti. Lo fa dal nostro server, come farebbe un visitatore qualunque che guarda la pagina pubblica: nessun account Instagram tuo viene usato e non serve nessun servizio a pagamento a parte. Come è andata l'ultima lettura lo vedi nella pagina «Stato pipeline»; se Instagram non risponde, la pagina lo dice, non finge che sia andato tutto bene."
       },
       "understand": {
         "title": "Capisce",
@@ -409,11 +409,11 @@
         "Link incollati: leggo video YouTube e Vimeo (anche le pagine video di TVRS) e pagine web. Reel Instagram, PDF e Word, cartelle Drive/Dropbox non si possono incollare (per i file: scaricali e caricali qui sopra). Le pagine protette da accesso o abbonamento non si leggono. Il titolo e il canale di un video si leggono mentre lavora la piattaforma, non subito: un video privato o rimosso compare nella lista come «errore», con il motivo.",
         "Se il server viene riavviato mentre un file o un link è in lavorazione, l'elemento passa a «errore» con la scritta «Interrotto da un riavvio» e non riparte da solo: premi «Riprova». Se l'analisi dopo la trascrizione non riesce, il testo è comunque salvato e l'analisi si completa nella notte. I link che l'utente ha aggiunto a mano compaiono sempre in Libreria, anche se il sistema li giudica fuori tema.",
         "Le interviste caricate si trascrivono in italiano; dei file video conserviamo solo l'audio (non il video). File molto grandi: caricali con una connessione stabile.",
-        "Instagram non lascia più vedere l'elenco dei post di un profilo a chi non è collegato: per questo l'elenco passa da un servizio esterno. Il tuo account non è coinvolto.",
-        "La raccolta ha un budget di 5 dollari al mese che si rinnova da solo. Al raggiungimento del tetto si ferma solo la raccolta di reel nuovi: tutto il resto della piattaforma continua a funzionare.",
+        "Instagram non lascia più vedere l'elenco completo dei post a chi non è collegato. Noi leggiamo la pagina pubblica di anteprima di ogni profilo, che mostra solo gli ultimi 6 post: se un profilo ne pubblica più di 6 tra una lettura e l'altra (due al giorno), i più vecchi si perdono. È una pagina non ufficiale: Instagram può cambiarla o chiuderla quando vuole, e in quel caso la raccolta si ferma e te lo dice. Il tuo account non è coinvolto.",
+        "Dopo uno stop lungo la raccolta non recupera tutto in una volta: prende al massimo 5 reel nuovi per lettura, i più recenti, e lascia il resto al giro dopo. Se tutti e 6 i post letti di un profilo sono nuovi, probabilmente ce ne sono di più vecchi che non vediamo: la pagina «Stato pipeline» lo segnala invece di far finta di averli.",
         "Vengono raccolti solo i reel: storie, caroselli e foto singole no.",
         "Qualche reel non si può lavorare: per esempio un video senza audio non può essere trascritto. Nella pagina «Stato pipeline» questi reel sono chiamati «non lavorabili» e non contano nell'attesa stimata.",
-        "Se il budget della raccolta è finito, puoi aggiungere un profilo Instagram ma i suoi reel arrivano solo dopo il rinnovo: il modulo te lo dice con la data.",
+        "I reel nuovi arrivano senza il numero di visualizzazioni, che Instagram non mostra nella pagina pubblica: finché manca, nelle classifiche pesano solo per i «mi piace», e possono sembrare meno forti di quanto sono. I reel di Medyca nascondono anche i «mi piace»: finché non c'è nessun numero, il loro peso è zero e restano in fondo alle classifiche, anche se sono buoni. Un nome scritto male nella lista dei profili (per esempio con una virgola) non si legge mai: la piattaforma lo dice come «account non trovato» e va corretto a mano.",
         "Se aggiungi un blog con un indirizzo già presente (anche scritto in modo un po' diverso, con o senza www o con la barra finale) la piattaforma te lo dice. Due sezioni diverse dello stesso sito, per esempio /blog e /menopausa, restano invece due fonti separate.",
         "Undici dei ventitré account monitorati non hanno mai restituito contenuti (uno ha il nome scritto male) o non pubblicano da oltre un anno: vanno ripuliti.",
         "Dei video presi da un link non sempre riusciamo a ottenere l'audio: YouTube e Vimeo bloccano i server come il nostro, quindi scarichiamo passando da una connessione residenziale italiana, senza bisogno di accessi o cookie. Se quella connessione non risponde (o è finito il traffico), il download fallisce. In quel caso il video resta comunque in piattaforma con titolo, canale e link — cercabile e citabile come riferimento — ma senza trascrizione, e la riga te lo dice in chiaro. Se ti serve la trascrizione subito, carica il file video a mano.",
@@ -724,9 +724,10 @@
     "estimated": "Stima di partenza: non ci sono ancora esecuzioni recenti da cui misurare la velocità reale.",
     "failedCount_one": "{{count}} fallito",
     "failedCount_other": "{{count}} falliti",
-    "budget": "Budget della raccolta",
-    "budgetLeft": "Restano ${{left}} in questo mese. La raccolta riparte il {{renews}}. Si ferma da sola prima di superare il tetto.",
-    "budgetStopped": "Tetto raggiunto: la raccolta di nuovi reel è ferma. Riparte il {{renews}}, quando si rinnova il budget. Tutto il resto continua a funzionare.",
+    "collectionDone": "Ultima lettura ({{when}}): {{note}}",
+    "collectionOk": "tutto in ordine",
+    "collectionFailed": "Ultima lettura ({{when}}) non riuscita: {{why}}",
+    "collectionNone": "Nessuna lettura ancora registrata.",
     "blocked_one": "{{count}} reel non lavorabile: non conta nell'attesa",
     "blocked_other": "{{count}} reel non lavorabili: non contano nell'attesa",
     "lastDone": "Ultimo aggiornamento ({{when}}): {{message}}",

@@ -6,9 +6,10 @@ ask "where did this field come from?" or "is this in SQL?", this is the map.
 
 The short answers:
 - **Where does the video even come from?** Instagram gives us **no** way to list an account's
-  reels anonymously anymore. So the list is bought from **Apify** (the `instagram-reel-scraper`
-  actor — no Instagram account of ours is involved), and the MP4 of each listed reel is
-  downloaded **for free with yt-dlp** from the public permalink. Full reasoning + budget in
+  reels anonymously anymore. Since 2026-11-14 the list is read by this server from the **public embed page** of each profile
+  through the residential proxy (last 6 posts, no Instagram account of ours; Apify, used before,
+  is off), and the MP4 of each listed reel is downloaded **for free with yt-dlp** from the public
+  permalink (direct first, proxy only if blocked). Full reasoning + budget in
   [02-pipeline.md](02-pipeline.md#where-the-list-of-reels-comes-from).
 - **Is it in SQL?** Yes — everything *except the video file itself* ends in PostgreSQL. The MP4
   is downloaded, its audio + thumbnail are extracted, then **the MP4 is deleted**. Only the
@@ -23,7 +24,7 @@ The short answers:
 | Artifact | Storage | Kept? |
 |---|---|---|
 | The reel's MP4 video | downloaded (yt-dlp / cached CDN url) to a temp path | **deleted** after audio extraction |
-| `video_url` (signed CDN link, from Apify) | `reels.video_url` column | kept, but **expires** (`oe=` timestamp on the URL) |
+| `video_url` (signed CDN link; empty for reels read from the embed page, old ones came from Apify) | `reels.video_url` column | kept, but **expires** (`oe=` timestamp on the URL) |
 | Audio MP3 | filesystem `BEC/media/audio/{account}/{shortcode}.mp3` | kept (served by nginx `/media/`) |
 | Thumbnail | filesystem `BEC/media/thumbs/…` | kept |
 | Raw scraped JSON | filesystem `BEC/data/raw/{account}/{shortcode}.json` | kept (debug/backfill) |
@@ -45,7 +46,7 @@ flowchart TD
         V["Reel video + metadata"]
     end
 
-    V -->|"1. scrape<br/>scraper_agent.py<br/>(lists via Apify)"| RAW["data/raw/…/shortcode.json<br/><i>(filesystem)</i>"]
+    V -->|"1. scrape<br/>scraper_agent.py<br/>(reads the embed page via proxy)"| RAW["data/raw/…/shortcode.json<br/><i>(filesystem)</i>"]
     RAW --> REELROW["<b>reels</b> row<br/>shortcode, caption, views, likes,<br/>posted_at, video_url (signed, expires)<br/>media_status=pending<br/><i>(Postgres)</i>"]
 
     REELROW -->|"2. download<br/>downloader_agent.py<br/>(cached url → yt-dlp)"| MP4["MP4 downloaded<br/><i>(temp, then DELETED)</i>"]
@@ -80,10 +81,11 @@ Numbers on the arrows are the pipeline stages from
 
 ## Step by step
 
-1. **scrape** — for each tracked account, the list of recent reels is fetched **from Apify**
-   (Instagram no longer lets us list an account anonymously). The raw result is dumped to
-   `data/raw/…`, and a `reels` row is created (caption, view/like counts, `posted_at`, and a
-   **signed** `video_url`). `media_status` is set to `pending`. The `video_url` carries an `oe=`
+1. **scrape** — for each tracked account, the last 6 posts are read from the account's **public embed page** through the proxy
+   (Instagram no longer lets us list an account anonymously); only videos owned by that account
+   are kept. The raw node is dumped to `data/raw/…`, and a `reels` row is created (caption,
+   like/comment counts, `posted_at`; **no** `video_url` and no view count: the page does not
+   give them). `media_status` is set to `pending`. The `video_url` carries an `oe=`
    expiry — once past it the CDN returns 403, which is why download falls back to yt-dlp.
 2. **download** — the MP4 is fetched cheapest-source-first (cached CDN `video_url` → **yt-dlp**
    on the public permalink, anonymously). ffmpeg extracts the **audio → MP3** and a

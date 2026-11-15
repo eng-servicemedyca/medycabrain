@@ -34,7 +34,7 @@ flowchart LR
 
 | # | Stage | Agent file | What it does | Sets next state |
 |---|---|---|---|---|
-| 1 | **scrape** | `scraper_agent.py` | For each active `TrackedAccount`: list recent reels **through Apify** (see [below](#where-the-list-of-reels-comes-from)) at a per-account adaptive depth, dump raw JSON to `data/raw/{account}/{shortcode}.json`, upsert `Reel` rows. Stops on the request budget **and** on the Apify spending ceiling. | `media_status=pending` |
+| 1 | **scrape** | `scraper_agent.py` | For each active `TrackedAccount` (Medyca's own first): read the **public embed page** through the residential proxy (`embed_provider.py`, [below](#where-the-list-of-reels-comes-from)) — the last 6 posts, only the videos the account **owns** — dump raw JSON to `data/raw/{account}/{shortcode}.json`, upsert `Reel` rows. 5-10 s between accounts; at most `embed_max_new_per_run` (5) new reels per run; 3 blocked accounts in a row stop the run; **if every account failed the stage is `failed`** with the reason. Apify is **not called any more** (code kept, off). | `media_status=pending` |
 | 2 | **download** | `downloader_agent.py` | For `media_status=pending`: get the mp4 (three sources, cheapest first — [below](#how-a-reels-video-actually-arrives)), ffmpeg-extract audio → `media/audio/{account}/{shortcode}.mp3`, save thumbnail → `media/thumbs/…`, delete the mp4. 3 attempts then `skipped`; a block defers the reel instead of charging it an attempt. | `media_status=done`, `transcribe_status=pending` |
 | 3 | **transcribe** | `transcriber_agent.py` | faster-whisper (local CPU, int8) over each mp3 → `Transcript`. Remote STT (`llm.client.transcribe_audio`) is used instead when `USE_REMOTE_STT`. Also processes `UploadedMedia`. | `transcribe_status=done`, `enrich_status=pending` |
 | 4 | **batch** | `batch_agent.py` | Analysis at **half price**, answered within 24h, for **three kinds of work**: `reel_enrich`, `doc_enrich`, `doc_arguments` (declared once in `batch_agent.KINDS`). **Collects** finished deliveries first (each answer written to the row its `custom_id` names), then **submits** everything still `pending`, marking it `batched` so it can never be sent twice. Skipped entirely when `BATCH_ENABLED=0` or no Anthropic key is set. | `batched`, then `done` on collect |
@@ -344,11 +344,119 @@ Downloading a reel and knowing *which* reels exist are two different problems,
 and only the first one is easy. This section is the one to read before anyone
 proposes changing the collection path again.
 
+### Since 2026-11-14: the embed page, from the server, through the proxy
+
+Apify answered `401 user-or-token-not-found` for all 23 accounts from 2026-11-12 14:15
+and had stopped on its own budget before that (`budget_stopped: True`): **no new reel
+entered after 2026-11-02**. The collection now runs on this server, without Apify and
+without any Instagram account.
+
+`scraper/embed_provider.py` asks `https://www.instagram.com/<user>/embed/` **through
+the residential proxy** (IPRoyal, Italian IP; `IG_PROXY`, empty = `YTDLP_PROXY`, see
+`scraper/proxy.py`), with a new exit IP per request and the Chrome fingerprint of
+`ig_client.build_session`. The page carries a `contextJSON` block with the profile and
+`graphql_media` — **the last 6 posts**. Measured 2026-11-14: HTTP 200, ~250 KB, 1-2 s.
+
+| It gives | It does NOT give |
+|---|---|
+| shortcode, media id, is_video, date, caption, comments, "likes" (unless the account hides them), cover image, **owner** | video address, **view count**, duration |
+
+What the missing fields become: the video address is found by the download (yt-dlp on
+the shortcode, as for any reel without a cached url); the **duration** is read from the
+file with `ffprobe`; the **views** stay empty (yt-dlp does not give them either, measured
+on one reel). Likes and comments are refreshed from yt-dlp when the download runs.
+
+**The owner rule (invariant, has a test).** A collaboration reel shows on the profile of
+every co-author but has ONE owner. `_upsert_reel` re-assigns a reel to the account that is
+reading it, so a collaboration between Medyca (`owned`) and a competitor would change side
+every run. `parse_embed` therefore keeps only posts whose `owner.username` is the requested
+account, and refuses the whole page if the name in `contextJSON` is not the one asked.
+
+**Block handling.** 401/403/429, a redirect to `/accounts/login`, or a page without
+`contextJSON` = blocked or changed. One more try with a new IP, then the account is
+`failed` for that run (`scrape_state.last_error`, `consecutive_failures`) and the run
+goes on. A 404 ("account not found") is not retried. Three blocked accounts in a row stop
+the run. If no account was read, the stage ends `failed` with "Instagram non risponde",
+not `done` with 23 failures. The proxy address holds a password: every error passes
+through `proxy.scrub` and never reaches a log.
+
+**The gap after a long stop.** The first read after a stop can bring in many reels at once.
+`embed_max_new_per_run` (ScraperConfig, default **5**: the pace the analysis chain already
+holds, 3-5 reels a run, so the hole closes slowly instead of dropping work on the local model
+before PR 2; decision 8) lets the 5 newest in and leaves the
+rest for the next read (it keeps being visible only while it is among the account's last 6
+posts). Medyca's account is read first so the cap never starves the client's own content.
+When all 6 posts read are new, `scrape_state.gap_possible` is set and the stage note says
+"possibile buco": older posts probably exist that we cannot see. We do not pretend to have
+them.
+
+**Settings** (`scraper_config`, key → `{"value": ...}`, editable in the admin; no migration):
+
+| Key | Default | What it does |
+|---|---|---|
+| `embed_delay_s` | 5 | pause between two accounts, `uniform(d, 2d)` = 5-10 s |
+| `embed_max_new_per_run` | 5 | most NEW reels let in per run, newest first; the rest waits for the next read. `0` = read but save nothing new |
+| `impersonate` | `chrome124` | browser fingerprint of the request |
+
+**What the client reads when it fails.** The stage error is one plain sentence per kind
+(`_CLIENT_REASON` in `scraper_agent.py`): Instagram refused, page changed, name not found,
+cannot reach Instagram from the server. The technical detail stays in the log and in
+`scrape_state.last_error` (written once, with its kind: `blocked:`, `schema_changed:`,
+`not_found:`, `error:`). A name that is not a valid username (`elena,palliotto`) or a 404 is
+`not_found` without a request; a page without data while OTHER accounts were just read fine is
+also `not_found` (a wrong name), not "Instagram changed the page". **Without a proxy the stage
+FAILS** ("La raccolta è sospesa: manca la connessione (proxy)…") instead of ending `done`, so
+the Stato box never says "sospesa" and "tutto in ordine" together.
+
+**Known limits (written the day they were known):**
+
+- **6 posts per read.** More than 6 posts between two reads (2 a day) and the oldest are
+  lost. Measured rates (36 days before 2/11): the busiest account made 30 reels in 12 days
+  (about 1.25 per half day), the others 10 or fewer. At steady state nothing is lost; the
+  12-day hole is only partly reachable (about 61 of about 94 reels, an estimate).
+- **No views on new reels.** `core/weighting.py` counts views + 5 x likes: a new reel has
+  only the likes part, so it looks weaker than the account's median. It touches rankings,
+  strategy and the download order (`view_count` desc: NULLs sort first in PostgreSQL, so
+  new reels are downloaded before old ones).
+- **Medyca's new reels weigh zero.** Medyca hides its likes (the page says 0 with
+  `like_and_view_counts_disabled`, stored as `None`) and the page gives no views, so
+  `core/weighting.py` has nothing to count. yt-dlp does return `like_count=3` on two different
+  Medyca reels (same 3, comments 4 and 0, an account with 3000 followers): measured
+  2026-11-14, judged **not a real count**, so for a reel with hidden likes the download never
+  writes yt-dlp's like count. A count from yt-dlp is also never negative and never lower than
+  what the row already holds.
+- **Sorting.** In PostgreSQL `DESC` puts NULL first. The reel list, a theme's 3 thumbnails and
+  the 5 "top" reels of the Second Brain map now use `nulls_last`: reels with no views end last.
+  The **download order is the opposite on purpose** (NULL first = new reels first).
+- **First run: old collaboration reels can change side.** A reel Apify had stored under the
+  wrong account (a collaboration) goes back to its real owner at the first read
+  (`_upsert_reel` re-assigns it), so it can move between `owned` and `competitor`. The direction
+  is the right one, but it is a visible change: check it after the first run.
+- **A reel that is deleted or private** contains words that look like a block ("login"), so
+  the download retries once through the proxy (a few KB) before giving up. Only covered by
+  tests with mocks.
+- **"Possibile buco" on the first read of an old account.** All 6 posts are new for a database
+  that does not know them yet: the flag is expected the first time, not an alarm.
+- **An undocumented public page.** Instagram can change or close it any day. When it does the
+  stage says so and nothing is collected; there is no second route ready.
+- **Videos only**, as before. The deeper route (12 reels per page, the query a logged-out
+  browser makes) is **not approved and not tried**.
+- **Proxy traffic.** About 245 KB per account read, 23 accounts, 2 reads a day: about 11 MB a
+  day (a measure of one page, the rest is arithmetic). The price per GB at IPRoyal was not
+  verified.
+- **A wrong account name fails every night.** `elena,palliotto` (a comma, not a dot) is `not_found`
+  at each run, without any request: a known failure, it stays `failed` and counts in "account
+  non letti" until the name is corrected or the account deactivated. Four accounts read fine but showed 0 videos in their last 6
+  posts (photos/carousels): not a fault, only no reels to take.
+
+The next sections describe the Apify route and its budget. They are **kept as history**:
+the code is still in the repository, switched off, and `scraper_agent.run()` never calls it.
+
 ### What is closed, and why (measured 2026-09-11)
 
 | Path | Status |
 |---|---|
-| Anonymous profile listing | `GET /api/v1/users/web_profile_info/` → **`401 {"require_login": true}`**. The profile page redirects to `/accounts/login/`. |
+| Anonymous profile listing | `GET /api/v1/users/web_profile_info/` → **`401 {"require_login": true}`**. The profile page redirects to `/accounts/login/`. **2026-11-14, through the residential proxy:** the profile page answers 200 (no login wall), `web_profile_info` is still 404, and the public **embed** page answers with the last 6 posts — that is the route now in use. |
 | **yt-dlp** listing an account | Impossible. Its `InstagramUserIE` carries `_WORKING = False` and a `_QUERY_HASH` Instagram retired. Tested on 2026.07.04 and 2026.08.19 — both fail. |
 | instaloader | Removed its anonymous branch in March 2026; the endpoint requires a session. |
 | Logged-in session (`ig_client.py`) | Works, but was removed on 2026-07-29: it ran as a personal account, and the log shows Instagram had begun blocking it — **23 checkpoint/401 blocks on 26 July, 15 more on the 29th**, plus the session file being reissued on the 26th. |
@@ -358,7 +466,7 @@ proposes changing the collection path again.
 **What is open:** a single reel, given its shortcode, is fetchable anonymously —
 which is exactly what `yt-dlp` does in stage 2, and why it stays there.
 
-### The split that resolves it
+### The split that resolved it in September (history: Apify is off since 2026-11-14)
 
 - **Apify lists.** `apify/instagram-reel-scraper` returns the recent reels of an
   account — shortcode, caption, counts, timestamp and a signed `videoUrl` — from
@@ -371,7 +479,7 @@ a reel collected and downloaded in the same run costs nothing extra — the
 downloader's Apify prefetch finds a usable url and never fires. Measured on the
 first real collection: `apify_accounts: 0, apify_urls: 0`.
 
-## The money, and what stops it
+## The money, and what stops it (history: Apify is off since 2026-11-14)
 
 `scraper/apify_budget.py`. The plan is **Apify FREE: $5.00 per cycle, renewing
 monthly** (verified 2026-09-11, cycle 27 Aug → 26 Sep). Not a one-off allowance,
@@ -447,21 +555,17 @@ downloader tries **three sources, cheapest and safest first**, and falls through
 
 ```mermaid
 flowchart TD
-    start([reel with media_status=pending]) --> prefetch
-
-    subgraph P["once per run, per account"]
-      prefetch["<b>1. Apify prefetch</b><br/>_prefetch_urls()<br/>one actor call per account<br/>fills video_url in bulk"]
-    end
-
-    prefetch --> cached{"<b>2. cached CDN url</b><br/>video_url present<br/>and oe= not expired?"}
+    start([reel with media_status=pending]) --> cached{"<b>1. cached CDN url</b><br/>video_url present<br/>and oe= not expired?"}
     cached -->|yes| get["plain GET on the CDN<br/>_download() · no quota · no pacing"]
     cached -->|no| ytdlp
     get -->|"HTTP error<br/>(revoked / expired early)"| ytdlp
     get -->|ok| have
 
-    ytdlp["<b>3. yt-dlp fallback</b><br/>_ytdlp_fetch()<br/>public permalink, anonymous<br/>instagram.com/reel/&lt;shortcode&gt;/<br/>~6-8s per reel"]
+    ytdlp["<b>2. yt-dlp</b>, DIRECT first<br/>_ytdlp_fetch()<br/>public permalink, anonymous<br/>instagram.com/reel/&lt;shortcode&gt;/"]
     ytdlp -->|ok| have
-    ytdlp -->|"DownloadError saying<br/>login / rate / 429"| throttled
+    ytdlp -->|"DownloadError saying<br/>login / rate / 429"| viaproxy["one retry through the<br/>residential proxy (paid per GB)"]
+    viaproxy -->|ok| have
+    viaproxy -->|blocked again| throttled
     ytdlp -->|other error| failed
 
     have(["mp4 on disk"]) --> audio{"_has_audio()<br/>does it carry<br/>an audio stream?"}
@@ -488,24 +592,27 @@ flowchart TD
     class failed,skipped bad;
 ```
 
-**1. Apify prefetch** (`_prefetch_urls`, only when `apify_provider.enabled()`). One actor
-call per account fills `video_url` for the whole batch, plus any missing caption /
-thumbnail / counters. Depth is `max(reels known for that account, reels in this batch) + 60`
-— a flat margin, because our pending rows sit scattered through the account's real
-timeline, not at the top of it: a first attempt sized from the batch asked for 7 reels and
-matched 0 of them. Overshooting costs a fraction of a cent; undershooting wastes the call.
+**(Removed 2026-11-14) The Apify prefetch.** `_prefetch_urls` filled `video_url` in bulk from
+Apify and is gone from the download stage: the embed collection gives no video address and
+the Apify token is dead. The log no longer carries `apify_accounts`/`apify_urls`.
 
-**2. The cached CDN url.** Instagram signs media urls with `oe=<hex unix timestamp>`;
+**1. The cached CDN url.** Instagram signs media urls with `oe=<hex unix timestamp>`;
 past it the CDN answers 403. `_url_expired()` reads that parameter with a 15-minute margin.
 A url with no `oe=` is assumed good — the download attempt decides. This path is a plain
 `requests` GET against the CDN, which has **no quota**, so the run does not pace itself here.
 
-**3. yt-dlp on the public permalink** (`_ytdlp_fetch`). Downloads
+**2. yt-dlp on the public permalink** (`_ytdlp_fetch`). Downloads
 `https://www.instagram.com/reel/<shortcode>/` **anonymously — no account, no cookies**.
 This replaced the old renewal path (`/api/v1/media/{pk}/info/`), which needed a logged-in
 session and was removed on **2026-07-29** because it ran as Giuseppe's personal account.
 Measured from this VPS on **2026-07-30**: 3/3 reels, 6-8s each, valid MP4s with correct
-durations.
+durations. Measured again on **2026-11-14** from the new server, **direct, no proxy**: a 17 MB
+reel in about a second. So the download goes direct first, and only a block (login / rate /
+429) retries ONCE through the proxy: the proxy is paid per GB and a video is ~13 MB, so
+sending every video through it would be pure cost (about 3 GB a month, an estimate). Still
+blocked through the proxy: `IGThrottled`, the reel is deferred and not charged an attempt.
+The proxy leg was covered by a test, **not tried live**. The duration is read from the file
+(`ffprobe`); view/like/comment counts are taken from yt-dlp when it has them.
 
 #### The limits, written down before the next person hits them
 
@@ -622,7 +729,7 @@ arriving at `enrich` therefore becomes two items, not one.
 ### What the estimate does not cover
 
 - **Download is the unreliable one.** Measured between **9 and 77 s/reel** across
-  runs, because the cost depends on how many urls Apify pre-filled (a cached CDN
+  runs, because the cost depends on how many urls Apify pre-filled (until 2026-11) (a cached CDN
   url is a plain fast fetch) and on whether Instagram starts throttling mid-run,
   in which case the run stops early and the rest waits for the next one. The UI
   says so in as many words rather than presenting one number as a promise.
@@ -704,7 +811,7 @@ stage (done/total, speed, elapsed, remaining). Mechanism:
 
 | Stage | Total declared | Phases | Who works |
 |---|---|---|---|
-| `scrape` | active accounts | one | Apify, no model |
+| `scrape` | active accounts | one | the server through the proxy (embed page), no model |
 | `download` | reels taken this round, after the cap | one | no model |
 | `transcribe` | reels to transcribe | one | Whisper remote, local as backstop (per item) |
 | `batch` | deliveries to collect, then items to hand over | Ritiro, Consegna | Anthropic in bulk |

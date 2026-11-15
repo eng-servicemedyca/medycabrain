@@ -47,15 +47,16 @@ export interface QueueData {
   stages: QueueStage[];
 }
 
-/** What collection has cost this billing cycle. */
-export interface Budget {
-  plan: string;
-  spent_usd: number;
-  limit_usd: number;
-  ceiling_usd: number;
-  available_usd: number;
-  cycle_start: string | null;
-  cycle_end: string | null;
+/** How Instagram is read, and how the last read went. */
+export interface Collection {
+  mode: "embed" | "graph" | "suspended";
+  label: string;
+  last: {
+    at: string | null;
+    status: "done" | "failed";
+    note: string;
+    error: string;
+  } | null;
 }
 
 export interface RunningJob {
@@ -79,13 +80,13 @@ export function PipelineQueue({
   queue,
   job,
   lastJob,
-  budget,
+  collection,
   onStarted,
 }: {
   queue?: QueueData;
   job?: RunningJob;
   lastJob?: LastPipelineJob | null;
-  budget?: Budget | null;
+  collection?: Collection | null;
   onStarted: () => void;
 }) {
   const { t } = useTranslation();
@@ -235,9 +236,9 @@ export function PipelineQueue({
         )}
       </div>
 
-      {/* What collection costs. On a $5 cycle this belongs next to the button
-          that spends it, not buried in a settings page. */}
-      {budget && <BudgetBar budget={budget} />}
+      {/* Where the reels come from and how the last read went: a read that
+          failed must be visible here, not only in a log. */}
+      {collection && <CollectionBox collection={collection} />}
     </section>
   );
 }
@@ -269,45 +270,34 @@ function LastRun({ job }: { job: LastPipelineJob }) {
   );
 }
 
-function BudgetBar({ budget }: { budget: Budget }) {
+function CollectionBox({ collection }: { collection: Collection }) {
   const { t } = useTranslation();
-  const pct = budget.ceiling_usd
-    ? Math.min(100, Math.round((budget.spent_usd / budget.ceiling_usd) * 100))
-    : 0;
-  // Amber past two thirds, red at the ceiling — the ceiling is where
-  // collection stops, so it must not arrive as a surprise.
-  const tone = pct >= 100 ? "bg-danger" : pct >= 67 ? "bg-warning" : "bg-success";
-  const renews = formatResumeDate(budget.cycle_end);
-
+  const last = collection.last;
+  const failed = collection.mode === "suspended" || last?.status === "failed";
+  const when = last?.at
+    ? new Date(last.at).toLocaleString("it-IT", {
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "";
   return (
     <div className="mt-3 rounded-xl border border-border bg-surface p-4 shadow-card">
-      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <span className="text-sm font-bold text-navy">{t("queue.budget")}</span>
-        <span className="text-xs font-semibold tabular-nums text-muted">
-          ${budget.spent_usd.toFixed(2)} / ${budget.ceiling_usd.toFixed(2)}
-        </span>
-      </div>
-      <div
-        className="h-2 w-full overflow-hidden rounded-full bg-white"
-        role="progressbar"
-        aria-valuenow={pct}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label={t("queue.budget")}
-      >
-        <div
-          className={"h-full rounded-full transition-all duration-700 " + tone}
-          style={{ width: `${Math.max(pct, 2)}%` }}
-        />
-      </div>
-      <p className="mt-2 text-xs text-muted">
-        {pct >= 100
-          ? t("queue.budgetStopped", { renews })
-          : t("queue.budgetLeft", {
-              left: budget.available_usd.toFixed(2),
-              renews,
-            })}
-      </p>
+      <p className="text-sm font-bold text-navy">{collection.label}</p>
+      {last ? (
+        <p
+          className={
+            "mt-1 text-xs " + (failed ? "font-semibold text-danger" : "text-muted")
+          }
+        >
+          {last.status === "failed"
+            ? t("queue.collectionFailed", { when, why: last.error })
+            : t("queue.collectionDone", { when, note: last.note || t("queue.collectionOk") })}
+        </p>
+      ) : (
+        <p className="mt-1 text-xs text-muted">{t("queue.collectionNone")}</p>
+      )}
     </div>
   );
 }
