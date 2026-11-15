@@ -27,8 +27,10 @@ numbers came from is not usable commercially). What that implies, all below:
   * A cut answer is an error with its own name (`LLMTruncated`), never half a
     JSON returned in silence. Neither it nor a busy slot is retried: a retry
     costs another 4-9 minutes (it used to mean up to 45 before failing).
-  * A pipeline round may make at most PIPELINE_LOCAL_MAX_CALLS local calls
-    (`LLMLocalBudget`); the stage leaves what it did not try `pending`.
+  * Local calls queue without limit by default: PIPELINE_LOCAL_MAX_CALLS is 0.
+    Set it above 0 and a round stops at that many (`LLMLocalBudget`), the
+    stage leaving what it did not try `pending`. A big round on the 7b then
+    lasts hours (141 x ~4 min = ~9 h) and the 14:15 round skips on the lock.
   * `remote_only=True` never reaches Ollama (the MCP search reranker, the
     editorial plan, the eval judge): a minute of waiting is worse than an
     answer in plain order, and a 3,600-token plan would take 20+ minutes.
@@ -109,7 +111,8 @@ class LLMTruncated(LLMError):
 
 
 class LLMLocalBudget(LLMError):
-    """This pipeline round has used its local calls (PIPELINE_LOCAL_MAX_CALLS).
+    """This pipeline round has used its local calls (PIPELINE_LOCAL_MAX_CALLS,
+    only when someone set it above 0: by default there is no cap).
     Not a failure of the item: the stage leaves it `pending` for the next round."""
 
 
@@ -517,11 +520,13 @@ def local_calls_used() -> int:
 
 def _take_local_call() -> bool:
     """Count a local call of a pipeline round, or refuse it when the round has
-    used PIPELINE_LOCAL_MAX_CALLS. Calls that are not a pipeline stage (a Job
-    the client started, a command) are not capped: a person is waiting for them.
+    used PIPELINE_LOCAL_MAX_CALLS. Off by default (0): the local model is a queue
+    and the round waits its turn. Calls that are not a pipeline stage (a Job
+    the client started, a command) are never capped: a person is waiting.
 
-    Why a cap at all: with Groq switched off the 7b would need ~9 h for a big
-    round (141 calls x ~4 min) and run into the 14:15 round."""
+    Why the brake still exists: with Groq switched off the 7b needs ~9 h for a
+    big round (141 calls x ~4 min) and the 14:15 round skips on the round lock.
+    Set a number to get it back."""
     global _local_calls
     cap = settings.PIPELINE_LOCAL_MAX_CALLS
     if cap <= 0 or not usage.current()["process"].startswith("pipeline:"):

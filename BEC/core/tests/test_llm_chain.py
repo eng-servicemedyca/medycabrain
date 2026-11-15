@@ -321,6 +321,36 @@ class LocalBudgetTests(_ChainCase):
                 client.chat("s", "u")
 
 
+class NoCapByDefaultTests(_ChainCase):
+    """Since 2026-11-15 the local model is a queue with no cap: the default of
+    PIPELINE_LOCAL_MAX_CALLS is 0 and a round makes as many local calls as it needs."""
+
+    def test_the_defaults_are_no_cap_and_a_lock_wait_longer_than_one_answer(self):
+        import importlib.util
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PIPELINE_LOCAL_MAX_CALLS", "OLLAMA_LOCK_WAIT",
+                            "OLLAMA_PIPELINE_TIMEOUT")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            spec = importlib.util.spec_from_file_location(
+                "base_defaults_probe", Path(settings.BASE_DIR) / "config/settings/base.py")
+            base = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(base)
+        self.assertEqual(base.PIPELINE_LOCAL_MAX_CALLS, 0)
+        self.assertEqual(base.OLLAMA_LOCK_WAIT, 1800)
+        self.assertGreater(base.OLLAMA_LOCK_WAIT, base.OLLAMA_PIPELINE_TIMEOUT)
+
+    @override_settings(PIPELINE_LOCAL_MAX_CALLS=0)
+    def test_a_round_makes_many_local_calls_in_a_row_without_budget_error(self):
+        with mock.patch.object(client, "_fast_chat",
+                               side_effect=LLMRateLimit(1, daily=True)), \
+             mock.patch.object(client, "_ollama_chat", return_value="ok") as oll, \
+             usage.scope("pipeline:enrich", stage="enrich"):
+            for _ in range(50):
+                self.assertEqual(client.chat("s", "u"), "ok")
+        self.assertEqual(oll.call_count, 50)
+        self.assertEqual(client.local_calls_used(), 0)
+
+
 class StageKeepsWhatItDidNotTryPendingTests(TestCase):
     """The cap is not a failure: the stage stops, says so, and leaves the reels
     it did not try `pending`. A real error stays `failed`."""

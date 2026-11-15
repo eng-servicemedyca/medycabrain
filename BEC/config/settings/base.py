@@ -166,9 +166,12 @@ OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
 OLLAMA_READ_TIMEOUT = int(os.environ.get("OLLAMA_READ_TIMEOUT", "600"))
 OLLAMA_PIPELINE_TIMEOUT = int(os.environ.get("OLLAMA_PIPELINE_TIMEOUT", "1500"))
 # Local calls one pipeline round may make before the stage stops and leaves the
-# rest `pending` (40 x ~4 min = ~2.8 h). 0 = no cap. Without it, a night with
-# Groq down would ask for ~9 h and run into the 14:15 round.
-PIPELINE_LOCAL_MAX_CALLS = int(os.environ.get("PIPELINE_LOCAL_MAX_CALLS", "40"))
+# rest `pending`. 0 = no cap, and 0 is the default since 2026-11-15: when Groq
+# is out the work goes on the local model and queues there, one call at a time.
+# The brake stays for whoever wants it back (a round of 40 = ~2.8 h). The price
+# of no cap: a big round on the 7b can last hours (141 x ~4 min = ~9 h), and the
+# 14:15 round finds the round lock taken and skips (exit 3).
+PIPELINE_LOCAL_MAX_CALLS = int(os.environ.get("PIPELINE_LOCAL_MAX_CALLS", "0"))
 # Groq's per-minute cap is waited out this many times (each as long as Groq says,
 # 21 s at most on 2026-11-15) before the local model is asked.
 LLM_RATE_WAITS = int(os.environ.get("LLM_RATE_WAITS", "6"))
@@ -355,7 +358,9 @@ APIFY_REEL_ACTOR = os.environ.get("APIFY_REEL_ACTOR", "apify~instagram-reel-scra
 # Concurrent calls (nightly pipeline + a client clicking "Analizza") make
 # BOTH time out, which is how the box melted down.
 OLLAMA_LOCK_PATH = os.environ.get("OLLAMA_LOCK_PATH", "/tmp/medycabrain-ollama.lock")
-OLLAMA_LOCK_WAIT = int(os.environ.get("OLLAMA_LOCK_WAIT", "900"))
+# The wait must outlast the longest local answer (OLLAMA_PIPELINE_TIMEOUT, 1500 s):
+# with less, a caller gives up its turn while the queue is healthy.
+OLLAMA_LOCK_WAIT = int(os.environ.get("OLLAMA_LOCK_WAIT", "1800"))
 
 # How long the per-call detail (`llm_calls`) and per-stage rows (`stage_runs`)
 # are kept. `manage.py prune_llm_calls` deletes older rows; daily totals older
