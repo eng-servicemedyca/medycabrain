@@ -767,3 +767,25 @@ fratelli (20-45 mila al giorno visti). 7b locale: legge ~13 token/s, scrive ~2,8
 Stima grezza (3,5 caratteri per token, due letture per contenuto come oggi): puntate ~0,16
 milioni di token; articoli in tema ~3,3 milioni; reel lunghi ~4,8 milioni; articoli fuori
 tema ~1,4 milioni se solo riassunto. Totale ~10 milioni di token. È un calcolo.
+
+## Decisione di Giuseppe (16/11/2026, dopo il reset dei limiti)
+
+«In questa branch inizia il lavoro con Haiku, fai tutte le trascrizioni, quindi non andare
+sul modello locale, e quindi poi restituiscimi l'outcome. Una volta fatto faccio una merge
+request [...] uso il modello di Claude Haiku della mia subscription»
+
+Vale come OK al disegno, con queste modifiche (capo):
+
+- **Rifacimento del pregresso = eccezione una tantum con Claude Haiku** (abbonamento di
+  Giuseppe), non con il 7b. Il giro di ogni giorno resta Groq + 7b, niente Anthropic.
+  L'eccezione si scrive nella documentazione.
+- Haiku fa da «modello»: legge i prompt veri della pipeline sul testo intero e scrive la
+  risposta grezza in file (`/home/medyca-admin/medycabrain-rianalisi/`, fuori da git).
+  **Nessuna scrittura sul database prima del merge e della conferma di Giuseppe.**
+- Il caricamento lo fa un comando nuovo della PR (`import_reanalysis`), che passa ogni
+  risposta dallo **stesso parser e dallo stesso salvataggio della pipeline**, controlla
+  le citazioni, scrive in una transazione per contenuto e segna `full_text_status=done`.
+- Esce dalla PR 1: il comando `reanalyze_whole` sul 7b, il lucchetto a tre livelli, il
+  riquadro in Avanzamento. Restano: testo intero nella pipeline per i contenuti nuovi
+  (a pezzi sul 7b), campo + migrazione, `nota_analisi`, affermazioni fino a 12 sui testi
+  lunghi, sosta di lettura dopo le puntate (Giuseppe le legge dopo il caricamento).
