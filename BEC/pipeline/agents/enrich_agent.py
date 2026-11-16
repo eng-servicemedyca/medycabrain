@@ -40,6 +40,11 @@ from llm.client import NOT_THE_ITEMS_FAULT, LLMLocalBudget, LLMRateLimit
 
 logger = logging.getLogger(__name__)
 
+# How much of a transcript the analysis and the claims read. Named so the MCP
+# connector can tell the client's Claude where the summary stops (`nota_analisi`)
+# without a second copy of the number that could drift.
+TRANSCRIPT_CHARS_READ = 3000
+
 VALID_FORMATS = {
     "talking_head", "voiceover", "tutorial", "testimonianza",
     "text_overlay", "intervista", "altro",
@@ -227,7 +232,7 @@ def build_enrich_prompt(reel: Reel) -> tuple[str, str, str] | None:
         return None
     user = prompts.ENRICH_USER_TEMPLATE.format(
         caption=(reel.caption or "")[:1500],
-        transcript=transcript_text[:3000] or "(nessuna trascrizione)",
+        transcript=transcript_text[:TRANSCRIPT_CHARS_READ] or "(nessuna trascrizione)",
     )
     if evidence == "caption_only":
         user += prompts.ENRICH_CAPTION_ONLY_NOTE
@@ -321,7 +326,7 @@ def _extract_arguments(reel: Reel) -> int:
 
     user = prompts.ARGUMENTS_USER_TEMPLATE.format(
         caption=(reel.caption or "")[:1500],
-        transcript=transcript_text[:3000],
+        transcript=transcript_text[:TRANSCRIPT_CHARS_READ],
     )
     # 1200, not 600: a reel with several claims plus its verbatim quotes does
     # not fit in 600 tokens, and a truncated answer is unparseable JSON, not a

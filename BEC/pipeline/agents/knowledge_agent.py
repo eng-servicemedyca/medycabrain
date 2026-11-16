@@ -19,6 +19,13 @@ documents the embedding uses ONLY the Italian material the model produced —
 an English body mixed into the vector makes English docs cluster with each
 other instead of by subject.
 
+What the text is: the prompt names it by `source_type` — a blog or a web page is
+«un articolo del blog», a video «la trascrizione di un video» of its channel, an
+uploaded interview «un'intervista» — so the summary of an episode never calls it
+an article. Reading limit, known: the summary reads the first 6 000 characters
+and the claims the first 8 000; the rest of a long episode is not summarised
+(the MCP connector says so in `nota_analisi`).
+
 Failures stay FAILED. The old blanket FAILED→PENDING reset at the end of
 every run was an infinite retry loop that also hid the failure; retry is now
 an explicit act (reprocess --stage knowledge).
@@ -37,15 +44,23 @@ from llm.client import NOT_THE_ITEMS_FAULT
 
 logger = logging.getLogger(__name__)
 
+# How much of a text the model reads for the summary / topic and for the claims.
+# Named so the MCP connector can say where the analysis stops (`nota_analisi`)
+# from the same number the prompts use. Known limit: a long episode is
+# summarised on its first third (documentation/low-level/03).
+DOC_SUMMARY_CHARS_READ = 6000
+DOC_CLAIMS_CHARS_READ = 8000
+
 KB_SYSTEM = (
     "Sei un analista di contenuti medici in lingua italiana, specializzato in "
     "menopausa, terapie ormonali e salute femminile. Analizzi articoli di blog "
-    "di diversi autori: alcuni sono di Medyca, altri di concorrenti. "
+    "e trascrizioni di video e interviste, di diversi autori: alcuni sono di "
+    "Medyca, altri di concorrenti. "
     "Rispondi SEMPRE ed esclusivamente con un oggetto JSON valido."
 )
 
 KB_ENRICH_USER = """\
-Analizza questo articolo del blog di {source_name}{ownership}.
+{intro}
 
 TITOLO: {title}
 
@@ -75,14 +90,38 @@ def _embedder():
 DOC_MAX_TOKENS = 2000
 
 
+def _intro(doc: KnowledgeDocument) -> str:
+    """The opening line of the prompt: it names what the text IS.
+
+    Every document used to be «un articolo del blog di Medyca», so a TV episode
+    kept as Medyca's came back summarised as «l'articolo di Medyca» (client
+    report 2026-11-16). Blogs and web pages keep the old wording to the letter:
+    2 281 analyses must not move. Videos and interviews are named for what they
+    are, and told never to call themselves an article.
+    """
+    if doc.source_type == "manual":
+        intro = "Analizza la trascrizione di questa intervista caricata da Medyca."
+    elif doc.source_type == "video":
+        channel = (doc.source.name if doc.source else doc.author) or "una fonte esterna"
+        intro = ("Analizza la trascrizione di questo video (una puntata o un "
+                 f"intervento) di {channel}.")
+    else:
+        who = doc.source.name if doc.source else "Medyca"
+        ownership = (" (un CONCORRENTE di Medyca)" if doc.owner_type == "competitor"
+                     else " (il blog di Medyca stessa)")
+        return f"Analizza questo articolo del blog di {who}{ownership}."
+    intro += " Nel riassunto chiamala puntata, video o intervista: mai articolo."
+    if doc.is_inspiration:
+        intro += (" È materiale di riferimento scelto da Medyca: chi parla sono "
+                  "gli ospiti, non Medyca.")
+    return intro
+
+
 def build_doc_enrich_prompt(doc: KnowledgeDocument) -> tuple[str, str]:
-    """(system, user) for one article."""
-    who = doc.source.name if doc.source else "Medyca"
-    ownership = (" (un CONCORRENTE di Medyca)" if doc.owner_type == "competitor"
-                 else " (il blog di Medyca stessa)")
+    """(system, user) for one article, episode or interview."""
     return KB_SYSTEM, KB_ENRICH_USER.format(
-        source_name=who, ownership=ownership, title=doc.title,
-        text=(doc.content_text or "")[:6000])
+        intro=_intro(doc), title=doc.title,
+        text=(doc.content_text or "")[:DOC_SUMMARY_CHARS_READ])
 
 
 def write_doc_enrich(doc: KnowledgeDocument, data) -> None:
@@ -127,7 +166,7 @@ def _enrich_one(doc: KnowledgeDocument) -> None:
 def build_doc_arguments_prompt(doc: KnowledgeDocument) -> tuple[str, str] | None:
     """(system, user) for claim extraction, or None when the article is too
     short to carry a claim worth quoting."""
-    text = (doc.content_text or "")[:8000]
+    text = (doc.content_text or "")[:DOC_CLAIMS_CHARS_READ]
     if len(text.strip()) < 200:
         return None
     return prompts.ARGUMENTS_SYSTEM, prompts.ARGUMENTS_USER_TEMPLATE.format(
@@ -139,7 +178,7 @@ def write_doc_arguments(doc: KnowledgeDocument, data) -> int:
     claim is dropped — the grounding contract, identical for reels."""
     from pipeline.agents.enrich_agent import _norm
 
-    text = (doc.content_text or "")[:8000]
+    text = (doc.content_text or "")[:DOC_CLAIMS_CHARS_READ]
     if isinstance(data, list) and data and isinstance(data[0], dict) \
             and "argomenti" in data[0]:
         data = data[0]

@@ -59,7 +59,7 @@ Domande che funzionano bene:
 |---|---|
 | `panoramica` | i numeri della banca: reel/articoli per proprietario, fonti, temi |
 | `cerca` | ricerca semantica+lessicale su trascrizioni, articoli e analisi |
-| `leggi` | testo completo di un contenuto: trascrizione o articolo, analisi, affermazioni con citazione |
+| `leggi` | testo di un contenuto: trascrizione o articolo, analisi, affermazioni con citazione. Fino a 30.000 caratteri in una volta; i testi più lunghi arrivano a pezzi (`parte`), e Claude chiede il seguito da solo |
 | `temi` | la mappa dei temi correnti (cluster) con esempi di affermazioni |
 
 Nessun tool scrive: il connettore non può modificare, cancellare o avviare

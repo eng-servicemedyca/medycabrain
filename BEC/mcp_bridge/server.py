@@ -18,6 +18,11 @@ an OAuth handshake; oauth_shim.py answers it by approving everyone, and the
 secret stays the only key. The trade-off is documented in docs/mcp-connettore-claude.md
 — whoever has the URL has read access, treat it like a password.
 
+Long texts: `leggi_*` hand back up to TESTO_MAX_CARATTERI characters at a
+time. Beyond that the text comes in parts (`parte` / `parte_successiva`),
+cut at a sentence end, never silently shortened: it used to be a hard
+`[:12000]` that stopped mid-word and said nothing (client report 2026-11-16).
+
 Runs as its own service (uvicorn on 127.0.0.1:8020, systemd
 medycabrain-mcp) behind Caddy (HTTPS, mcp.medyca.it). Django is set up
 in-process for ORM access; this shares the backend's models but not its
@@ -69,14 +74,27 @@ server = MCPServer(
         "`cerca_reel`, `leggi_reel`. Hanno trascrizione, gancio iniziale, "
         "formato del video e numeri di pubblico.\n"
         "• ARTICOLI di blog — di Medyca e dei competitor: `cerca_articoli`, "
-        "`leggi_articolo`, `fonti_blog`. Hanno testo integrale, autore, "
-        "data e lingua; non hanno gancio né formato, che sono cose da video.\n"
+        "`leggi_articolo`, `fonti_blog`. Hanno testo, autore, data e lingua; "
+        "non hanno gancio né formato, che sono cose da video. "
+        "`leggi_articolo` legge anche le puntate e le interviste "
+        "trascritte: guarda il campo `tipo` e chiamale per quello che "
+        "sono.\n"
         "Usa lo strumento del tipo che ti serve. `cerca_tutto` e `leggi` "
         "esistono per le domande che attraversano i due mondi, ma quando la "
         "domanda riguarda solo i video o solo gli articoli lo strumento "
         "specifico dà risposte più pulite.\n"
         "Inizia con `panoramica` per sapere cosa c'è dentro; `temi` per la "
         "mappa degli argomenti. Tutte le analisi sono in italiano.\n"
+        "TESTI LUNGHI: `leggi_reel`, `leggi_articolo` e `leggi` danno il "
+        "testo per intero fino a 30.000 caratteri; oltre, a pezzi. Se "
+        "`parte_successiva` ha un numero il testo continua: richiama lo "
+        "stesso strumento con `parte` = quel numero, finché serve; quando è "
+        "vuoto il testo è finito. (`troncato` dice solo che questo pezzo non "
+        "è tutto il testo, anche sull'ultima parte.) Non dire che un "
+        "contenuto finisce lì se `parte_successiva` non è vuoto e non citare "
+        "ciò che non hai letto. Se c'è "
+        "`nota_analisi`, riassunto e affermazioni coprono solo l'inizio: per "
+        "il resto vale il testo.\n"
         "Cita sempre da quale contenuto (e di chi) viene un'affermazione: "
         "confondere ciò che dice Medyca con ciò che dicono i competitor è "
         "l'errore peggiore possibile.\n"
@@ -273,7 +291,111 @@ def _parse_id(id: str, atteso: str | None = None) -> tuple[str, int] | dict:
     return kind, pk
 
 
-def _leggi_reel(pk: int) -> dict:
+# How much text one answer carries. Measured on the DB (2026-11-16): 17 of 17
+# TV episodes and 99% of articles fit; 13 articles and 146 reels (competitor
+# videos up to 96 minutes, 85k characters) do not and come in parts. There is no
+# published limit for claude.ai; 30 000 characters is about 8-10 000 tokens
+# (3-4 characters per token, an estimate), below the point where the clients we
+# know start refusing or cutting on their own, which would again be a silent
+# cut, out of our hands.
+TESTO_MAX_CARATTERI = 30_000
+# Where `_parti` looks for a sentence end: the last stretch of each piece.
+_FINESTRA_FRASE = 2_000
+
+
+def _parti(testo: str, limite: int = TESTO_MAX_CARATTERI) -> list[str]:
+    """The text in pieces of at most `limite` characters, joined = the text.
+
+    No overlap and nothing dropped or stripped: `"".join(_parti(t)) == t`, so
+    the client's Claude can stitch the parts back without doubt. A cut falls
+    after a sentence end (". ", "? ", "! ", newline) in the last
+    _FINESTRA_FRASE characters of the piece; failing that after the last
+    space; only a text with neither (a run of 30 000 characters) is cut hard.
+    """
+    parti: list[str] = []
+    resto = testo
+    while len(resto) > limite:
+        finestra = resto[:limite]
+        da = max(0, limite - _FINESTRA_FRASE)
+        taglio = max((i + len(fine) for fine in (". ", "? ", "! ", "\n")
+                      if (i := finestra.rfind(fine, da)) != -1), default=0)
+        if not taglio:
+            taglio = finestra.rfind(" ") + 1
+        if not taglio:
+            taglio = limite
+        parti.append(resto[:taglio])
+        resto = resto[taglio:]
+    parti.append(resto)
+    return parti
+
+
+def _parse_parte(parte) -> int | dict:
+    """The part number as an int, or an error dict the tool returns as is.
+
+    Accepted as text too ("2"): Claude passes numbers as strings, as it does
+    for ids. A bool is refused: True would quietly read as part 1.
+    """
+    try:
+        if isinstance(parte, bool):
+            raise ValueError
+        n = int(str(parte).strip())
+    except ValueError:
+        return {"errore": "`parte` deve essere un numero intero (1, 2, 3…)"}
+    if n < 1:
+        return {"errore": "`parte` parte da 1: chiedi la parte 1 per cominciare"}
+    return n
+
+
+def _pezzo(testo: str, parte: int, strumento: str) -> tuple[str, dict] | dict:
+    """(this part of the text, the fields that describe it), or an error dict.
+
+    Same fields for reels and articles. `troncato` is true whenever this piece
+    is not the whole text, the last part included: the reader must know the
+    text it holds is a piece. A part out of range is an error, never an empty
+    answer that would read as «the text ends here».
+    """
+    parti = _parti(testo)
+    n = len(parti)
+    if parte > n:
+        return {"errore": (f"questo contenuto ha {n} " +
+                           ("parte" if n == 1 else "parti") +
+                           (": chiedi la parte 1" if n == 1
+                            else f": chiedi una parte da 1 a {n}"))}
+    if parte < n:
+        come = (f"Testo lungo: questa è la parte {parte} di {n}. Per il "
+                f"seguito chiama {strumento} con parte={parte + 1}.")
+    elif n > 1:
+        come = f"Questa è l'ultima parte ({parte} di {n}): il testo finisce qui."
+    else:
+        come = ""
+    return parti[parte - 1], {
+        "caratteri_totali": len(testo),
+        "parte": parte,
+        "parti_totali": n,
+        "troncato": n > 1,
+        "parte_successiva": parte + 1 if parte < n else None,
+        "come_leggere_il_resto": come,
+    }
+
+
+def _nota_analisi(testo: str, letti: int) -> str:
+    """Said when the text is longer than what the pipeline gave the model.
+
+    The summary and the claims of a long text were written on its first
+    `letti` characters (a known limit, see documentation/low-level/03): the
+    client's Claude must not take them for a reading of the whole.
+    """
+    if len(testo) <= letti:
+        return ""
+    def it(n: int) -> str:
+        return f"{n:,}".replace(",", ".")
+
+    return (f"Riassunto e affermazioni sono stati fatti sull'inizio del testo "
+            f"(primi {it(letti)} caratteri su {it(len(testo))}): per il resto "
+            f"vale il testo.")
+
+
+def _leggi_reel(pk: int, parte: int = 1) -> dict:
     from core.models import Reel
 
     r = (Reel.objects.filter(id=pk, is_active=True)
@@ -282,7 +404,12 @@ def _leggi_reel(pk: int) -> dict:
         return {"errore": f"reel {pk} non trovato"}
     enr = getattr(r, "enrichment", None)
     tr = getattr(r, "transcript", None)
-    return {
+    trascrizione = tr.text if tr else ""
+    pezzo = _pezzo(trascrizione, parte, "leggi_reel")
+    if isinstance(pezzo, dict):
+        return pezzo
+    testo, campi = pezzo
+    out = {
         "tipo": "reel",
         # A reel has no title column: built here exactly as the search index
         # builds it (core/knowledge.py), so the same reel is named the same way
@@ -294,35 +421,64 @@ def _leggi_reel(pk: int) -> dict:
                else f"competitor: @{r.account.username}"),
         "apri_nel_brain": _brain_link("reel", r.id),
         "url": f"https://www.instagram.com/reel/{r.shortcode}/",
-        "pubblicato": r.posted_at.isoformat() if r.posted_at else None,
-        "visualizzazioni": r.view_count, "like": r.like_count,
-        "tema": enr.primary_topic if enr else "",
-        "riassunto": enr.summary_it if enr else "",
-        "argomenti": enr.topics if enr else [],
-        # Video-only fields: an article has no spoken opening and no format.
-        "gancio": enr.hook_text if enr else "",
-        "analisi_gancio": enr.hook_analysis_it if enr else "",
-        "formato": enr.content_format if enr else "",
-        "pubblico": enr.target_audience_it if enr else "",
-        "didascalia": r.caption,
-        "trascrizione": (tr.text if tr else "")[:12000],
-        "affermazioni": [
+    }
+    if parte == 1:
+        from pipeline.agents.enrich_agent import TRANSCRIPT_CHARS_READ
+
+        out.update({
+            "pubblicato": r.posted_at.isoformat() if r.posted_at else None,
+            "visualizzazioni": r.view_count, "like": r.like_count,
+            "tema": enr.primary_topic if enr else "",
+            "riassunto": enr.summary_it if enr else "",
+            "argomenti": enr.topics if enr else [],
+            # Video-only fields: an article has no spoken opening and no format.
+            "gancio": enr.hook_text if enr else "",
+            "analisi_gancio": enr.hook_analysis_it if enr else "",
+            "formato": enr.content_format if enr else "",
+            "pubblico": enr.target_audience_it if enr else "",
+            "didascalia": r.caption,
+        })
+        nota = _nota_analisi(trascrizione, TRANSCRIPT_CHARS_READ)
+        if nota:
+            out["nota_analisi"] = nota
+    out.update(campi)
+    out["trascrizione"] = testo
+    if parte == 1:
+        out["affermazioni"] = [
             {"testo": a.text_it, "citazione": a.quote}
             for a in r.arguments.all()[:10]
-        ],
-    }
+        ]
+    return out
 
 
-def _leggi_articolo(pk: int) -> dict:
+def _tipo_articolo(d) -> str:
+    """What the client's Claude is told this document is.
+
+    «articolo» for a TV episode or an interview would be a small lie, and Claude
+    cites by `tipo`: an upload is an «intervista», a video a «video» (of
+    reference when the client chose it), the rest an «articolo».
+    """
+    if d.source_type == "manual":
+        return "intervista"
+    if d.source_type == "video":
+        return "video di riferimento" if d.is_inspiration else "video"
+    return "articolo"
+
+
+def _leggi_articolo(pk: int, parte: int = 1) -> dict:
     from core.models import KnowledgeDocument
 
     d = (KnowledgeDocument.objects.filter(id=pk, is_active=True)
          .select_related("source").first())
     if not d:
         return {"errore": f"articolo {pk} non trovato"}
-    testo = (d.content_text or d.content_md)[:12000]
-    return {
-        "tipo": "video di riferimento" if d.source_type == "video" else "articolo",
+    intero = d.content_text or d.content_md
+    pezzo = _pezzo(intero, parte, "leggi_articolo")
+    if isinstance(pezzo, dict):
+        return pezzo
+    testo, campi = pezzo
+    out = {
+        "tipo": _tipo_articolo(d),
         "titolo": d.title or "(senza titolo)",
         "apri_nel_brain": _brain_link("blog", d.id),
         # Same reference-material exemption as _hit: labelled by its source, not
@@ -332,16 +488,27 @@ def _leggi_articolo(pk: int) -> dict:
                if d.is_inspiration
                else "Medyca" if d.owner_type == "owned"
                else f"competitor: {d.source.name if d.source else (d.author or '?')}"),
+        "url": d.source_url,
+    }
+    if parte > 1:
+        # Summary and claims are in part 1 only: repeating them costs tokens
+        # and adds nothing.
+        out.update(campi)
+        out["testo"] = testo
+        return out
+
+    from pipeline.agents.knowledge_agent import DOC_SUMMARY_CHARS_READ
+
+    out.update({
         "ispirazione": d.is_inspiration,
         # Said plainly rather than left to be inferred from an empty string:
         # a video whose audio could not be fetched is a reference, not a
         # source you can quote from.
-        "trascrizione_disponibile": bool(testo.strip()),
-        "nota": ("" if testo.strip() else
+        "trascrizione_disponibile": bool(intero.strip()),
+        "nota": ("" if intero.strip() else
                  "Di questo video abbiamo solo titolo e link: nessuna "
                  "trascrizione, quindi non attribuirgli affermazioni."),
         "fonte": d.source.name if d.source else (d.author or ""),
-        "url": d.source_url,
         "pubblicato": d.published_at.isoformat() if d.published_at else None,
         "autore": d.author,
         "lingua": d.language or "it",
@@ -362,45 +529,64 @@ def _leggi_articolo(pk: int) -> dict:
                 "argomenti vicini ma non necessariamente di menopausa "
                 f"({d.off_topic_reason[:160]})" if d.off_topic_reason else
                 "Materiale di riferimento scelto dal cliente.")}),
-        # Plain text, not markdown: the claims' quotes are verified against
-        # this exact text, and the client's Claude checking a quote must find
-        # it verbatim in what it was given.
-        "testo": testo,
-        "affermazioni": [
-            {"testo": a.text_it, "citazione": a.quote}
-            for a in d.arguments.all()[:10]
-        ],
-    }
+    })
+    nota = _nota_analisi(intero, DOC_SUMMARY_CHARS_READ)
+    if nota:
+        out["nota_analisi"] = nota
+    out.update(campi)
+    # Plain text, not markdown: the claims' quotes are verified against
+    # this exact text, and the client's Claude checking a quote must find
+    # it verbatim in what it was given.
+    out["testo"] = testo
+    out["affermazioni"] = [
+        {"testo": a.text_it, "citazione": a.quote}
+        for a in d.arguments.all()[:10]
+    ]
+    return out
+
+
+_PARTE_DESC = (" Se `parte_successiva` ha un numero il testo continua: richiama lo "
+               "stesso strumento con `parte` = quel numero; vuoto = finito. "
+               "`troncato` dice solo che questo pezzo non è tutto il testo.")
 
 
 @server.tool(
     description=(
         "Il contenuto completo di UN REEL, dato il suo id ('reel:123' o "
-        "solo '123'): trascrizione integrale, didascalia, tema, riassunto, "
-        "gancio iniziale e analisi del gancio, formato del video, pubblico, "
-        "numeri, e le affermazioni con la citazione testuale che le regge."
+        "solo '123'): trascrizione (per intero fino a 30.000 caratteri, poi "
+        "a pezzi), didascalia, tema, riassunto, gancio iniziale e analisi "
+        "del gancio, formato del video, pubblico, numeri, e le affermazioni "
+        "con la citazione testuale che le regge." + _PARTE_DESC
     )
 )
-def leggi_reel(id: str) -> dict:
+def leggi_reel(id: str, parte: int | str = 1) -> dict:
     parsed = _parse_id(id, atteso="reel")
     if isinstance(parsed, dict):
         return parsed
-    return _leggi_reel(parsed[1])
+    n = _parse_parte(parte)
+    if isinstance(n, dict):
+        return n
+    return _leggi_reel(parsed[1], n)
 
 
 @server.tool(
     description=(
-        "Il contenuto completo di UN ARTICOLO di blog, dato il suo id "
-        "('blog:45' o solo '45'): testo integrale, fonte, autore, data, "
-        "lingua, tema, riassunto, se è in tema, e le affermazioni con la "
-        "citazione testuale che le regge."
+        "Il contenuto completo di UN ARTICOLO di blog, di una puntata o "
+        "intervista trascritta, dato il suo id ('blog:45' o solo '45'): "
+        "testo (per intero fino a 30.000 caratteri, poi a pezzi), fonte, "
+        "autore, data, lingua, tema, riassunto, se è in tema, e le "
+        "affermazioni con la citazione testuale che le regge. Guarda `tipo`: "
+        "articolo, video o intervista." + _PARTE_DESC
     )
 )
-def leggi_articolo(id: str) -> dict:
+def leggi_articolo(id: str, parte: int | str = 1) -> dict:
     parsed = _parse_id(id, atteso="blog")
     if isinstance(parsed, dict):
         return parsed
-    return _leggi_articolo(parsed[1])
+    n = _parse_parte(parte)
+    if isinstance(n, dict):
+        return n
+    return _leggi_articolo(parsed[1], n)
 
 
 @server.tool(
@@ -408,18 +594,21 @@ def leggi_articolo(id: str) -> dict:
         "Il contenuto completo di un elemento di QUALSIASI tipo, dato l'id "
         "con il suo prefisso ('reel:123' o 'blog:45'). Comodo dopo "
         "`cerca_tutto`; se sai già il tipo, `leggi_reel` e `leggi_articolo` "
-        "dicono più chiaramente cosa stai leggendo."
+        "dicono più chiaramente cosa stai leggendo." + _PARTE_DESC
     )
 )
-def leggi(id: str) -> dict:
+def leggi(id: str, parte: int | str = 1) -> dict:
     parsed = _parse_id(id)
     if isinstance(parsed, dict):
         return parsed
+    n = _parse_parte(parte)
+    if isinstance(n, dict):
+        return n
     kind, pk = parsed
     if kind == "reel":
-        return _leggi_reel(pk)
+        return _leggi_reel(pk, n)
     if kind == "blog":
-        return _leggi_articolo(pk)
+        return _leggi_articolo(pk, n)
     return {"errore": "tipo sconosciuto: usa 'reel:123' o 'blog:45'"}
 
 

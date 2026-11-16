@@ -30,7 +30,7 @@ import zlib
 from unittest import mock
 
 import numpy as np
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 # Tool functions are plain module-level callables: @server.tool returns the
 # function unchanged, so the gate can call them in-process without the HTTP
@@ -406,6 +406,19 @@ class MCPToolsGate(TestCase):
         self.assertEqual(temi[0]["tema"], "Vampate di calore")
         self.assertTrue(temi[0]["esempi_affermazioni"])
 
+    def test_tipo_names_an_interview_and_a_plain_video(self):
+        from core.models import KnowledgeDocument
+        intervista = KnowledgeDocument.objects.create(
+            source_type="manual", owner_type="owned", title="Intervista",
+            source_url="upload://x", content_text="Parla la dottoressa.")
+        video = KnowledgeDocument.objects.create(
+            source_type="video", owner_type="owned", title="Puntata",
+            source_url="https://vimeo.com/1", content_text="Una puntata.")
+        self.assertEqual(
+            server.leggi_articolo(f"blog:{intervista.id}")["tipo"], "intervista")
+        self.assertEqual(
+            server.leggi_articolo(f"blog:{video.id}")["tipo"], "video")
+
     # ── contract barrier: the ten tools stay registered ────────────────────
     def test_all_ten_tools_are_registered_on_the_server(self):
         names = {t.name for t in server.server._tool_manager.list_tools()}
@@ -414,3 +427,219 @@ class MCPToolsGate(TestCase):
             "leggi_reel", "leggi_articolo", "leggi", "cerca_riferimenti",
             "fonti_blog", "temi",
         })
+
+
+def _testo_lungo(frasi: int) -> str:
+    """A text of `frasi` sentences, each different, with one paragraph break."""
+    righe = [f"Questa è la frase numero {i} della puntata sulla menopausa."
+             for i in range(frasi)]
+    righe[frasi // 2] += "\n"
+    return " ".join(righe)
+
+
+class TestoPerParti(SimpleTestCase):
+    """`_parti`: the text in pieces that glue back to the exact text."""
+
+    def test_a_short_text_is_one_part_and_identical(self):
+        self.assertEqual(server._parti("Poche parole."), ["Poche parole."])
+        self.assertEqual(server._parti(""), [""])
+
+    def test_a_text_just_at_the_limit_is_one_part(self):
+        t = "a" * 100
+        self.assertEqual(server._parti(t, 100), [t])
+
+    def test_the_parts_glue_back_to_the_exact_text(self):
+        t = _testo_lungo(1200)  # about 70 000 characters
+        self.assertGreater(len(t), 60_000)
+        parti = server._parti(t)
+        self.assertEqual("".join(parti), t)
+        self.assertGreaterEqual(len(parti), 3)
+        for p in parti:
+            self.assertTrue(p)
+            self.assertLessEqual(len(p), server.TESTO_MAX_CARATTERI)
+
+    def test_every_part_but_the_last_ends_at_a_sentence_end(self):
+        parti = server._parti(_testo_lungo(1200))
+        for p in parti[:-1]:
+            self.assertRegex(p, r"(?:[.?!] |\n)$", p[-40:])
+
+    def test_a_cut_without_sentence_ends_falls_on_a_space_not_mid_word(self):
+        t = " ".join(["parola"] * 500)  # no full stop at all
+        parti = server._parti(t, 100)
+        self.assertEqual("".join(parti), t)
+        for p in parti[:-1]:
+            self.assertTrue(p.endswith(" "), repr(p[-10:]))
+            self.assertLessEqual(len(p), 100)
+        for p in parti:  # every word survives whole
+            self.assertTrue(all(w == "parola" for w in p.split()))
+
+    def test_a_text_with_no_space_is_cut_hard_and_still_ends(self):
+        t = "x" * 250
+        parti = server._parti(t, 100)
+        self.assertEqual(parti, ["x" * 100, "x" * 100, "x" * 50])
+
+    def test_a_sentence_end_outside_the_last_window_is_not_used(self):
+        # The only full stop is at the very start: cutting there would make a
+        # tiny piece. The space nearer the limit wins.
+        t = "Ok. " + " ".join(["parola"] * 3000)
+        parti = server._parti(t, 3000)
+        self.assertGreater(len(parti[0]), 2000)
+
+    def test_the_part_number_is_read_as_text_too(self):
+        self.assertEqual(server._parse_parte("2"), 2)
+        self.assertEqual(server._parse_parte(" 3 "), 3)
+        self.assertEqual(server._parse_parte(1), 1)
+        for bad in (0, -1, "0", "due", "", None, True, "1.5"):
+            with self.subTest(bad=bad):
+                self.assertIn("errore", server._parse_parte(bad))
+
+    def test_a_part_out_of_range_is_a_clear_error(self):
+        t = _testo_lungo(1200)
+        n = len(server._parti(t))
+        err = server._pezzo(t, n + 1, "leggi_articolo")
+        self.assertEqual(err, {"errore": f"questo contenuto ha {n} parti: "
+                                         f"chiedi una parte da 1 a {n}"})
+        uno = server._pezzo("corto", 2, "leggi_articolo")
+        self.assertEqual(uno, {"errore": "questo contenuto ha 1 parte: chiedi la parte 1"})
+
+    def test_the_analysis_note_only_when_the_text_is_longer_than_what_was_read(self):
+        self.assertEqual(server._nota_analisi("a" * 6000, 6000), "")
+        nota = server._nota_analisi("a" * 16865, 6000)
+        self.assertIn("primi 6.000 caratteri su 16.865", nota)
+        self.assertIn("vale il testo", nota)
+
+    def test_the_numbers_in_the_note_are_the_ones_the_pipeline_reads(self):
+        from pipeline.agents import enrich_agent, knowledge_agent
+        self.assertEqual(knowledge_agent.DOC_SUMMARY_CHARS_READ, 6000)
+        self.assertEqual(knowledge_agent.DOC_CLAIMS_CHARS_READ, 8000)
+        self.assertEqual(enrich_agent.TRANSCRIPT_CHARS_READ, 3000)
+
+
+class LeggiTestoLungo(TestCase):
+    """`leggi_*` on a text over the threshold, through the three tools."""
+
+    def setUp(self):
+        from core.models import (Enrichment, KnowledgeDocument, Reel,
+                                 TrackedAccount, Transcript)
+        self.testo = _testo_lungo(1200)
+        # No vector on purpose: the search index never sees these long texts.
+        self.doc = KnowledgeDocument.objects.create(
+            source_type="video", owner_type="owned", is_inspiration=True,
+            author="TVRS SRL", title="Menopausa parte 1",
+            source_url="https://vimeo.com/1", content_text=self.testo,
+            summary_it="Riassunto dell'inizio.")
+        acc = TrackedAccount.objects.create(username="lungo.ig",
+                                            owner_type="competitor")
+        self.reel = Reel.objects.create(account=acc, shortcode="LUNGO1",
+                                        caption="c")
+        Transcript.objects.create(reel=self.reel, text=self.testo)
+        Enrichment.objects.create(reel=self.reel, summary_it="Sintesi.",
+                                  primary_topic="vampate")
+        self.n = len(server._parti(self.testo))
+
+    def _tutte(self, chiama):
+        """Read every part the way a client would: following parte_successiva."""
+        pezzi, risposta = [], chiama(1)
+        while True:
+            pezzi.append(risposta)
+            if risposta["parte_successiva"] is None:
+                return pezzi
+            risposta = chiama(risposta["parte_successiva"])
+
+    def test_article_parts_followed_to_the_end_give_the_exact_text(self):
+        pezzi = self._tutte(
+            lambda p: server.leggi_articolo(f"blog:{self.doc.id}", parte=p))
+        self.assertEqual(len(pezzi), self.n)
+        self.assertEqual("".join(r["testo"] for r in pezzi), self.testo)
+        for i, r in enumerate(pezzi, 1):
+            self.assertEqual((r["parte"], r["parti_totali"]), (i, self.n))
+            self.assertEqual(r["caratteri_totali"], len(self.testo))
+            self.assertTrue(r["troncato"])
+        self.assertIn("parte=2", pezzi[0]["come_leggere_il_resto"])
+        self.assertIn("leggi_articolo", pezzi[0]["come_leggere_il_resto"])
+        self.assertIn("ultima parte", pezzi[-1]["come_leggere_il_resto"])
+        # The signal to ask for more is parte_successiva, not troncato: on the
+        # last part troncato stays true, parte_successiva is empty.
+        ultima = pezzi[-1]
+        self.assertTrue(ultima["troncato"])
+        self.assertIsNone(ultima["parte_successiva"])
+        self.assertIn("il testo finisce qui", ultima["come_leggere_il_resto"])
+
+    def test_reel_parts_followed_to_the_end_give_the_exact_text(self):
+        pezzi = self._tutte(
+            lambda p: server.leggi_reel(f"reel:{self.reel.id}", parte=p))
+        self.assertEqual("".join(r["trascrizione"] for r in pezzi), self.testo)
+        self.assertIn("leggi_reel", pezzi[0]["come_leggere_il_resto"])
+
+    def test_leggi_routes_the_part_for_both_kinds(self):
+        a = server.leggi(f"blog:{self.doc.id}", parte=2)
+        self.assertEqual((a["parte"], a["tipo"]), (2, "video di riferimento"))
+        r = server.leggi(f"reel:{self.reel.id}", parte=2)
+        self.assertEqual(r["parte"], 2)
+        self.assertIn("trascrizione", r)
+
+    def test_the_part_can_be_written_as_text(self):
+        for chiama, id_ in ((server.leggi_articolo, f"blog:{self.doc.id}"),
+                            (server.leggi_reel, f"reel:{self.reel.id}"),
+                            (server.leggi, f"blog:{self.doc.id}")):
+            with self.subTest(chiama=chiama.__name__):
+                self.assertEqual(chiama(id_, parte="2")["parte"], 2)
+
+    def test_a_part_out_of_range_or_not_a_number_is_an_error_never_empty(self):
+        for chiama, id_ in ((server.leggi_articolo, f"blog:{self.doc.id}"),
+                            (server.leggi_reel, f"reel:{self.reel.id}"),
+                            (server.leggi, f"blog:{self.doc.id}")):
+            for parte in (self.n + 1, 99, 0, -1, "boh"):
+                with self.subTest(chiama=chiama.__name__, parte=parte):
+                    r = chiama(id_, parte=parte)
+                    self.assertEqual(set(r), {"errore"}, r)
+                    self.assertTrue(r["errore"])
+
+    def test_part_two_is_light_but_still_citable(self):
+        r = server.leggi_articolo(f"blog:{self.doc.id}", parte=2)
+        self.assertEqual(
+            set(r), {"tipo", "titolo", "di", "apri_nel_brain", "url", "testo",
+                     "caratteri_totali", "parte", "parti_totali", "troncato",
+                     "parte_successiva", "come_leggere_il_resto"})
+        self.assertEqual(r["di"], "riferimento: TVRS SRL")
+        self.assertTrue(r["apri_nel_brain"].endswith(f"/content/blog/{self.doc.id}"))
+        rr = server.leggi_reel(f"reel:{self.reel.id}", parte=2)
+        self.assertEqual(rr["di"], "competitor: @lungo.ig")
+        self.assertNotIn("riassunto", rr)
+        self.assertNotIn("affermazioni", rr)
+
+    def test_part_one_carries_summary_claims_and_the_analysis_note(self):
+        a = server.leggi_articolo(f"blog:{self.doc.id}")
+        self.assertEqual(a["riassunto"], "Riassunto dell'inizio.")
+        self.assertIn("affermazioni", a)
+        self.assertIn("primi 6.000 caratteri", a["nota_analisi"])
+        r = server.leggi_reel(f"reel:{self.reel.id}")
+        self.assertIn("primi 3.000 caratteri", r["nota_analisi"])
+
+    def test_a_short_text_is_one_whole_part_without_a_note(self):
+        from core.models import KnowledgeDocument
+        corto = KnowledgeDocument.objects.create(
+            source_type="blog", owner_type="owned", title="Breve",
+            source_url="https://medyca.it/breve", content_text="Un testo breve.")
+        r = server.leggi_articolo(f"blog:{corto.id}")
+        self.assertEqual(r["testo"], "Un testo breve.")
+        self.assertEqual((r["parte"], r["parti_totali"], r["troncato"],
+                          r["parte_successiva"]), (1, 1, False, None))
+        self.assertEqual(r["caratteri_totali"], len("Un testo breve."))
+        self.assertNotIn("nota_analisi", r)
+        self.assertEqual(r["come_leggere_il_resto"], "")
+        self.assertEqual(
+            server.leggi_articolo(f"blog:{corto.id}", parte=2),
+            {"errore": "questo contenuto ha 1 parte: chiedi la parte 1"})
+
+    def test_the_instructions_and_descriptions_tell_how_to_read_the_rest(self):
+        instr = server.server.instructions
+        self.assertNotIn("`troncato` è vero il testo continua", instr)
+        for parola in ("parte", "troncato", "parte_successiva", "nota_analisi"):
+            self.assertIn(parola, instr)
+        self.assertNotIn("testo integrale", instr)
+        tools = {t.name: t for t in server.server._tool_manager.list_tools()}
+        for nome in ("leggi_reel", "leggi_articolo", "leggi"):
+            self.assertIn("parte", tools[nome].parameters["properties"])
+            self.assertIn("troncato", tools[nome].description)
+            self.assertNotIn("integrale", tools[nome].description)
