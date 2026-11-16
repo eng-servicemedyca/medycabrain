@@ -1,9 +1,9 @@
 ---
 id: 2026-11-16-locale-piu-veloce
 titolo: Modello locale 7b più veloce sulla CPU
-stato: pronto
+stato: rilasciato
 ramo: feat/locale-piu-veloce
-pr: ""
+pr: "28"
 ticket: ""
 ---
 
@@ -1288,3 +1288,21 @@ il nome ai temi (`_name_cluster`), qui con endpoint vuoti e Ollama su porta mort
 2. Il contatore `embedded` di `embed` non conta i vettori vuoti ricalcolati (solo cosmetico).
 3. Gli scarti `--anche-falliti` (28 articoli corti con affermazioni `failed`) aspettano una risposta
    per le affermazioni.
+
+## 6. Rilascio           (capo, 16/11/2026)
+
+- PR #28 fusa da Giuseppe (`c64c5eb`), conferma al rilascio chiesta e avuta.
+- `git pull`, migrazione 0028 applicata, `npm run build`.
+- `pg_dump` di enrichments, reel_arguments, document_arguments, reels, knowledge_documents,
+  argument_assignments → `/home/medyca-admin/backup/pre-haiku-20261116.dump` (129 MB).
+- `import_reanalysis` dry-run: 1.069 validi, 0 scartati, 165 failed, 1 non analizzato.
+  `--write --backup-fatto`: 1.069 scritti. `--anche-falliti`: 165 ripresi da failed.
+  Risultato: documenti attivi 2.299/2.299 `done`; reel 1.647/1.648 (il 951 non era mai
+  stato analizzato: lo fa la pipeline).
+- `run_pipeline --only embed` e `--only cluster`: 358 temi competitor, owned a parte,
+  6.328 affermazioni assegnate. Poi `--only knowledge` per i vettori degli 854 articoli.
+- Giuseppe ha riavviato backend e MCP. **Provato dal vero da claude.ai:** blog:2214 senza
+  `nota_analisi`, 12 affermazioni, una dalla seconda metà; blog:894 riassunto e affermazioni
+  coprono la fine; blog:296 letto in 2 parti, 42.123 caratteri.
+- Difetto visto nel test: due affermazioni quasi uguali su 2214 (Haiku ha letto in una
+  chiamata sola, il filtro delle doppie vale solo a pezzi). Va nella prossima PR.
