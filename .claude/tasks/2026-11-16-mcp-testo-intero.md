@@ -429,6 +429,22 @@ OK
   lettera, quello di sistema ha una frase in più. Se si vuole il blog identico anche lì, va diviso.
 - Nessuna prova della UI: cambiata solo una stringa di `it.json` (JSON valido, nessuna build fatta).
 
+### Secondo giro (rilievo della revisione)
+Le `instructions` e `_PARTE_DESC` dicevano «se `troncato` è vero il testo continua», ma sull'ultima
+parte `troncato` è vero e `parte_successiva` è vuoto. Comportamento invariato (come da disegno); ora
+le parole dicono: il segnale per chiedere il seguito è `parte_successiva` con un numero, vuoto = finito;
+`troncato` vuol dire solo «questo pezzo non è tutto il testo». Corretti `server.py` (instructions e
+descrizione dei tre strumenti) e `04-mcp-connector.md`. `BEC/docs/mcp-connettore-claude.md`, la pagina
+`Documentazione` e `architecture-summary.md` non usano la frase sbagliata: non toccati.
+Test: nel test della lettura fino in fondo ora si fissa che sull'ultima parte `parte_successiva` è
+vuoto, `troncato` resta vero e `come_leggere_il_resto` dice «il testo finisce qui»; il test delle
+`instructions` esclude la vecchia frase.
+```
+$ manage.py test core --noinput   (Postgres usa-e-getta porta 55492, spento e cancellato; Groq vuoto)
+Ran 372 tests in 55.188s
+OK
+```
+
 ## 4. Revisione          (revisore, 16/11/2026)
 
 **Verdetto: PASSA**, con un rilievo da correggere prima del rilascio (parole, non logica).

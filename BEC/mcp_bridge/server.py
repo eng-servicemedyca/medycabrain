@@ -87,9 +87,12 @@ server = MCPServer(
         "mappa degli argomenti. Tutte le analisi sono in italiano.\n"
         "TESTI LUNGHI: `leggi_reel`, `leggi_articolo` e `leggi` danno il "
         "testo per intero fino a 30.000 caratteri; oltre, a pezzi. Se "
-        "`troncato` è vero il testo continua: richiama lo stesso strumento "
-        "con `parte` = `parte_successiva`, finché serve. Non dire che un "
-        "contenuto finisce lì e non citare ciò che non hai letto. Se c'è "
+        "`parte_successiva` ha un numero il testo continua: richiama lo "
+        "stesso strumento con `parte` = quel numero, finché serve; quando è "
+        "vuoto il testo è finito. (`troncato` dice solo che questo pezzo non "
+        "è tutto il testo, anche sull'ultima parte.) Non dire che un "
+        "contenuto finisce lì se `parte_successiva` non è vuoto e non citare "
+        "ciò che non hai letto. Se c'è "
         "`nota_analisi`, riassunto e affermazioni coprono solo l'inizio: per "
         "il resto vale il testo.\n"
         "Cita sempre da quale contenuto (e di chi) viene un'affermazione: "
@@ -542,8 +545,9 @@ def _leggi_articolo(pk: int, parte: int = 1) -> dict:
     return out
 
 
-_PARTE_DESC = (" Se `troncato` è vero il testo continua: richiama lo stesso "
-               "strumento con `parte` = `parte_successiva`.")
+_PARTE_DESC = (" Se `parte_successiva` ha un numero il testo continua: richiama lo "
+               "stesso strumento con `parte` = quel numero; vuoto = finito. "
+               "`troncato` dice solo che questo pezzo non è tutto il testo.")
 
 
 @server.tool(

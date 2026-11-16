@@ -207,9 +207,11 @@ estimate (3–4 characters per token), not a measurement.
   resto vale il testo.» The numbers are named constants read from the agents
   (`knowledge_agent.DOC_SUMMARY_CHARS_READ = 6000`, `enrich_agent.TRANSCRIPT_CHARS_READ = 3000` for
   reels), so the note cannot drift from what the pipeline really reads.
-- The server `instructions` and the three tool descriptions say it in plain words: if `troncato`
-  is true, call again with `parte` = `parte_successiva`; do not say a content ends there; do not
-  quote what you have not read.
+- The server `instructions` and the three tool descriptions say it in plain words: if
+  `parte_successiva` has a number, call again with `parte` = that number, empty means the text is
+  over (`troncato` only says «this piece is not the whole text», and stays true on the last part —
+  it is NOT the signal to ask for more); do not say a content ends there while `parte_successiva`
+  is not empty; do not quote what you have not read.
 
 **Known limits.** (1) **The summary, the topic and the claims of a long text cover only its
 beginning**: 6 000 characters for the summary (854 articles; 17 of 18 episodes/interviews), 8 000

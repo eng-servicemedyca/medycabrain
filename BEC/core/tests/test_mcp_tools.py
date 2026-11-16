@@ -558,6 +558,12 @@ class LeggiTestoLungo(TestCase):
         self.assertIn("parte=2", pezzi[0]["come_leggere_il_resto"])
         self.assertIn("leggi_articolo", pezzi[0]["come_leggere_il_resto"])
         self.assertIn("ultima parte", pezzi[-1]["come_leggere_il_resto"])
+        # The signal to ask for more is parte_successiva, not troncato: on the
+        # last part troncato stays true, parte_successiva is empty.
+        ultima = pezzi[-1]
+        self.assertTrue(ultima["troncato"])
+        self.assertIsNone(ultima["parte_successiva"])
+        self.assertIn("il testo finisce qui", ultima["come_leggere_il_resto"])
 
     def test_reel_parts_followed_to_the_end_give_the_exact_text(self):
         pezzi = self._tutte(
@@ -628,6 +634,7 @@ class LeggiTestoLungo(TestCase):
 
     def test_the_instructions_and_descriptions_tell_how_to_read_the_rest(self):
         instr = server.server.instructions
+        self.assertNotIn("`troncato` è vero il testo continua", instr)
         for parola in ("parte", "troncato", "parte_successiva", "nota_analisi"):
             self.assertIn(parola, instr)
         self.assertNotIn("testo integrale", instr)
