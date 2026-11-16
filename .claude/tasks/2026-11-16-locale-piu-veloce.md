@@ -1042,6 +1042,75 @@ input permettono già**, e due punti lasciano dati o note sbagliati. Sono correz
 Non ho eseguito la suite né l'import in dry-run (nessun accesso a un database di prova da qui);
 ho letto il codice e i test per nome. Dopo i rilievi 1-3 serve il dry-run sulla cartella vera.
 
+### Giro 2 (revisore, 16/11/2026)
+
+Riletto `git diff dcca215..HEAD` (codice, migrazione, test, documentazione) e `main...HEAD`. Ramo
+`feat/locale-piu-veloce`, nessun commit su `main`, nessun segreto nel diff.
+
+**Verdetto: PASSA**, con un rilievo da scrivere nella documentazione (non nel codice) e due note.
+
+Rilievi 1-6 e correzioni del collaudo, uno per uno:
+
+1. **Owner e testo** — risolto. `_input_mismatch` confronta `owner_type` dell'input con quello del
+   database (reel: `account.owner_type`) e `text_chars` con la lunghezza di oggi (reel: trascrizione +
+   didascalia, come `costruisci.py`; documento: `content_text`). Scarta prima di ogni piano, conta
+   «owner_diverso» / «testo_cambiato». Se l'input non porta i campi il controllo non scatta: accettabile,
+   i file veri li portano.
+2. **Copia e `[]`** — risolto. `--write` senza `--backup-fatto` è `CommandError` prima di leggere
+   qualsiasi cosa; l'elenco vuoto è scartato per testo lungo o contenuto che ha già affermazioni.
+   `--backup-fatto` è una dichiarazione, non una verifica: il comando non controlla che il dump esista.
+   Basta per il disegno (è una cintura per Giuseppe, non un controllo).
+3. **`reprocess`** — risolto. `_one` scrive `full_text_status=done`; il ramo trascrizione lo rimette
+   `pending`; l'errore passa da `_fail_whole` e `last_error` (stessi stati del giro notturno).
+4. **Doc 04** — risolto (12, `MAX_AFFERMAZIONI`).
+5. **Migrazione** — risolto nel codice: `pending` se trascrizione > 3.000 **o** didascalia > 1.500.
+   Vedi il rilievo A sotto: ha un effetto che la documentazione non dice.
+6. **Rilettura dello stato** — risolto. Dentro `transaction.atomic` si rilegge con `select_for_update`
+   e si salta ciò che è `done`/`failed` nel frattempo; `continue` dentro `atomic` non lascia nulla a metà.
+7. **`--anche-falliti`** — solo con l'opzione esplicita (`allow_failed` parte `False`). Senza, `failed`
+   resta `failed` (`saltati_failed`). Con, serve una risposta valida e completa (per un documento con
+   affermazioni `failed` si pretende la risposta delle affermazioni); una risposta non valida solleva
+   `ValueError` prima di scrivere, quindi il contenuto resta `failed`. `save_whole_*` scrive `done` e
+   `last_error=""` solo dopo aver validato, nella stessa transazione: è una analisi nuova riuscita,
+   non un azzeramento. Contato a parte («ripresi da failed»). Invarianti rispettati.
+8. **embed/cluster dopo l'import** — è lettura del codice, scritta in `02-pipeline.md`; il collaudatore
+   dice «non provato» e lo confermo: non ho prove diverse. Il vettore del reel è svuotato e ricalcolato
+   da `embed`; le vecchie assegnazioni ai temi spariscono col cascade. Non è un invariante a rischio
+   (nessun contenuto cambia proprietario, i vettori vuoti sono gestiti), ma il passo
+   `--only embed` poi `--only cluster` resta da fare e da guardare a mano la prima volta.
+
+Invarianti: nessun salvataggio parziale (validazione prima, un solo `atomic`); `failed` mai azzerati in
+silenzio; owned/competitor: l'import non scrive mai `owner_type` e ora scarta le risposte sotto
+l'owner sbagliato; citazioni verificate con lo stesso `verified_claims`; import idempotente (`gia_fatti`
+per `done`, la riga letta di nuovo dentro la transazione). Nessun terzo valore di `owner_type`.
+
+**Rilievo A (da documentare) — i reel senza trascrizione ma con didascalia lunga restano `pending` per
+sempre.** Con la correzione 5 sono `pending` (i 116 circa in più che il capo si aspettava). Ma:
+(a) la coda `enrich` prende solo `enrich_status=PENDING`, e questi sono già `done`; (b) `import_reanalysis`
+li scarta: `_plan_reel` esce con `None` se l'evidenza non è `transcript` (`senza_testo`); (c) nessun input
+di Haiku li riguarda comunque; (d) `reprocess --stage enrich` li rifarebbe e ora scrive `done`, ma
+nessuno lo lancia da solo. Effetti concreti: nessun danno a chi legge (la nota dell'MCP è calcolata sul
+testo della trascrizione, vuoto, quindi non compare); ma il contatore dei «pending» non scende mai a zero
+e a un reader sembra un lavoro non finito. Per quelli con didascalia lunga **e** trascrizione ≤ 3.000
+invece l'import funziona (l'evidenza è `transcript`). È accettabile, non bloccante, **ma va detto**: nel
+`02-pipeline.md` (limiti noti) e in `01-data-model.md:154` scrivere «un reel senza parlato con didascalia
+oltre 1.500 caratteri resta `pending`: la sua analisi si rifà solo con `reprocess --stage enrich`; non
+c'è nessuna nota perché la nota parla della trascrizione». Oppure, scelta migliore e piccola:
+nella migrazione tenere `done` quelli senza trascrizione utile (< 40 caratteri), perché la loro
+didascalia ora si legge intera in ogni caso; da decidere con Giuseppe.
+
+Note (non bloccano):
+- **Testo cambiato durante l'import**: il controllo `text_chars` usa l'oggetto letto all'inizio; la
+  rilettura dentro la transazione guarda solo gli stati, non il testo. Se lo scraper cambia
+  `content_text` durante le ore dell'import (e il giro notturno non lo ha ancora rifatto), la risposta
+  del testo vecchio passa. Raro, il giro notturno rifà; da scrivere nei limiti, non da correggere ora.
+- Il collaudo è stato fatto sul codice di prima (440 test); le correzioni sono state provate dalla
+  suite (455 verdi, riferita dallo sviluppatore) ma non da un secondo collaudo su dati veri. Prima del
+  `--write` vero: dry-run sulla cartella vera, `pg_dump`, poi `--backup-fatto`.
+
+`stato:` lo lascio a chi chiude il giro: la revisione passa, ma il rilievo A è da scrivere prima della PR.
+
+
 ## 5. Collaudo          (collaudatore, 16/11/2026)
 
 **Verdetto: PASSA.** Con tre punti da guardare (sotto, «Da sapere») che non bloccano.
