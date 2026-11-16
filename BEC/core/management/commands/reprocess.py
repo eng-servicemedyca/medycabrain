@@ -77,6 +77,7 @@ class Command(BaseCommand):
     def _transcribe(self, qs, opts, settings):
         from pathlib import Path
 
+        from pipeline.agents.enrich_agent import cut_by_old_rule as ea_cut
         from pipeline.agents.transcriber_agent import _transcribe
         from core.models import Transcript
 
@@ -106,7 +107,8 @@ class Command(BaseCommand):
                 reel.argument_status = PENDING
                 # ...and so does "it read the whole text": the old analysis was
                 # made on the old transcript. The enrich stage sets it back.
-                reel.full_text_status = PENDING
+                reel.full_text_status = (
+                    PENDING if ea_cut(res["text"], reel.caption) else DONE)
                 reel.save(update_fields=["enrich_status", "argument_status",
                                          "full_text_status"])
                 ok += 1

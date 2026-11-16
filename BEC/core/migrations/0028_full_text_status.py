@@ -18,15 +18,19 @@ from django.db import migrations, models
 OLD_CUT_DOCUMENT = 6000
 OLD_CUT_TRANSCRIPT = 3000
 OLD_CUT_CAPTION = 1500  # the old reel analysis cut the caption here too
+MIN_SPEECH = 40  # below this a reel has no speech (enrich_agent.classify_evidence)
 
 
 def mark_already_whole(apps, schema_editor):
     Reel = apps.get_model("core", "Reel")
     KnowledgeDocument = apps.get_model("core", "KnowledgeDocument")
-    # A reel was cut if its transcript OR its caption went over the old cut.
+    # A reel was cut if it HAS speech (a transcript of at least MIN_SPEECH
+    # characters) and its transcript OR its caption went over the old cut. A reel
+    # without speech stays `done`: its caption is now read whole.
     long_reels = (Reel.objects
                   .annotate(n=django.db.models.functions.Length("transcript__text"),
                             c=django.db.models.functions.Length("caption"))
+                  .filter(n__gte=MIN_SPEECH)
                   .filter(models.Q(n__gt=OLD_CUT_TRANSCRIPT)
                           | models.Q(c__gt=OLD_CUT_CAPTION)).values("pk"))
     Reel.objects.exclude(pk__in=long_reels).update(full_text_status="done")

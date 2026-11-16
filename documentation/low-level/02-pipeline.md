@@ -938,7 +938,7 @@ the model is away it is deferred to the night, as before. `_extract_arguments` d
 `_enrich_one` has just read the text in pieces (`argument_status` and `full_text_status` already
 `done`): reprocess and uploads call the two in a row.
 
-**`full_text_status`** says whether the analysis in force read everything (`01-data-model.md`). A new
+**`full_text_status`** says whether the analysis in force read everything (`01-data-model.md`; for reels `pending` means: has speech of 40+ characters and the old cut hit the transcript (3 000) or the caption (1 500)). A new
 analysis writes `done`; old ones are `pending` until they are redone. They are redone **once, with
 `import_reanalysis`** (below), not by the nightly round.
 
@@ -1017,7 +1017,7 @@ All under `BEC/core/management/commands/`. Run with `python manage.py <name>`.
 | `run_pipeline` | Run the DAG (cron entrypoint). Flags: `--dry-run`, `--limit`, `--only <stage>`, `--skip-<stage>`. Stages come from `pipeline.dag.build_steps()`, shared with the manual run. |
 | `run_job <id>` | Execute a queued `Job` by id, detached. |
 | `import_reanalysis` | Load analyses/claims written outside the pipeline (one-off redo on the whole text). Dry run unless `--write --backup-fatto`; `--anche-falliti` on purpose. See [above](#import_reanalysis--loading-answers-written-outside-the-pipeline). |
-| `reprocess` | Re-run stages (`transcribe`, `enrich`, `knowledge`), resumable (`transcribe` puts `full_text_status` back to `pending`; `enrich` sets it `done`, or `failed` with the stage's other two states if a piece fails). Flags: `--stage`, `--scope`, `--limit`, `--only-stale`, `--with-transcript`, `--not-model`. |
+| `reprocess` | Re-run stages (`transcribe`, `enrich`, `knowledge`), resumable (`transcribe` puts `full_text_status` back to `pending` only if the new transcript has speech (40+ characters) and is cut by the old rule — over 3 000, or caption over 1 500 — else `done`; `enrich` sets it `done`, or `failed` with the stage's other two states if a piece fails). Flags: `--stage`, `--scope`, `--limit`, `--only-stale`, `--with-transcript`, `--not-model`. |
 | `ingest_blog` | Fetch a specific Medyca blog article (or several). |
 | `import_apify` | Fill `video_url`/`caption`/`posted_at`/`duration` from an Apify export. |
 | `backfill_meta` | Backfill `posted_at` and other metadata. |

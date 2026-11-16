@@ -578,6 +578,17 @@ class ReprocessAllineaLoStato(TestCase):
                          (FAILED, FAILED, FAILED))
         self.assertIn("pezzo 2 di", r.last_error)
 
+    def test_the_old_cut_rule_is_speech_and_over_the_cut(self):
+        cut = enrich_agent.cut_by_old_rule
+        self.assertFalse(cut("a" * 39, "c" * 2000))   # no speech: caption read whole
+        self.assertTrue(cut("a" * 40, "c" * 2000))
+        self.assertFalse(cut("a" * 3000, "c" * 1500))
+        self.assertTrue(cut("a" * 3001, ""))
+        self.assertTrue(cut("a" * 100, "c" * 1501))
+
+    def test_a_new_transcript_without_speech_stays_done(self):
+        self.assertFalse(enrich_agent.cut_by_old_rule("nuovo parlato", "c" * 2000))
+
     def test_a_new_transcript_puts_the_status_back_to_pending(self):
         import io
         import tempfile
@@ -588,7 +599,7 @@ class ReprocessAllineaLoStato(TestCase):
         with tempfile.TemporaryDirectory() as media:
             (Path(media) / "a").mkdir()
             (Path(media) / "a/x.mp3").write_bytes(b"x")
-            res = {"text": "nuovo parlato", "segments": [], "language": "it",
+            res = {"text": ("nuovo parlato " * 300), "segments": [], "language": "it",
                    "model_name": "m", "duration": 1}
             with override_settings(MEDIA_ROOT=media), \
                     mock.patch("pipeline.agents.transcriber_agent._transcribe",

@@ -204,6 +204,16 @@ def classify_evidence(reel: Reel) -> tuple[str, str]:
     return "insufficient", ""
 
 
+def cut_by_old_rule(transcript_text: str, caption: str) -> bool:
+    """Was the analysis made before 2026-11-16 on a cut text? Only a reel WITH
+    speech (a transcript of 40+ characters) is: its transcript went over 3 000 or
+    its caption over 1 500. One without speech had its caption read whole.
+    Migration 0028 writes the same rule with its own numbers."""
+    if len(transcript_text or "") < 40:
+        return False
+    return len(transcript_text) > TRANSCRIPT_CHARS_READ or len(caption or "") > 1500
+
+
 def canonical_topic(t: str) -> str:
     """Fold synonym variants onto one label so the same idea stops arriving
     under three names ("terapia con ormoni bioidentici" == "ormoni bioidentici")."""

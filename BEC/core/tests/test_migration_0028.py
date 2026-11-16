@@ -30,9 +30,12 @@ class FullTextStatusMigrationTests(TransactionTestCase):
         acct = apps.get_model("core", "TrackedAccount").objects.create(username="a")
         Reel, Transcript = apps.get_model("core", "Reel"), apps.get_model("core", "Transcript")
         Doc = apps.get_model("core", "KnowledgeDocument")
-        caps = {"LONGCAP": 1501, "EDGECAP": 1500, "CAPONLY": 2000}
+        # A caption over 1 500 only counts for a reel WITH speech (40+ characters).
+        caps = {"LONGCAP": 1501, "EDGECAP": 1500, "CAPONLY": 2000, "CAP39": 2000,
+                "CAP40": 2000}
         for code, n in (("NOSPEECH", None), ("EDGE", 3000), ("SHORT", 100), ("LONG", 3001),
-                        ("LONGCAP", 100), ("EDGECAP", 100), ("CAPONLY", None)):
+                        ("LONGCAP", 100), ("EDGECAP", 100), ("CAPONLY", None),
+                        ("CAP39", 39), ("CAP40", 40)):
             r = Reel.objects.create(account=acct, shortcode=code,
                                     caption="c" * caps.get(code, 10))
             if n is not None:
@@ -48,7 +51,9 @@ class FullTextStatusMigrationTests(TransactionTestCase):
                                "SHORT": "done", "LONG": "pending",
                                # the old analysis cut the caption at 1 500 too
                                "LONGCAP": "pending", "EDGECAP": "done",
-                               "CAPONLY": "pending"})
+                               # no speech: the caption is now read whole
+                               "CAPONLY": "done", "CAP39": "done",
+                               "CAP40": "pending"})
         got = {len(c): s for c, s in Doc.objects.values_list("content_text", "full_text_status")}
         self.assertEqual(got, {0: "done", 6000: "done", 6001: "pending", 20000: "pending"})
 

@@ -1,7 +1,7 @@
 ---
 id: 2026-11-16-locale-piu-veloce
 titolo: Modello locale 7b più veloce sulla CPU
-stato: revisione
+stato: pronto
 ramo: feat/locale-piu-veloce
 pr: ""
 ticket: ""
@@ -865,6 +865,13 @@ Suite intera: **455 test verdi** (erano 440; 15 nuovi), `makemigrations --check`
 
 Fuori anche in questo giro: nessuna prova su dati veri; il numero esatto di reel pending dopo la
 migrazione corretta va riconfermato dal collaudo sulla copia.
+
+### Ritocco finale (rilievo A, decisione del capo)
+
+Migrazione 0028: un reel è `pending` solo con trascrizione di almeno 40 caratteri E (trascrizione
+> 3.000 oppure didascalia > 1.500); i reel senza parlato restano `done` (33 sulla copia). Stessa regola
+in `enrich_agent.cut_by_old_rule`, usata da `reprocess --stage transcribe`. Test ai bordi 39/40 e
+1.500/1.501, doc 01 e 02 aggiornati.
 
 ## Registro
 
