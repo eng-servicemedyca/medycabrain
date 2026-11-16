@@ -258,8 +258,8 @@ export function ResultCount({ shown, total }: { shown: number; total: number }) 
  * `stacked`: below `md` each row becomes a card (first cell on top, the
  * others as small labelled pairs, the actions last) instead of a 700 px-wide
  * table the client has to scroll sideways to reach «Rimuovi». The cells that
- * need a caption carry `data-label`. Opt-in because other tables (uploads)
- * have no labels yet.
+ * need a caption carry `data-label`. Opt-in: a table with a fixed
+ * width and no captions keeps scrolling sideways.
  */
 export function TableFrame({
   head,
@@ -354,7 +354,7 @@ export function RowAction({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "inline-flex min-h-10 items-center rounded-full px-3 text-xs font-semibold transition duration-200",
+        "inline-flex min-h-10 items-center rounded-full px-3 text-xs font-semibold transition duration-200 max-md:min-h-11",
         "outline-none focus-visible:ring-2 focus-visible:ring-secondary disabled:opacity-50",
         tone === "danger" && "text-muted hover:text-danger",
         tone === "action" && "text-secondary hover:text-heading",

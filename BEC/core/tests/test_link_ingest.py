@@ -28,6 +28,7 @@ from core.link_ingest import (
     LinkRefused,
     canonical_url,
     extract_links,
+    _PROXY_BLOCKED,
     fetch_audio,
     provider_for,
 )
@@ -409,6 +410,93 @@ class ProxyPath(SimpleTestCase):
             with self.assertRaises(LinkRefused) as cm:
                 fetch_audio("https://youtu.be/aCPj6fKx_Yc", Path(out) / "a.mp3")
         self._raised = cm.exception
+
+
+class RetryWithNewProxy(SimpleTestCase):
+    """Vimeo through the proxy refuses at random; a new address passes.
+    yt-dlp is never run: `subprocess.run` answers from a script."""
+
+    PROXY = ProxyPath.PROXY
+    URL = "https://vimeo.com/1220776839"
+    LOGGED_IN = "ERROR: [vimeo] 1220776839: The web client only works when logged-in."
+    NO_FORMATS = "ERROR: [vimeo] 1220776839: No video formats found!"
+
+    def _go(self, answers, *, proxy=None, url=None):
+        """`answers`: stderr per attempt, None = success (writes the mp3)."""
+        proxy = self.PROXY if proxy is None else proxy
+        calls = []
+        script = list(answers)
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            said = script.pop(0)
+            if said is None:
+                # The output template is the argument before the address.
+                out = cmd[cmd.index("-o") + 1].replace("%(ext)s", "mp3")
+                Path(out).write_bytes(b"mp3")
+                return mock.Mock(returncode=0, stderr="")
+            return mock.Mock(returncode=1, stderr=said)
+
+        err = None
+        with tempfile.TemporaryDirectory() as out, \
+                self.settings(YTDLP_PROXY=proxy, VIMEO_COOKIES_FILE="",
+                              YT_COOKIES_FILE=""), \
+                mock.patch("core.link_ingest.subprocess.run", side_effect=fake_run):
+            dest = Path(out) / "a.mp3"
+            try:
+                fetch_audio(url or self.URL, dest)
+            except LinkRefused as exc:
+                err = exc
+            made = dest.exists()
+        return calls, err, made
+
+    @staticmethod
+    def _proxies(calls):
+        return [c[c.index("--proxy") + 1] for c in calls]
+
+    def test_first_refusal_then_ok_uses_two_different_proxies(self):
+        calls, err, made = self._go([self.LOGGED_IN, None])
+        self.assertIsNone(err)
+        self.assertTrue(made)
+        p = self._proxies(calls)
+        self.assertEqual(len(p), 2)
+        self.assertNotEqual(p[0], p[1])
+
+    def test_no_formats_found_is_retried_too(self):
+        calls, err, made = self._go([self.NO_FORMATS, self.NO_FORMATS, None])
+        self.assertIsNone(err)
+        self.assertTrue(made)
+        self.assertEqual(len(set(self._proxies(calls))), 3)
+
+    def test_three_refusals_give_the_usual_sentence(self):
+        calls, err, made = self._go([self.LOGGED_IN, self.NO_FORMATS, self.LOGGED_IN])
+        self.assertEqual(len(calls), 3)
+        self.assertFalse(made)
+        self.assertEqual(str(err), _PROXY_BLOCKED)
+
+    def test_a_private_video_is_not_retried(self):
+        calls, err, _ = self._go(["ERROR: [vimeo] 1220776839: Video unavailable"])
+        self.assertEqual(len(calls), 1)
+        self.assertIn("privato o rimosso", str(err))
+
+    def test_unknown_failure_is_not_retried(self):
+        calls, err, _ = self._go(["ERROR: something else entirely"])
+        self.assertEqual(len(calls), 1)
+        self.assertIn("Non sono riuscito", str(err))
+
+    def test_without_proxy_one_attempt_only(self):
+        calls, err, _ = self._go([self.LOGGED_IN], proxy="")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("VIMEO_COOKIES_FILE", str(err))
+
+    def test_the_log_names_each_failed_attempt_without_the_password(self):
+        real = "http://user:SECRET_pw_session-abc_lifetime-30m@geo.example:1"
+        with self.assertLogs("core.link_ingest", "WARNING") as logs, \
+                mock.patch("core.link_ingest._proxy", return_value=real):
+            self._go([f"{self.LOGGED_IN} {real}", None], proxy=real)
+        text = "\n".join(logs.output)
+        self.assertIn("tentativo 1", text)
+        self.assertNotIn("SECRET", text)
 
 
 class FromLinksEndpoint(APITestCase):
