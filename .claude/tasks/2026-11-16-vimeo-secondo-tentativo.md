@@ -104,3 +104,20 @@ $ npm ci && npm run build   (dentro il worktree)   ->  built in 15.51s, 0 errori
   Non so se tre tentativi bastano sempre (il 15/11 la 21 è passata al terzo a mano).
 - I tentativi falliti consumano un po' di traffico del proxy (si fermano prima dell'audio, non misurato).
 - «Riprova» sul telefono resta 40 px per le altre tabelle? No: 44 px ovunque sotto 768 px.
+
+## 4. Revisione          (revisore)
+
+**Verdetto: PASSA.** (16/11/2026, diff `origin/main...HEAD`, un solo commit `d27cb53`, ramo giusto, nessun commit su `main`.)
+
+Controllato e a posto:
+- Tentativi solo col proxy (`attempts = 1 + _PROXY_RETRIES if proxy else 1`), solo su `auth_needles` o `transient_needles`; ogni tentativo chiama `_proxy()` (nuova `{session}`); massimo 3; all'ultimo `LinkRefused(_PROXY_BLOCKED)`. Un fallimento resta `failed` (il chiamante in `upload_workflow.py` non cambia), nessun ciclo infinito.
+- Segreto: `_scrub(proxy)` usa il parametro `proxy` di QUEL tentativo; log ed eccezioni ricevono solo `err` ripulito. Nessun indirizzo in messaggi al cliente. Nessuna chiave nel diff.
+- Cartella temporanea nuova a ogni tentativo; `TimeoutExpired` e `ToolMissing` escono subito (non ritentati).
+- Frontend: `stacked` e `max-md:*` toccano solo sotto 768 px; desktop invariato (`md:min-w`, `min-h-10`); le chiavi `accounts.status` e `uploads.result` esistono; stati vuoto/caricamento/errore non toccati. 44 px solo sul telefono.
+- Documenti: `02-pipeline.md` e `06-frontend.md` aggiornati con il vero comportamento.
+
+Rilievi (non bloccanti):
+1. Durata nel caso peggiore: ogni tentativo ha ancora `timeout=1800`, quindi in teoria 3 x 30 min = 90 min. Un timeout però non si ritenta (esce subito), e i rifiuti passeggeri arrivano in secondi: nella pratica il caso peggiore è breve. Il job ha l'heartbeat di `run_job`. Accettabile; il limite teorico non è scritto nel documento.
+2. Se `YTDLP_PROXY` non contiene `{session}`, `_fresh` restituisce lo stesso indirizzo e il «tentativo nuovo» riusa lo stesso IP. Il `.env.example` e `02-pipeline.md` (riga 227) già spiegano `{session}`, ma il nuovo paragrafo non dice che senza segnaposto i tentativi in più non servono. Una riga basterebbe.
+3. Il test del log mocka `_proxy` con lo stesso indirizzo per tutti i tentativi: non prova che il `_scrub` usi il proxy del tentativo giusto quando cambia. Il codice è corretto (usa il parametro), ma il test è più debole di quanto dica il nome.
+4. Telefono non visto da occhio umano (lo dice anche lo sviluppatore): resta al collaudatore. Sulla scheda, «Risultato» occupa mezza riga da solo: ok, non è un difetto.
