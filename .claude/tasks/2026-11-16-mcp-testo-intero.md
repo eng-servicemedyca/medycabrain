@@ -1,9 +1,9 @@
 ---
 id: 2026-11-16-mcp-testo-intero
 titolo: leggi_articolo non taglia più le trascrizioni lunghe; puntate TVRS doppie
-stato: pronto
+stato: rilasciato
 ramo: feat/mcp-testo-intero
-pr: ""
+pr: "27"
 ticket: ""
 ---
 
@@ -603,3 +603,18 @@ socket), script temporanei cancellati. `git status` del worktree pulito prima di
 - 16/11 capo: il secondo giro tocca solo parole (istruzioni del connettore, documento) e
   un test esteso; diff riletto dal capo, suite 372 OK riportata dallo sviluppatore. Nessun
   nuovo giro di revisione e collaudo.
+
+## 6. Rilascio           (capo, 16/11/2026)
+
+- PR #27 fusa da Giuseppe alle 14:45 (`b037d0f`). Conferma al rilascio chiesta e avuta.
+- `git pull` in produzione, `npm run build` (13 s). Nessuna migrazione, nessun `.env`.
+- Giuseppe ha riavviato `medycabrain-backend` (14:55:39) e `medycabrain-mcp` (14:55:19).
+- **Provato dal vero, dal connettore di claude.ai:** `leggi_articolo` su 2214 dà il testo
+  intero, 14.979 caratteri in 1 parte, `tipo: video di riferimento`, `nota_analisi` presente.
+- **Non provato dal vero:** la lettura a pezzi (`parte`): la sessione del capo aveva in
+  memoria la vecchia forma dello strumento. 2212, 896, 890 non rilette dal connettore
+  (provate sui dati veri prima del rilascio).
+- Il riassunto di 2214 dice ancora «L'articolo di Medyca»: è quello vecchio, Giuseppe ha
+  scelto di non rifare i riassunti.
+- Se claude.ai non propone il seguito dei testi lunghi, il cliente deve scollegare e
+  ricollegare il connettore.
