@@ -789,3 +789,7 @@ Vale come OK al disegno, con queste modifiche (capo):
   riquadro in Avanzamento. Restano: testo intero nella pipeline per i contenuti nuovi
   (a pezzi sul 7b), campo + migrazione, `nota_analisi`, affermazioni fino a 12 sui testi
   lunghi, sosta di lettura dopo le puntate (Giuseppe le legge dopo il caricamento).
+
+- 16/11 — Giuseppe: «Puoi anche metterlo a DB mi fido». Vale come conferma anticipata
+  per il caricamento con `import_reanalysis` (prima `--dry-run`, poi la scrittura), da
+  fare dopo il merge e il rilascio della migrazione. Prima del merge niente scritture.
