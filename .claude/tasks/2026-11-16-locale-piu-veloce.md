@@ -1085,7 +1085,7 @@ l'owner sbagliato; citazioni verificate con lo stesso `verified_claims`; import 
 per `done`, la riga letta di nuovo dentro la transazione). Nessun terzo valore di `owner_type`.
 
 **Rilievo A (da documentare) — i reel senza trascrizione ma con didascalia lunga restano `pending` per
-sempre.** Con la correzione 5 sono `pending` (i 116 circa in più che il capo si aspettava). Ma:
+sempre.** Con la correzione 5 sono `pending` (il numero esatto lo darà un nuovo collaudo sulla copia; prima 265 reel, il capo ne contava 358). Ma:
 (a) la coda `enrich` prende solo `enrich_status=PENDING`, e questi sono già `done`; (b) `import_reanalysis`
 li scarta: `_plan_reel` esce con `None` se l'evidenza non è `transcript` (`senza_testo`); (c) nessun input
 di Haiku li riguarda comunque; (d) `reprocess --stage enrich` li rifarebbe e ora scrive `done`, ma
