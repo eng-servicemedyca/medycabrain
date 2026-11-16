@@ -147,6 +147,13 @@ link** (a doctor interview; a TV episode on YouTube or Vimeo kept as reference).
   **`media_status`, `transcribe_status`, `enrich_status`, `argument_status`**, plus
   `media_attempts`, `last_error`, `is_active`. These are what let the pipeline re-run: a stage
   only touches rows whose column is `pending`.
+- **`full_text_status`** (migration `0028_full_text_status`; same values, not indexed): did the
+  analysis in force read the **whole** transcript? `done` yes; `pending` it was made on the first
+  3 000 characters (the old cut) and is to be redone; `failed` a redo of a long text failed (a piece
+  went wrong, see `02-pipeline.md`). Every new analysis writes `done`. The migration set `done` for
+  reels without a transcript or with 3 000 characters or fewer, `pending` for the others (it
+  writes the number 3 000 itself, it does not read it from the agent). It decides whether the
+  connector says `nota_analisi` (`04-mcp-connector.md`).
 - **Index `reels_caption_fts_gin`** — GIN on `SearchVector("caption", config="italian")` (migration `0025_search_indexes`). Expression index, no new column: the library search must use exactly the same expression (config included) or Postgres ignores it.
 
 **`Transcript`** — `transcripts`. **1:1** with `Reel`.
@@ -181,6 +188,11 @@ single standalone claim made in the reel.
 - LLM output: `summary_it`, `topics`, `primary_topic`, `is_on_topic`, `off_topic_reason`.
 - Vectors inline: `embedding` (JSON), `chunk_vectors` (JSON), `embedding_model`.
 - **Stage columns:** `enrich_status`, `embed_status`, `argument_status`, `last_error`.
+- **`full_text_status`** (migration `0028`): same meaning as on `Reel` — did the summary and the
+  claims in force read the **whole** text (`done`), only its beginning (`pending`: the old cut,
+  6 000 characters; the migration set `done` for texts of 6 000 or fewer) or did the redo fail
+  (`failed`)? A document has no `llm_model` column: the model of a document's analysis is not
+  stored (the redo of 16/11/2026 recorded it only for reels, in `Enrichment.llm_model`).
 - M2M **`tags`** → `Tag`; `is_active`.
 - Medyca's `owned` reels + these `owned` documents together = the client's knowledge bank.
 - **`is_inspiration`** — reference material the client added on purpose. Deliberately NOT a

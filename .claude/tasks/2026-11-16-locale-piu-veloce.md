@@ -1,7 +1,7 @@
 ---
 id: 2026-11-16-locale-piu-veloce
 titolo: Modello locale 7b più veloce sulla CPU
-stato: disegno
+stato: revisione
 ramo: feat/locale-piu-veloce
 pr: ""
 ticket: ""
@@ -727,6 +727,106 @@ velocità misurate e quote misurate, non un tempo cronometrato.
 8. **Soglia per tenere una modifica**: il rapporto propone «almeno il 20% di tempo in meno e
    qualità non peggiore». La PR 2 da sola sta sotto. *Raccomando di tenerla comunque*: costa poco e
    alleggerisce anche Groq.
+
+## 3. Sviluppo          (sviluppatore)
+
+Ramo `feat/locale-piu-veloce`. Suite intera: **440 test, tutti verdi** (prima 372; 68 nuovi),
+`makemigrations --check` pulito, `manage.py check` pulito. Nessuna chiamata a Groq né a Ollama: nei
+test `client.chat_json` è finto (risposte lette dal prompt) e `client.chat` nei test dell'import
+alza se viene toccato. I test girano su un Postgres privato in `scratchpad/pgtest` (porta 54329):
+la produzione e il suo database non sono stati toccati.
+
+### Cosa c'è (secondo la «Decisione di Giuseppe»)
+
+1. **Testo intero nella pipeline** (`BEC/pipeline/whole_text.py`, nuovo).
+   - Fino a 8.000 caratteri: strada corta, due chiamate come oggi, tutte e due sul testo intero;
+     la didascalia dei reel va intera (tolto il taglio a 1.500).
+   - Oltre: pezzi uguali di al massimo 6.000 caratteri tagliati a fine frase (altrimenti all'ultimo
+     spazio), senza sovrapposizione; una chiamata per pezzo (max 3 affermazioni, citazione verificata
+     **contro il pezzo**, riga di appunti); unione nel codice (doppie tolte per citazione, testo e
+     somiglianza dei vettori ≥ 0,90; scelta a giro fra i pezzi; ordine del testo; tetto 6 / **12**
+     sui testi lunghi); una chiamata finale scrive l'analisi dagli appunti (per i reel anche con
+     i primi 1.500 caratteri veri e la didascalia). Un testo lungo si legge una volta sola.
+   - Un pezzo (o il riassunto finale) che fallisce → `WholeTextError`: `enrich_status`,
+     `argument_status` e `full_text_status` vanno a `failed`, `last_error` dice «pezzo 3 di 7: …»,
+     **niente salvato**, analisi e affermazioni vecchie intatte. Modello non disponibile a metà
+     (`NOT_THE_ITEMS_FAULT`) → resta `pending`, i pezzi fatti si buttano. Più di 40 pezzi → `failed`
+     prima di qualsiasi chiamata.
+   - Salvataggio unico `save_whole_doc` / `save_whole_reel` (una transazione, `full_text_status=done`,
+     vettore rimesso in coda). Lo stesso salvataggio lo usa l'import.
+   - `enrich_agent.py` / `knowledge_agent.py`: parser separati dal salvataggio
+     (`enrichment_fields`, `apply_doc_enrich`, `whole_text.verified_claims` unico controllo delle
+     citazioni per reel, articoli, pezzi e import). `_extract_arguments` non rifà i pezzi se
+     `_enrich_one` li ha appena letti (upload e `reprocess` chiamano i due di fila).
+   - Prompt in `llm/prompts.py` (pezzo, appunti per la chiamata finale). Il prompt dell'analisi di
+     un articolo corto è identico alla lettera (test esistente verde; `KB_ENRICH_USER` ora è
+     composto con `KB_ENRICH_JSON`, stesso testo).
+2. **Campo `full_text_status`** su `reels` e `knowledge_documents`, migrazione
+   `0028_full_text_status` (default `pending`; `done` per reel senza trascrizione o con ≤ 3.000
+   caratteri, documenti con ≤ 6.000; i numeri sono scritti nella migrazione). Nuove analisi: `done`.
+   MCP: `nota_analisi` compare solo se lo stato non è `done` (e il testo supera il vecchio taglio);
+   `leggi_*` danno fino a **12** affermazioni (erano 10); istruzioni del connettore aggiornate;
+   `eval_mcp` segue `parte_successiva` prima di controllare le citazioni.
+3. **`manage.py import_reanalysis <cartella>`** (`--dry-run` default, `--write`, `--group`,
+   `--limit`, `--model`). Allineato ai file veri trovati in `/home/medyca-admin/medycabrain-rianalisi/`
+   (chiavi `article|reel:<id>:analysis|claims`, `input/` con `group`, `output/` con
+   `{"key","response"}`): non li ho toccati. Stesso parser (`parse_json`, `enrichment_fields`,
+   `apply_doc_enrich`, `verified_claims`) e stesso salvataggio (`save_whole_*`) della pipeline;
+   scrive solo se analisi E affermazioni sono valide (JSON valido, riassunto non vuoto, citazioni
+   vere: se TUTTE le citazioni falliscono la risposta è scartata, se alcune falliscono quelle si
+   tolgono come nella pipeline); una transazione per contenuto; idempotente (`done` non si
+   riscrive); salta i `failed` di qualunque tipo e i non ancora analizzati; non tocca `owner_type`;
+   modello in `Enrichment.llm_model` (per i documenti non c'è colonna: nessuna aggiunta); nessuna
+   riga in `llm_calls`. Vettore: documenti `embed_status=pending`; reel `ReelEmbedding.vector=[]`
+   (lo stadio `embed` ricalcola i vettori vuoti, `cluster_agent._ensure_reel_embeddings`).
+4. **Documentazione** (stesso commit): `01-data-model.md`, `02-pipeline.md` (nuova sezione «Reading
+   the whole text» e `import_reanalysis`, tabella dei comandi), `03-llm-and-embeddings.md` (sezione
+   riscritta, con la frase sull'eccezione una tantum con Claude Haiku del 16/11/2026: il giro
+   quotidiano resta Groq + modello locale, niente Anthropic), `04-mcp-connector.md`,
+   `.claude/architecture-summary.md`, pagina Documentazione (`FEC/src/i18n/it.json`: «Capisce» e
+   «Limiti noti», in parole del cliente), due scritte nel drawio del cliente, commenti in testa ai
+   moduli.
+
+### Scelte da guardare
+
+- **Le affermazioni asciutte (ex 2b) NON sono dentro.** Il disegno §2.0-H le metteva nella PR 1,
+  ma la «Decisione di Giuseppe» elenca cosa resta e non le nomina; e il rifacimento con Haiku usa
+  già i prompt delle affermazioni com'erano (i file di input sono già costruiti). Cambiare
+  `ARGUMENTS_USER_TEMPLATE` ora avrebbe reso gli input incoerenti con il codice. **Da decidere dal
+  capo** se entrano in un'altra PR.
+- **Articoli da 6.000 a 8.000 caratteri**: i file di Haiku hanno solo l'analisi (le loro
+  affermazioni erano già state fatte sul testo intero, taglio a 8.000). L'import lo accetta e tiene
+  le affermazioni che ci sono; sopra 8.000 pretende anche le affermazioni.
+- **Reel**: `--group` usa il `group` scritto nell'input (tutti i reel = 4, come nel README di
+  costruisci); senza, lo calcola uguale.
+- I tetti di affermazioni sui reel brevi sono ora applicati **dopo** il controllo delle citazioni
+  (prima: nessun tetto sui reel, tetto sulle prime 6 righe per gli articoli). Più robusto, un
+  po' diverso.
+- Una riga non-oggetto dentro `argomenti` ora è scartata (prima per gli articoli faceva errore).
+
+### Cosa è rimasto fuori
+
+- `reanalyze_whole` sul 7b, lucchetto a tre livelli, riquadro in Avanzamento (come da decisione).
+  Quindi **`queue_eta.py`** (stima del tempo: una chiamata per contenuto) **non è stato rivisto**: con
+  i pezzi la stima di un contenuto lungo sarà bassa. Da fare con il riquadro.
+- `progress_report.py` / pagina Avanzamento: nessuna modifica. Le chiamate dei pezzi compaiono come
+  chiamate dello stadio, con la barra «Analisi» che conta contenuti, non pezzi.
+- **`valida.py` del compagno** (fuori dal repo) usa il codice della pipeline con finti
+  (`write_doc_enrich` su un `SimpleNamespace`, `Enrichment`/`ReelArgument`/`DocumentArgument`
+  sostituiti da contenitori, `_extract_arguments` con un reel finto): ho lasciato i nomi delle
+  funzioni e ho riportato i cicli `.objects.create` nei percorsi corti per non rompere più del
+  necessario, ma per i reel oltre 8.000 caratteri `_extract_arguments` ora legge
+  `reel.argument_status` e chiamerebbe il modello: **va ricontrollato**. Il modo giusto di validare ora
+  è `import_reanalysis` senza `--write` (stesso parser, nessuna scrittura).
+- Le soglie non sono tarate: somiglianza 0,90 per le doppie; il cap 12; la misura dei pezzi.
+  Vanno guardate sulle prime 17 puntate dopo il caricamento.
+- Non provato su dati veri né sul database di produzione: solo test con modelli finti e dry-run
+  sui test. Il comando va lanciato in dry-run sulla cartella vera prima del `--write`.
+- Un upload lungo analizzato in linea ora fa molte chiamate (ritardo del job); se il modello manca
+  resta rimandato alla notte come prima. Scritto in `02-pipeline.md`.
+- I limiti dell'architetto non toccati: bozze di blog (12.000 / 4.000), vettore (4.000).
+- Frontend non ricompilato (cambiate solo stringhe in `it.json`, JSON valido); le due scritte nuove
+  nel drawio potrebbero uscire dal riquadro: da guardare aprendo il file.
 
 ## Registro
 

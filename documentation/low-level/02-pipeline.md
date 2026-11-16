@@ -44,10 +44,10 @@ flowchart LR
 | 1 | **scrape** | `scraper_agent.py` | For each active `TrackedAccount` (Medyca's own first): read the **public embed page** through the residential proxy (`embed_provider.py`, [below](#where-the-list-of-reels-comes-from)) — the last 6 posts, only the videos the account **owns** — dump raw JSON to `data/raw/{account}/{shortcode}.json`, upsert `Reel` rows. 5-10 s between accounts; at most `embed_max_new_per_run` (5) new reels per run; 3 blocked accounts in a row stop the run; **if every account failed the stage is `failed`** with the reason. Apify is **not called any more** (code kept, off). | `media_status=pending` |
 | 2 | **download** | `downloader_agent.py` | For `media_status=pending`: get the mp4 (three sources, cheapest first — [below](#how-a-reels-video-actually-arrives)), ffmpeg-extract audio → `media/audio/{account}/{shortcode}.mp3`, save thumbnail → `media/thumbs/…`, delete the mp4. 3 attempts then `skipped`; a block defers the reel instead of charging it an attempt. | `media_status=done`, `transcribe_status=pending` |
 | 3 | **transcribe** | `transcriber_agent.py` | faster-whisper (local CPU, int8) over each mp3 → `Transcript`. Remote STT (`llm.client.transcribe_audio`) is used instead when `USE_REMOTE_STT`. Also processes `UploadedMedia`. | `transcribe_status=done`, `enrich_status=pending` |
-| 4 | **enrich** | `enrich_agent.py` | One LLM call per `enrich_status=pending` reel → `Enrichment` (summary, topics, hook, target, format, `primary_topic`, `evidence`). The model is Groq first, the local model as backstop (`03-llm-and-embeddings.md`). **One reel at a time** (`ENRICH_WORKERS=1`; it was 5). There is no cap on local calls by default (`PIPELINE_LOCAL_MAX_CALLS=0`): with Groq out the reels queue on the local model, and a big round can last hours (~9 h for 141 calls), so the 14:15 round skips on the round lock (exit 3). If someone sets `PIPELINE_LOCAL_MAX_CALLS` above 0 and the round uses them, the stage stops, writes a note, and leaves the reels it did not try `pending` (not `failed`). **Same if the local model is busy or unreachable** (`NOT_THE_ITEMS_FAULT`): the note says «il modello locale non era disponibile». If Groq is switched off for a refused key the note says that first. Then extracts `ReelArgument`s for `argument_status=pending` — each with a required **verbatim quote**. | `enrich_status=done`, `argument_status` advanced |
+| 4 | **enrich** | `enrich_agent.py` | One LLM call per `enrich_status=pending` reel → `Enrichment` (summary, topics, hook, target, format, `primary_topic`, `evidence`). The model is Groq first, the local model as backstop (`03-llm-and-embeddings.md`). **One reel at a time** (`ENRICH_WORKERS=1`; it was 5). There is no cap on local calls by default (`PIPELINE_LOCAL_MAX_CALLS=0`): with Groq out the reels queue on the local model, and a big round can last hours (~9 h for 141 calls), so the 14:15 round skips on the round lock (exit 3). If someone sets `PIPELINE_LOCAL_MAX_CALLS` above 0 and the round uses them, the stage stops, writes a note, and leaves the reels it did not try `pending` (not `failed`). **Same if the local model is busy or unreachable** (`NOT_THE_ITEMS_FAULT`): the note says «il modello locale non era disponibile». If Groq is switched off for a refused key the note says that first. Then extracts `ReelArgument`s for `argument_status=pending` — each with a required **verbatim quote**. **Reads the whole transcript and the whole caption** ([below](#reading-the-whole-text-2026-11-16)): up to 8 000 characters in two calls, above in pieces with one save at the end; a failed piece makes the reel `failed`. | `enrich_status=done`, `argument_status` advanced, `full_text_status=done` |
 | 5 | **embed** | `embed_agent.py` | Give every enriched reel a `vector` (via `cluster_agent._ensure_reel_embeddings`) and compute `chunk_vectors` passage embeddings for reels **and** documents (`_embed_passages`). Split from `enrich` on purpose so "analysed" and "searchable" can never drift apart. | embeddings written |
 | 6 | **blogscrape** | `blogscrape_agent.py` | For each active `BlogSource`, self-throttling on `crawl_interval_h`: discover article URLs (`blog_discovery.py`) and ingest new ones (`blog_agent.py` — trafilatura → Markdown → `KnowledgeDocument`). Deactivates a source after N consecutive failures. | new `KnowledgeDocument` rows |
-| 7 | **knowledge** | `knowledge_agent.py` | Enrich + embed blog articles (Medyca's and competitors'), using `model_for("analysis")`: `primary_topic`, on-topic verdict, `DocumentArgument` extraction (verbatim quote required). No hook/format — those are video-craft only. | `enrich_status`/`embed_status`/`argument_status=done` |
+| 7 | **knowledge** | `knowledge_agent.py` | Enrich + embed blog articles (Medyca's and competitors'), using `model_for("analysis")`: `primary_topic`, on-topic verdict, `DocumentArgument` extraction (verbatim quote required). No hook/format — those are video-craft only. **Reads the whole text**, in pieces above 8 000 characters ([below](#reading-the-whole-text-2026-11-16)). | `enrich_status`/`embed_status`/`argument_status`/`full_text_status=done` |
 | 8 | **cluster** | `cluster_agent.py` | Two-layer clustering (below). Writes a fresh `ClusterRun` **per scope**, flips `is_current` atomically, then refreshes `CustomTopic` matches (`core/custom_topics.recompute_matches`). | new current `ClusterRun` per scope |
 
 ## One round at a time, and what a round may spend locally (2026-11-15)
@@ -344,9 +344,10 @@ addresses; at that date: none left).
 
 Measured on the first episode ingested (doc 842, 1 135 s, 14 733 characters): the transcript
 begins with roughly a page of **local advertising** — a clinic, an orthopaedic shop, phone
-numbers — before the medical conversation starts. The analysis window is
+numbers — before the medical conversation starts. The analysis window was
 `content_text[:6000]` (`knowledge_agent.build_doc_enrich_prompt`), so a real share of what the
-model reads is sponsor copy.
+model read was sponsor copy. (Since 2026-11-16 the whole text is read, so the sponsors are one
+piece among many; an analysis not yet redone still has the old window.)
 
 Two consequences, both observed on that document:
 
@@ -877,6 +878,101 @@ Retention: `manage.py prune_llm_calls` deletes closed `llm_calls`/`stage_runs` o
 `LLM_CALL_RETENTION_DAYS` (90). It wants one line in the crontab, once a day (added by the
 release step).
 
+## Reading the whole text (2026-11-16)
+
+Until this date the analysis and the claims read only the beginning of a long text: 6 000 characters
+of a document for the summary and 8 000 for its claims, 3 000 of a reel's transcript and 1 500 of its
+caption. A client's Claude read it in `nota_analisi` and objected: for a long episode only the first
+third was summarised. Nothing is cut any more. The rule lives in **`pipeline/whole_text.py`** and is
+shared by `enrich` (reels) and `knowledge` (documents).
+
+**Up to 8 000 characters — the short road.** Two calls as before (analysis, claims), now both on the
+whole text; the caption of a reel goes in whole (Instagram allows 2 200 characters; 197 reels were
+over the old 1 500). The prompt of an article up to 6 000 characters is the same to the letter as
+before (`test_knowledge_prompt.py`).
+
+**Above 8 000 — the long road, in pieces.**
+1. **Cut.** `n = ceil(length / 6 000)` pieces of about equal length, none over ~6 000 characters
+   (~1 750 tokens). The cut falls on the last sentence end (`. ! ?` or a newline) in the last 40% of
+   the window; without punctuation (Whisper) on the last space; never mid-word unless the text has no
+   space at all. **No overlap** (it would make the same claim twice). `"".join(pieces)` is the exact
+   text. The size is recomputed after each cut so no piece goes over the limit.
+2. **One call per piece**: at most **3 claims**, each with a quote **checked against that piece**
+   (the model saw only it, so it cannot stitch a quote across two; an invented quote is dropped), and
+   a line of notes (≤ 25 words asked; the code clips at 50). The prompt says «pezzo 3 di 7 di …» so
+   the model does not take it for the whole text. Answer: `{"sintesi", "argomenti": [{"testo",
+   "citazione"}]}`; ceiling 1 200 tokens.
+3. **Merge (code, no call).** Doubles out (same quote, same claim, or vectors closer than 0.90 with
+   the embedder the platform already uses — the threshold is **not tuned yet**: check it on the first
+   contents); then chosen in turns (first claim of every piece, then the second…) up to **12**, so the
+   claims cover the whole text, not only its start; final order = order in the text. If the embedder
+   cannot load, only the exact doubles are removed (a warning in the log).
+4. **One final call** writes the analysis (the same JSON as the short road: summary, topics,
+   `primary_topic`, on-topic verdict; for a reel also hook, hook analysis, audience, format). It
+   reads the notes of every piece and the kept claims in place of the text; a reel also gets the real
+   first 1 500 characters of the transcript and the caption, because hook and hook analysis speak
+   about the opening.
+5. **One save at the end** (`save_whole_doc`, `save_whole_reel`): analysis, claims and
+   `full_text_status=done` in one transaction. A long text is read **once**, not twice.
+
+**One size for Groq and the local model.** Who answers is decided inside `client.chat()`, call by
+call, so the same text can have piece 1 on Groq and piece 2 on the 7b: two thresholds would mean
+pieces that change mid-text. A piece is ~1 750 tokens read plus its ceiling: well inside Groq's
+8 000 tokens a minute and the 7b's 8 192-token window.
+
+**Failures.**
+- A piece that fails (broken or cut JSON, an error) → the **whole content is `failed`**
+  (`enrich_status`, `argument_status`, `full_text_status`), `last_error` says «pezzo 3 di 7: …». Nothing
+  is saved: never an analysis of 6 pieces out of 7 shown as whole. A piece without claims is not an
+  error (an empty list is a correct answer). The final call failing is a failure too («riassunto
+  finale»). No automatic second try, as everywhere.
+- The local model unavailable or busy halfway (`NOT_THE_ITEMS_FAULT`) → the content stays `pending`;
+  the pieces done are thrown away and redone next round (saving them would need a table, for little
+  gain). Cost: at most one content's work per interruption.
+- More than 40 pieces (~240 000 characters) → `failed` before any call: the notes would not fit the
+  final call. The longest text today is 85 699 characters (15 pieces).
+
+**Cost, and what it means.** A new 85 000-character video is 16 calls instead of 2: if Groq is out it
+is about an hour on the 7b. An upload analysed inline (`upload_workflow._analyse`) takes as long; if
+the model is away it is deferred to the night, as before. `_extract_arguments` does nothing if
+`_enrich_one` has just read the text in pieces (`argument_status` and `full_text_status` already
+`done`): reprocess and uploads call the two in a row.
+
+**`full_text_status`** says whether the analysis in force read everything (`01-data-model.md`). A new
+analysis writes `done`; old ones are `pending` until they are redone. They are redone **once, with
+`import_reanalysis`** (below), not by the nightly round.
+
+### `import_reanalysis` — loading answers written outside the pipeline
+
+`python manage.py import_reanalysis <folder> [--write] [--group N] [--limit N] [--model NAME]`.
+For the one-off redo of the old content (16/11/2026, with Claude Haiku, see
+`03-llm-and-embeddings.md`). The folder has `input/*.jsonl` (the real prompts, one line per call,
+with `key`, `group`, `task`, `cap`) and `output/*.jsonl` with `{"key": "<article|reel>:<id>:<analysis|claims>",
+"response": "<raw JSON text>"}` (`article` = a `KnowledgeDocument`).
+
+- **Dry run by default**: validates and counts, writes nothing; `--write` writes.
+- The **same parser and the same save** as the pipeline: `llm.client.parse_json`;
+  `enrichment_fields` / `apply_doc_enrich` for the analysis; `whole_text.verified_claims` for the
+  claims (every quote verbatim in the real text, folded the same way; ≤ 6 claims up to 8 000
+  characters, ≤ 12 above); `save_whole_reel` / `save_whole_doc` for the write.
+- **A content is written only if both answers are valid** (broken JSON, empty summary, an answer with
+  no list of claims, or with claims **all** failing the quote check → nothing, the old analysis and
+  claims stay). One transaction per content; the vector is put back in the queue (`embed_status`
+  `pending` for a document; for a reel the vector is emptied and the `embed` stage recomputes it).
+  Exception: an article of up to 8 000 characters may come with the analysis only — its claims had been
+  made on the whole text already, and stay.
+- **Idempotent**: a content already `full_text_status=done` is not rewritten. Contents `failed` for any
+  reason, and those not yet analysed, are skipped (counted in the report). `owner_type` is never
+  touched; an answer lands only on the id in its key.
+- `--group` uses the `group` carried by the input (1 episodes/videos/interviews, 2 Medyca's articles,
+  3 competitors' on-topic articles, 4 reels, 5 off-topic articles); without it the command works it out
+  the same way.
+- The model name goes in `Enrichment.llm_model` for reels (`--model`, default `claude-haiku`). Documents
+  have no such column. **No row is added to `llm_calls`**: no call went through this server.
+- **Not in this change**: a command that redoes the old content on the local 7b (`reanalyze_whole`),
+  the third level of the local lock, and a box on the «Avanzamento» page. They are in the work file as
+  the way to redo what is not done with Haiku.
+
 ## The idempotency contract
 
 The pipeline is safe to run on a fixed schedule because **state lives on each row**, not in
@@ -892,6 +988,7 @@ All under `BEC/core/management/commands/`. Run with `python manage.py <name>`.
 |---|---|
 | `run_pipeline` | Run the DAG (cron entrypoint). Flags: `--dry-run`, `--limit`, `--only <stage>`, `--skip-<stage>`. Stages come from `pipeline.dag.build_steps()`, shared with the manual run. |
 | `run_job <id>` | Execute a queued `Job` by id, detached. |
+| `import_reanalysis` | Load analyses/claims written outside the pipeline (one-off redo on the whole text). Dry run unless `--write`. See [above](#import_reanalysis--loading-answers-written-outside-the-pipeline). |
 | `reprocess` | Re-run stages (`transcribe`, `enrich`, `knowledge`), resumable. Flags: `--stage`, `--scope`, `--limit`, `--only-stale`, `--with-transcript`, `--not-model`. |
 | `ingest_blog` | Fetch a specific Medyca blog article (or several). |
 | `import_apify` | Fill `video_url`/`caption`/`posted_at`/`duration` from an Apify export. |

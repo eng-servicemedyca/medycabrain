@@ -260,18 +260,38 @@ document keeps being found by the wrong questions. `embed_status` says `done`, s
 revisits it on its own — set it back to `pending` for the rows you re-analysed. This bit the 323
 articles recovered on 2026-09-13: their summaries had been empty when they were first embedded.
 
-## What the document analysis reads, and what it calls the text (2026-11-16)
+## What the analysis reads, and what it calls the text (2026-11-16)
 
-`knowledge_agent.build_doc_enrich_prompt` reads **the first 6 000 characters** of a text for the
-summary and the topic, and **the first 8 000** for the claims (`DOC_SUMMARY_CHARS_READ`,
-`DOC_CLAIMS_CHARS_READ`); the reel analysis reads **3 000** (`enrich_agent.TRANSCRIPT_CHARS_READ`).
-Measured the same day: 854 of 2 302 articles and 17 of 18 episodes/interviews are longer than
-6 000, so the summary of a 17 000-character episode is made on its first third. Known limit, not
-changed here: reading everything means summarising in pieces and stitching (Groq allows 8 000
-tokens a minute, so a long text does not fit one call). The connector tells the client's Claude
-(`nota_analisi`, see `04-mcp-connector.md`). Also read only at the start: the article draft from an
-interview (12 000), the article/reel comparison (4 000), the document vector (4 000, softened by
-the passage vectors that cover the whole text).
+**The whole text is read** (it used to be the first 6 000 characters for a document's summary, 8 000
+for its claims, 3 000 of a reel's transcript and 1 500 of its caption). Up to **8 000 characters**
+(`whole_text.SHORT_MAX`) the text goes in one call per task; above it is read **in pieces of ~6 000
+characters** (`whole_text.PIECE_TARGET`, ~1 750 tokens), one call per piece, then one call that writes
+the analysis from the notes — the rule, the failures and the numbers are in `02-pipeline.md`,
+«Reading the whole text». The size is **one for Groq and the local model**: who answers is decided
+inside `client.chat()`, call by call. It fits the limits that made it necessary: a 30 000-character
+text (~8 700 tokens) cannot go in one request (Groq's 8 000 tokens a minute, the 7b's 8 192-token
+window), a piece can. Thresholds (all in `pipeline/whole_text.py`): 8 000 short/long, 6 000 per
+piece, 3 claims per piece, **6 claims** up to 8 000 characters and **12** above, 40 pieces at most,
+0.90 similarity for «the same claim» (not tuned yet).
+
+The old numbers stay as named constants (`DOC_SUMMARY_CHARS_READ = 6000`, `DOC_CLAIMS_CHARS_READ =
+8000`, `TRANSCRIPT_CHARS_READ = 3000`) for one reason: `nota_analisi` of the MCP connector names them
+for the analyses not yet redone (`full_text_status` not `done`, `04-mcp-connector.md`).
+
+**The redo of the old content was done once with Claude Haiku, from Giuseppe's subscription, on
+16/11/2026** (`import_reanalysis`, `02-pipeline.md`): Haiku read the real pipeline prompts on the
+whole text and wrote its answers to files outside the repo; the command loaded them through the
+pipeline's own parser and save. It is a **one-off exception**: the nightly round stays **Groq + the
+local model, no Anthropic**, and nothing in the pipeline calls Anthropic. Consequence for quality:
+those analyses are written by Claude Haiku, the newer ones by `gpt-oss-120b` or the local 7b; the
+model name is in `Enrichment.llm_model` for reels (a document has no such column).
+
+Also read only at the start (not changed here): the article draft from an interview (12 000), the
+article being expanded (4 000), each reel in a draft's topic (700), the article/reel comparison
+(4 000), the document vector (4 000, softened by the passage vectors that cover the whole text).
+Known limits: a text over ~240 000 characters is `failed`; quality of a summary made from notes
+instead of the text is **not proven** on Groq or the 7b — the first 17 episodes are read by hand
+after the load.
 
 The words of the prompt follow `source_type` (`_intro`): a blog or a web page is «un articolo del
 blog di …», **to the letter as before** (2 281 analyses did not move; a test pins it); a video is
