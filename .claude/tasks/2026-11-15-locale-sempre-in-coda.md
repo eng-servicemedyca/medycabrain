@@ -1,9 +1,9 @@
 ---
 id: 2026-11-15-locale-sempre-in-coda
 titolo: Se Groq finisce si va sul modello locale, sempre in coda
-stato: pronto
+stato: rilasciato
 ramo: feat/locale-sempre-in-coda
-pr: ""
+pr: "24"
 ticket: ""
 ---
 
@@ -135,3 +135,34 @@ Rilievi (dal più pesante):
 **Non provato**: un giro grosso vero (ore); la pagina Documentazione a schermo (nessun browser, e `:9093` è produzione, che non gira da questo ramo); Ollama non era occupato da altro, ma il carico della macchina era alto (la prima chiamata locale ha impiegato 109 s). Il `.env` di produzione con `=40`/`=900` (già annotato dallo sviluppatore) va cambiato al rilascio.
 
 `stato:` può passare a `pronto`.
+
+## 6. Rilascio           (capo, 16/11/2026)
+
+Rilasciate insieme la PR #23 e la PR #24, su conferma di Giuseppe («Sì, rilascia»).
+I passi li ha eseguiti il capo; il riavvio l'ha lanciato Giuseppe con `sudo`.
+
+1. Controlli prima: nessun giro in corso, zero righe `batched` (reels,
+   knowledge_documents, uploaded_media), servizi attivi.
+2. Copie: `BEC/.env.bak.20261116` e `BEC/logs/batch_runs-2026-11.csv` (26 righe + titolo),
+   tutti e due fuori da git.
+3. `.env`: `LLM_ENDPOINTS=groq`, `OLLAMA_MODEL=qwen2.5:7b-instruct-q4_K_M`, tolte le
+   righe `LLM_ANTHROPIC_*`, `BATCH_*`, `LLM_FLOW_*`, `HF_*` (da 98 a 84 righe).
+   `PIPELINE_LOCAL_MAX_CALLS` e `OLLAMA_LOCK_WAIT` non c'erano: valgono i predefiniti.
+4. Codice a `cea9002`, `migrate` (applicata `0027_drop_batchrun`), `check` pulito,
+   build del sito riuscita.
+5. Riavvio di `medycabrain-backend` e `medycabrain-mcp` alle 08:05-08:06.
+
+Verifiche dopo il riavvio:
+- Impostazioni in vigore: endpoint `['groq']`, locale 7b, tetto 0, attesa 1800.
+- Ricerca vera dal connettore MCP («vampate di calore rimedi»): 5 risultati, riordino
+  fatto da Groq (`gpt-oss-20b`, due chiamate `mcp:cerca` chiuse `done` in 2 secondi).
+- `ops/status`, `ops/progress`, `stats/overview`: 200. `knowledge/ask`: 404 (la chat non c'è più).
+- Nessun errore nel log di gunicorn dopo il riavvio.
+
+Da sapere:
+- **La prima ricerca MCP dopo un riavvio va in timeout**: il connettore carica il modello
+  dei vettori alla prima richiesta (circa 40 secondi). La seconda risponde. Visto il 16/11.
+- Prima del rilascio, col codice vecchio, la stessa ricerca era andata in timeout.
+- Non ancora fatto, in attesa di conferma di Giuseppe: `ollama rm qwen2.5:3b-instruct-q4_K_M`
+  e `pip uninstall anthropic`. La revoca delle chiavi vecchie presso i fornitori è sua.
+- Non ancora visto: un giro intero col codice nuovo (il primo è quello delle 14:15 del 16/11).

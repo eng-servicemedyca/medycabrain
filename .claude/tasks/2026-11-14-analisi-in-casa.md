@@ -1,9 +1,9 @@
 ---
 id: 2026-11-14-analisi-in-casa
 titolo: Groq o modello locale, niente Anthropic, niente chat (PR 2 di "pipeline in casa")
-stato: pronto
+stato: rilasciato
 ramo: feat/analisi-in-casa
-pr: ""
+pr: "23"
 ticket: ""
 ---
 
