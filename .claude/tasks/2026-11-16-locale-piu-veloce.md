@@ -1205,3 +1205,79 @@ reel:345  (54.459 car., non imp.)  nota_analisi: «... (primi 3.000 caratteri su
 - Il percorso dei contenuti nuovi lunghi (pezzi sul 7b / Groq): coperto solo dai test con modelli finti, non da una chiamata vera.
 - Pagina Documentazione e drawio a occhio (due scritte nuove nel drawio potrebbero uscire dal riquadro): **da guardare a mano** aprendo `docs/medycabrain-pipeline-cliente.drawio`; la pagina `Documentazione` nell'app dopo il rilascio, su `:9093` a 380 px e desktop (la build compila, ma non l'ho aperta nel browser: il ramo non è in produzione).
 - I lotti scritti da Haiku dopo l'istantanea (ora ne esistono di più): l'import va rilanciato quando saranno finiti.
+
+### Giro 2 (collaudatore, 16/11/2026)
+
+**Verdetto: PASSA.** Stesso metodo del primo giro: Postgres privato (porta 54329), copia fresca della
+produzione fatta con `pg_dump` (sola lettura), nessuna chiave Groq, `LLM_ENDPOINTS` vuoto, `OLLAMA_URL`
+puntato a una porta morta (`127.0.0.1:9`) per `embed` e `cluster`. Copia e dump cancellati alla fine.
+
+**1. Suite e build (ramo, commit `bbf04f7`)**
+```
+makemigrations --check --dry-run -> No changes detected
+manage.py check                  -> System check identified no issues (0 silenced).
+manage.py test core              -> Ran 455 tests in 50.573s   OK
+npm run build                    -> ✓ built in 28.81s  (tsc -b && vite build)
+```
+
+**2. Migrazione 0028 sulla copia fresca** (`Applying core.0028_full_text_status... OK`)
+
+| | pending | done |
+|---|---|---|
+| reel | **414** | 1.234 |
+| documenti | **855** | 1.453 |
+
+I 414 reel: 265 con trascrizione > 3.000 (217 + 48 con anche didascalia lunga) + **149 solo per la
+didascalia > 1.500** (131 con trascrizione corta, 18 senza trascrizione). I 381 attesi erano
+265 + 116: ne mancano 33 (15 + 18 senza trascrizione, vedi sotto). Documenti 855 come previsto.
+
+**3. Procedura reale su una fotografia dei lotti** (381 file di input; 360 `.jsonl` di output con
+`.esito.json`, 2.101 righe; i file di Haiku non toccati). Prima: `pg_dump -Fc -t enrichments -t
+reel_arguments -t document_arguments -t reels -t knowledge_documents` sulla copia (128 MB, ok).
+
+| passo | risultato |
+|---|---|
+| dry-run | 1.202 contenuti con risposte, 66 chiavi senza risposta; **validi 1.037**, scartati 0, saltati `failed` 164, non ancora analizzati 1; gruppi 1:15 2:25 3:297 4:339 5:361. Stato del DB identico dopo (somme di controllo). |
+| `--write` senza `--backup-fatto` | `CommandError: prima di --write serve la copia di sicurezza ... Aggiungi --backup-fatto.` exit 1, niente scritto (stato identico). |
+| `--write --backup-fatto` | **scritti 1.037** (339 reel + 698 documenti). reel pending 414→75, documenti pending 855→157, vettori documento da rifare 698, `llm_calls` 677 invariato. |
+| `--write --backup-fatto --anche-falliti` | **scritti 136, ripresi da failed 136**, già fatti 1.037, **scartati 28** (tutti articoli: «manca la risposta delle affermazioni» — erano `argument_status=failed`, e Haiku ha mandato solo l'analisi; è il comportamento voluto, resta come prima), non analizzati 1. reel pending 75→36, documenti pending 157→60, `failed` 0. |
+
+Reel con didascalia lunga prima saltati, ora dentro: con trascrizione corta e didascalia > 1.500
+**116 su 131 ora `done`** (prima 0); i 15 restanti **non sono nei lotti di Haiku** (nessuna chiave in
+input). I 18 senza trascrizione e con didascalia lunga **non sono in nessun lotto** (0 su 18 in input):
+restano `pending`. Reel con trascrizione > 3.000: 214+48 `done`, 3 `pending` (2 in input senza output,
+1 in input e output ma `pending`, probabilmente il «non ancora analizzato»). Quindi i 36 reel
+`pending` residui = 18 senza trascrizione + 18 con trascrizione, tutti senza risposta valida di Haiku.
+
+**5. Secondo `--write`** (`--write --backup-fatto --anche-falliti`): `scritti: 0`, già fatti 1.173,
+scartati 28, non analizzati 1; somme di controllo di reel, documenti, affermazioni e conteggi
+**identiche** prima/dopo. Stesso risultato senza `--anche-falliti`: `scritti: 0`, identico.
+
+**4. `embed` e `cluster` sulla copia** — girano senza LLM: `embed` usa solo sentence-transformers
+(`paraphrase-multilingual-MiniLM-L12-v2`, `HF_HUB_OFFLINE=1`); `cluster` chiama l'LLM solo per dare
+il nome ai temi (`_name_cluster`), qui con endpoint vuoti e Ollama su porta morta: nessuna chiamata
+(`llm_calls` ancora 677, nessun «ollama/groq/connection» nel log).
+- `run_pipeline --only embed` (253 s): vettori reel vuoti **378 → 0**.
+  Il contatore finale dice `embedded: 0, already: 1647` — conta solo i reel senza riga, non quelli con
+  vettore vuoto: il lavoro è stato fatto, il numero nel log è fuorviante (non blocca).
+- `run_pipeline --only cluster` (~13 min sulla CPU condivisa): due `ClusterRun` nuovi (250 competitor:
+  360 temi, 6.318 affermazioni assegnate; 251 owned: 16 temi, 329). Nessun tema con nome «Tema N».
+  Assegnazioni con tema, rispetto alle affermazioni dei reel: **prima 3.527 su 3.598 (98,0%)**
+  (run 248+249), **dopo 6.424 su 6.647 (96,6%)** (run 250+251). Le affermazioni dei reel
+  sono salite da 5.116 a 6.647 (più affermazioni per reel), le assegnate quasi raddoppiate; la quota
+  assegnata torna al livello di prima (−1,4 punti). Owned e competitor restano in run separati.
+
+**Cosa non ho provato**
+- La qualità dei testi di Haiku (confrontati solo numeri e conteggi).
+- Il nome dei temi con un LLM vero: qui nessun LLM, quindi i nomi nuovi non sono stati generati
+  (60 temi chiamati «Tema N» esistono nella copia, ma nei run vecchi; i run nuovi non ne hanno).
+- Lo stadio `knowledge` (che rifà i vettori dei 795 documenti `embed_status=pending`): non lanciato,
+  può chiamare un LLM. I vettori dei documenti restano da rifare nel giro notturno.
+- Pagina Documentazione / drawio / UI a 380 px: non toccate in questo giro (il ramo non è in produzione).
+
+**Da sapere per Giuseppe**
+1. Restano **33 reel con didascalia lunga** (15 con trascrizione, 18 senza) fuori dai lotti di Haiku:
+   per loro serve un nuovo input (`costruisci.py`) o restano `pending` per sempre.
+2. Il contatore `embedded` di `embed` non conta i vettori vuoti ricalcolati (solo cosmetico).
+3. Gli scarti `--anche-falliti` (28 articoli corti con affermazioni `failed`) aspettano una risposta
+   per le affermazioni.
