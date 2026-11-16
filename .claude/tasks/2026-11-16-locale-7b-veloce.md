@@ -1,0 +1,326 @@
+---
+id: 2026-11-16-locale-7b-veloce
+titolo: Il 7b locale più veloce nel giro di ogni giorno
+stato: disegno
+ramo: feat/locale-7b-veloce
+pr: ""
+ticket: ""
+---
+
+## 1. Richiesta          (capo)
+
+Giuseppe, 16/11/2026: «Il mio obiettivo è ottimizzare e fare con un modello locale», poi
+«Resta sui 7B», e dopo il rilascio della PR 28: «Vai con ottimizzazione».
+
+Perimetro: il 7b (`qwen2.5:7b-instruct-q4_K_M` su Ollama) nel giro quotidiano. Fuori:
+cambiare modello, cambiare motore, Groq a pagamento, Anthropic.
+
+## Primi fatti (capo)
+
+- Lavoro precedente, rilasciato: `.claude/tasks/2026-11-16-locale-piu-veloce.md`. Lì ci
+  sono il primo disegno (§2.0b-2.7: risposte più corte, niente rilettura, compiti fuori dal
+  modello), le domande ancora aperte (§2.7) e il testo intero ora in produzione
+  (`BEC/pipeline/whole_text.py`), che ha cambiato i prompt e le chiamate.
+- Banco di prova del 7b, misurato il 16/11: `/home/medyca-admin/ricerche/banco-7b-2026-11-16/risultati.md`
+  (copia anche in scratchpad/banco). In breve:
+  - 135 s a chiamata in media; legge 15-18 token/s, scrive 2,5-4,2;
+  - la cache del prefisso di Ollama funziona solo se l'inizio del prompt è identico
+    (lettura da 84 s a 0,2 s) e oggi non scatta mai;
+  - `format=json` non rallenta;
+  - 7 thread leggono il 15% più in fretta senza perdere in scrittura (un solo campione);
+  - ogni cambio di `num_thread` ricarica il modello.
+- Ricerca: `/home/medyca-admin/ricerche/reports/Ottimizzazione modelli locali su CPU.md`.
+- Difetto visto in produzione: affermazioni quasi uguali sullo stesso contenuto quando il
+  testo è letto in una chiamata sola (il filtro delle doppie vale solo a pezzi).
+- Sulla stessa macchina un altro progetto (`medyca-crm-dev`, transcriber) ha usato il
+  360-485% di CPU alle 15:09 del 16/11.
+
+## 2. Disegno          (architetto, 16/11/2026 sera)
+
+Stato: **in attesa dell'OK di Giuseppe**. Nessuna riga di codice scritta. Rifatto sul codice
+di oggi (`BEC/pipeline/whole_text.py` e chi lo chiama), non sul disegno del mattino.
+
+### 2.0 In cinque righe
+
+1. **Una PR sola**, che tocca solo le affermazioni dei testi corti (fino a 8.000 caratteri):
+   stesso inizio del prompt dell'analisi, istruzioni in fondo, e le due chiamate una dietro
+   l'altra. Il modello locale legge il testo una volta invece di due. **Il prompt dell'analisi
+   non cambia di una lettera**, quindi le analisi di Groq restano quelle di oggi.
+2. Guadagno atteso sulla seconda chiamata (calcolo su velocità misurate dal banco): **circa
+   −45 s su un articolo medio, fino a −115 s su uno vicino agli 8.000 caratteri, −55 s su un reel**.
+3. **Per i pezzi dei testi lunghi il prefisso comune non dà niente**: ogni pezzo è già letto
+   in una chiamata sola. Lo dico chiaro perché la richiesta lo dava per utile.
+4. **Il filtro delle doppie a 0,90 da solo toglie anche affermazioni diverse** (misurato sui
+   reel di produzione) e **non avrebbe tolto nulla sull'articolo 2214**. Propongo una regola
+   un po' più stretta, uguale per testi corti e pezzi (domanda 3).
+5. **I 7 thread restano fuori da questa PR**: non sono codice (è una riga di `.env`), la prova
+   ha un campione solo, e con il punto 1 il loro guadagno scende a pochi secondi.
+
+Prima di scrivere codice serve **una prova di 40 minuti sul 7b** (§2.2): non l'ho potuta fare
+io perché alle 18:08 girava `run_pipeline --only knowledge` (carico 15-16 su 18 core, Ollama
+senza modello in memoria): una misura adesso sarebbe sporca e toglierebbe CPU alla produzione.
+
+### 2.1 Vincoli misurati (e cosa è solo calcolato)
+
+Misurato da me oggi, in sola lettura (script in `scratchpad/arch7b/a1.py … a4.py`, transazione
+`READ ONLY` sul database di produzione; nessuna chiamata a Groq né al 7b):
+
+- **Il 7b non ha mai servito una chiamata in produzione**: in `llm_calls` (781 righe, dal 15/11)
+  le chiamate locali sono tutte del vecchio 3b (`a1.py`). E il banco ha cronometrato solo
+  **analisi** (6 chiamate, 161-219 token scritti): **quanto scrive il 7b per le affermazioni non
+  lo sa nessuno**. I tetti locali delle affermazioni quindi non si possono «prendere dal banco»:
+  vanno presi dalla prova del §2.2.
+- **Com'è il codice oggi** (letto): testo corto = 2 chiamate (analisi, affermazioni); testo lungo
+  = 1 chiamata per pezzo (affermazioni + appunti) + 1 finale sugli appunti. I due prompt del
+  testo corto divergono dal primo carattere: sistema diverso (`KB_SYSTEM` / `ENRICH_SYSTEM`
+  contro `ARGUMENTS_SYSTEM`) e prima riga diversa. L'analisi ha **già** il testo prima e le
+  regole dopo; le affermazioni no.
+- **Ordine dei lavori** (`enrich_agent.run`, `knowledge_agent.run`): prima tutte le analisi, poi
+  tutte le affermazioni. Invece `core/upload_workflow.py:393-394` e `reprocess.py:143-144` le
+  fanno già una dietro l'altra: lì il guadagno arriva senza cambiare l'ordine.
+- **Coda delle istruzioni delle affermazioni**: 606 caratteri, circa 176 token (`python3` su
+  `prompts.py`). È quello che resta da leggere alla seconda chiamata: ~11-14 s.
+- **Lunghezza delle affermazioni salvate** (`a2.py`; quasi tutte scritte da Groq, Claude e
+  Haiku, non dal 7b): articoli 13.476 affermazioni, testo 16,7 parole in media (22% oltre 20),
+  citazione 21,4 (45% oltre 20, 28% oltre 25, massimo 138). Reel 6.657: testo 13,7 (7% oltre
+  20), citazione 15,8 (21% oltre 20, 10% oltre 25).
+- **Doppie nei testi corti** (`a2.py`, `a4.py`; solo reel, perché le affermazioni degli articoli
+  non hanno vettori salvati): a soglia 0,90 si toglierebbero **31 affermazioni su 4.555 (0,68%)
+  in 22 reel su 877 (2,5%)**; a 0,85 il 2,3%; a 0,95 lo 0,18%. Doppie esatte: 6 coppie con la
+  stessa citazione e 2 con lo stesso testo nei reel; negli articoli 12 coppie con citazione
+  identica, 13 con una citazione dentro l'altra, 3 con testo identico (18 articoli su 2.201).
+  **È un difetto raro.**
+- **La soglia 0,90 sbaglia** (`a3.py`, `a4.py`): fra 0,90 e 0,95 ci sono 32 coppie, e 23 hanno
+  citazioni diverse. Lette a campione (6 + 3, è poco): «le donne hanno bisogno di 7 ore e mezza
+  di sonno» / «gli uomini di 6 e mezza»; «il farro contiene glutine» / «l'orzo contiene glutine»;
+  «alcuni biscotti sono buoni per dimagrire» / «alcuni sono cattivi». Sono affermazioni
+  **diverse** che il filtro butterebbe. Le doppie vere stanno a 0,95 o più (10 coppie), oppure
+  hanno la stessa citazione.
+- **Articolo 2214** (il difetto visto in produzione): con il modello dei vettori della
+  piattaforma la coppia più vicina fra le sue 12 affermazioni è a **0,771**, nessuna citazione in
+  comune. **Né la soglia 0,90 né la mia regola l'avrebbero toccato.** Non so quali due frasi ha
+  visto il capo: va detto, altrimenti si rilascia un filtro credendo che chiuda quel caso.
+- **Thread**: `OLLAMA_NUM_THREAD` è una variabile di `.env` (`config/settings/base.py:154`), non
+  codice.
+
+Preso dal banco (misurato da altri, 16/11): legge 15-17,8 token/s, scrive 2,5-4,2 (media
+3,35), la scrittura varia del 25% da sola; la cache riusa l'inizio identico (lettura da 84-90 s
+a 0,2-1,7 s) anche se cambia `num_predict`; con i prompt di oggi non scatta mai (100 s).
+
+**Supposto, non verificato**: che la cache scatti con i **template veri riscritti** (il banco
+l'ha provata con istruzioni di prova); che il 7b rispetti «massimo 20 parole»; che le
+affermazioni con l'istruzione in fondo siano buone quanto oggi, sul 7b e su Groq.
+
+### 2.2 Passo 0 — la prova prima del codice (40 minuti di modello)
+
+La fa chi ha fatto il banco, con lo stesso `harness.py` (stesso lucchetto, stesse opzioni della
+produzione), a macchina quieta e lontano dalle 03:30 e dalle 14:15. Sei contenuti corti: 3
+articoli e 3 reel, in gruppi separati Medyca / competitor (ogni prompt contiene un contenuto
+solo). Per ognuno tre chiamate: analisi di oggi → affermazioni **nuove** (stesso inizio,
+istruzioni in fondo, limiti di parole) → affermazioni **di oggi**.
+
+| Cosa si guarda | Passa se | Se non passa |
+|---|---|---|
+| Lettura della seconda chiamata | sotto 20 s (oggi 45-125) | il punto 1 non entra: resta il resto |
+| Affermazioni tenute dal controllo delle citazioni, nuove contro vecchie | in media non più di 1 in meno per contenuto, e non più citazioni scartate | si tolgono i limiti di parole e si riprova solo l'ordine |
+| Token scritti con il prompt nuovo | dà il numero per i tetti locali (§2.4) | — |
+
+Costo: 6 × (135 + ~80 + ~200 s) ≈ 42 minuti (calcolo).
+
+### 2.3 Punto 1 — prefisso comune e chiamate una dietro l'altra
+
+**Comportamento**
+- Una funzione sola per tipo di contenuto costruisce «la testa»: messaggio di sistema
+  dell'analisi + inizio del messaggio fino alla fine del testo. Per gli articoli:
+  `KB_SYSTEM` e «riga di apertura, TITOLO, TESTO»; per i reel: `ENRICH_SYSTEM` e «Analizza
+  questo reel, DIDASCALIA, TRASCRIZIONE AUDIO». L'analisi è testa + le sue regole (**le stesse
+  parole di oggi**); le affermazioni sono la stessa testa + una coda nuova. L'uguaglianza byte
+  per byte la garantisce il codice.
+- La coda delle affermazioni dice chiaro che il compito cambia («Ora non fare l'analisi:
+  estrai solo le affermazioni…»), riporta le regole di oggi, e riprende la frase che oggi sta
+  nel messaggio di sistema («solo ciò che è stato realmente detto»). Per gli articoli aggiunge
+  «cita solo dal TESTO, non dal titolo» (ora il titolo è nel prompt, e una citazione dal titolo
+  verrebbe scartata dal controllo).
+- **Ordine**: per ogni contenuto, analisi e subito dopo affermazioni, poi il successivo. Il
+  secondo giro («Affermazioni») resta e prende solo gli arretrati (analisi fatte in un giro
+  precedente). Analisi fallita → affermazioni non tentate. Affermazioni fallite → l'analisi
+  resta `done`. Modello non disponibile fra le due → analisi salvata, affermazioni `pending`.
+- **Pezzi dei testi lunghi: non li tocco.** Ogni pezzo è una chiamata sola e la chiamata finale
+  legge gli appunti, non il testo: non c'è nessuna seconda lettura da risparmiare. Spostare il
+  testo in testa cambierebbe le risposte di Groq per zero secondi.
+
+**Guadagno** (calcolo su velocità misurate; diventa misura con il passo 0): la seconda
+chiamata legge ~200 token invece di tutto. Articolo medio (800-1.000 token): **−45 s** su ~120.
+Articolo vicino a 8.000 caratteri (~2.300 token): **−115 s**. Reel (1.100-1.300 token):
+**−55 s**. Sulla coppia analisi + affermazioni è circa il 20-30%. **Zero** quando l'analisi l'ha
+fatta Groq e le affermazioni cadono sul locale, e zero per i pezzi.
+
+**Groq: come non si peggiora, e come si prova senza chiamarlo**
+1. L'analisi (sistema e messaggio) resta identica: lo prova un test «alla lettera» (esiste per
+   gli articoli, `test_a_blog_keeps_the_old_words_to_the_letter`; se ne aggiunge uno per i reel
+   e uno per la chiamata finale dei testi lunghi, con il testo di `main` congelato nel test).
+2. Cambia solo il prompt delle affermazioni corte. La garanzia più forte non dipende dal
+   modello: **un'affermazione senza citazione vera nel testo viene scartata dal codice**, come
+   oggi. Quindi il rischio non è «affermazioni inventate», è «meno affermazioni».
+3. Si prova sul 7b (passo 0), che è il modello più debole: se regge lui, è ragionevole che
+   regga Groq. **È una deduzione, non una prova.**
+4. Dopo il rilascio si guarda il primo giro fatto da Groq, senza spendere nulla in più:
+   affermazioni per contenuto (oggi 5,1 articoli, 5,2 reel) e righe «affermazioni scartate» nel
+   log. Se scendono, si torna indietro con un revert: nessun dato va rifatto.
+5. Un prompt solo per tutti e due i modelli (scelta già presa nel lavoro precedente, §2.2):
+   non la riapro.
+
+**File**
+- `BEC/llm/prompts.py` — testa dei reel staccata dalle regole; coda nuova delle affermazioni.
+- `BEC/pipeline/agents/knowledge_agent.py`, `enrich_agent.py` — funzione della testa; prompt
+  delle affermazioni; giro per contenuto.
+- `BEC/core/tests/` — vedi i test.
+
+**Riuso**: `_intro`, `_doc_enrich_user`, `_enrich_user`, `build_*_prompt`, `_parallel`,
+`_tracked`, gli stati separati. Nessuna migrazione.
+
+**Test** (risposte finte): sistema identico e stesso inizio (`startswith`) per blog, video,
+intervista, reel; analisi identica a `main` alla lettera; ordine delle chiamate
+analisi-affermazioni-analisi-affermazioni; i tre casi di errore qui sopra; reel senza parlato
+→ nessuna chiamata per le affermazioni (come oggi); un contenuto lungo dentro il giro non
+viene letto due volte.
+
+**Documentazione**: `03-llm-and-embeddings.md` («The local backstop» con i numeri del banco e
+della prova, «What the analysis reads»); `02-pipeline.md` (stadi `enrich` e `knowledge`,
+«Progress of a round»); `06-frontend.md` e pagina `Documentazione` per il nome della barra;
+pagina tecnica del drawio (ordine dentro lo stadio); `architecture-summary.md` (una riga);
+commenti in testa ai moduli.
+
+**Rischi**
+- Tutto il guadagno dipende dalla cache con i template veri: per questo il passo 0 viene prima.
+- La barra «Analisi» diventa «Analisi e affermazioni» e la barra «Affermazioni» resta quasi
+  sempre a zero: **il cliente lo vede** (domanda 2).
+- Un lavoro chiesto dal cliente che si infila fra le due chiamate fa perdere il vantaggio di
+  quella coppia; niente si rompe.
+- Invarianti: `owner_type` non è toccato (ogni prompt resta su un contenuto solo; la riga «un
+  CONCORRENTE di Medyca» c'era già nell'analisi); i falliti restano `failed`; nessuna
+  credenziale nuova.
+
+### 2.4 Punto 2 — affermazioni asciutte e tetti solo per il locale
+
+**Comportamento**
+- Nella coda nuova e nel prompt dei pezzi: «testo: una frase, massimo 20 parole»; «citazione:
+  il pezzo più corto che basta, massimo 25 parole, copiato parola per parola». 25 e non 20 per
+  la citazione: oggi il 45% delle citazioni degli articoli supera le 20 parole, e chiedere a un
+  7b di accorciare troppo lo spinge a riformulare (e allora il controllo la scarta).
+- `chat()` riceve un secondo tetto facoltativo, usato **solo** quando risponde Ollama. Groq
+  resta com'è (lì il ragionamento conta nel tetto: «i tetti sono correttezza, non costo»).
+- Una risposta tagliata al tetto locale resta `failed` (strada che esiste: `LLMTruncated`),
+  senza secondo tentativo.
+
+**Valori**
+
+| Chiamata | Tetto oggi | Tetto locale proposto | Da dove viene |
+|---|---|---|---|
+| Analisi (reel e articoli, anche finale dei lunghi) | 2000 | **800** | banco: massimo scritto 219 su 6 chiamate; 800 è 3,6 volte |
+| Affermazioni corte | 1200 reel, 2000 articoli | **1000, provvisorio** | calcolo: 6 × (20 + 25 parole) ≈ 570 token se il limite è rispettato. Il banco non l'ha misurato |
+| Pezzo (3 affermazioni + appunti) | 1200 | **700, provvisorio** | calcolo: ≈ 330 token |
+
+Regola per i due provvisori: dopo il passo 0, il doppio del massimo scritto dal 7b, mai sotto
+il calcolo qui sopra. **Se il passo 0 non si fa, i tetti delle affermazioni non si toccano.**
+
+**Guadagno**: asciutte, **−5/−16 s a chiamata** (calcolo: ~55 token in meno sugli articoli,
+~15 sui reel; piccolo, lo dico chiaro). I tetti non tolgono niente alla media: tolgono il caso
+peggiore, da ~10 minuti di scrittura a vuoto (2000 token) a ~4-5 (calcolo a 3,35 token/s).
+
+**File**: `BEC/llm/prompts.py`; `BEC/llm/client.py` (parametro, passato a `_ollama_chat`, e il
+tetto vero scritto in `llm_calls`); i due agenti (passano il valore).
+
+**Test**: il tetto locale arriva a Ollama e non a Groq; risposta tagliata al tetto locale →
+`failed`, `truncated`, nessun secondo tentativo; una citazione corta ed esatta passa, una
+riformulata è scartata (già oggi).
+
+**Documentazione**: `03-llm-and-embeddings.md` («Token ceilings»); commento in testa a
+`client.py`; pagina `Documentazione`: una riga («le citazioni sono più brevi»).
+
+**Rischi**: un tetto troppo basso crea `failed` che restano tali (storico: 143 per JSON
+tagliato); il 7b può ignorare i limiti di parole (allora niente guadagno, niente di rotto);
+le citazioni nuove sono più corte anche quando scrive Groq, e le vecchie non si rifanno:
+convivono due stili (domanda 1).
+
+### 2.5 Punto 3 — le doppie anche nei testi corti
+
+**Comportamento**: sul testo corto, dopo il controllo delle citazioni, le affermazioni passano
+dalla stessa funzione dei pezzi (`whole_text.merge_claims`, con un «pezzo» solo): via le doppie
+esatte (oggi nei corti non si tolgono nemmeno quelle), via le quasi uguali, poi il tetto di 6.
+Il tetto si applica **dopo** il filtro, non prima.
+
+**La regola** (una sola, per corti e pezzi): due affermazioni sono la stessa se la somiglianza
+è **almeno 0,95**, oppure **almeno 0,90 e le citazioni si sovrappongono** (uguali, una dentro
+l'altra, o più di metà delle parole in comune). Sui reel di produzione toglie ~19 coppie invece
+di 42 e lascia stare «donne 7 ore e mezza / uomini 6 e mezza». Se Giuseppe preferisce la
+soglia 0,90 secca, come chiesto, è una riga in meno: ma butta anche affermazioni diverse
+(§2.1, domanda 3).
+
+**Guadagno**: nessuno in secondi; costa meno di 1 s a contenuto (più ~10 s una volta per
+caricare il modello dei vettori nello stadio `enrich`). È qualità.
+
+**File**: `BEC/pipeline/whole_text.py`; i due agenti (`write_doc_arguments`,
+`_extract_arguments`). **Riuso**: `merge_claims`, `_embed_texts` dei due agenti.
+
+**Test**: due affermazioni con la stessa citazione → una; simili con citazioni diverse sotto
+0,95 → restano tutte e due; il modello dei vettori non si carica → restano le affermazioni,
+tolte solo le esatte (già così nei pezzi); 8 valide con una doppia → 6 tenute.
+
+**Documentazione**: `02-pipeline.md` («Reading the whole text»), commento in `whole_text.py`
+(la soglia non è più «non tarata»: scrivere i numeri del §2.1), `04-mcp-connector.md` se cita
+le doppie.
+
+**Rischi**: campione letto a mano piccolo (9 coppie); gli articoli non sono misurati per
+somiglianza (non hanno vettori salvati); **non chiude il caso 2214**.
+
+### 2.6 Punto 4 — 7 thread: fuori da questa PR
+
+- Non è una modifica al codice: è `OLLAMA_NUM_THREAD=7` in `.env`, più un commento.
+- La prova è un campione solo, e la scrittura balla del 25% da sola.
+- Con il punto 1 la lettura pesa meno: il guadagno diventa ~9 s sulla prima chiamata di ogni
+  contenuto (calcolo dal campione: 65 → 57 s), circa il 4% della coppia.
+- La macchina è condivisa: oggi alle 18:08 il carico era 15-16, alle 15:09 un altro progetto
+  usava 4-5 core. A 8 thread la scrittura è già caduta a 2,3 token/s: il margine è stretto.
+
+**Prova da fare prima** (a parte, ~25 minuti): 6 e 7 thread alternati, 5 coppie, prompt
+sempre nuovo (riga «Rif. n» in testa), una volta a macchina quieta e una mentre gira un altro
+lavoro pesante. Si adotta 7 solo se la lettura mediana sale di almeno il 10% **e** la scrittura
+mediana non scende più del 5%, in tutte e due le condizioni. Poi è un passo di rilascio con
+la sua riga in `03-llm-and-embeddings.md`.
+
+### 2.7 Cosa resta fuori (dichiarato)
+
+- I pezzi dei testi lunghi: stesso ordine di oggi (cambiano solo i limiti di parole e il tetto locale).
+- Le affermazioni sugli articoli fuori tema (domanda 4): PR a parte.
+- Le doppie già salvate (decine, non migliaia): non si ripuliscono.
+- `import_reanalysis`: non riceve il filtro delle doppie (lavoro una tantum, già fatto).
+- I 7 thread; cambiare modello o motore; i lavori di scrittura chiesti dal cliente.
+- `queue_eta.py`: da rileggere, non da cambiare (stima dai tempi degli stadi passati; i primi
+  giri dopo il rilascio sembreranno più lenti del vero).
+
+### 2.8 Domande aperte per Giuseppe (solo quelle di questa PR)
+
+1. **Citazioni più corte (massimo 25 parole) e testo dell'affermazione massimo 20, anche
+   quando scrive Groq?** *Raccomando sì.* Il guadagno è piccolo (5-16 s), ma rende sicuro il
+   tetto locale. Le vecchie restano come sono.
+2. **Barra «Analisi e affermazioni» al posto di due?** *Raccomando sì*: è il prezzo del
+   leggere il testo una volta sola.
+3. **Doppie: soglia 0,90 secca, o la regola più stretta (0,95, oppure 0,90 con la stessa
+   citazione)?** *Raccomando la più stretta*: la secca butta affermazioni diverse. E serve
+   sapere dal capo quali due frasi del 2214 erano «quasi uguali»: nessuna delle due regole le
+   trova.
+4. **Niente affermazioni sugli articoli fuori tema** (erano il 52% degli articoli, misura del
+   mattino; ~120-200 s risparmiati ognuno). *Raccomando sì, ma in una PR subito dopo*: cambia
+   ciò che il cliente legge nel connettore e tocca lo stato in 33 punti di 12 file. Questa PR
+   la prepara (analisi e affermazioni già in fila).
+5. **Dieci chiamate vere a Groq per confrontare le affermazioni prima e dopo?** *Non serve
+   prima del merge*: basta guardare il primo giro (§2.3). Se Giuseppe le vuole, sono il modo
+   più diretto.
+6. **Il passo 0 (40 minuti di 7b) si fa prima di scrivere il codice?** *Raccomando sì*: senza,
+   il punto 1 è una scommessa e i tetti delle affermazioni non hanno numeri.
+
+## Registro
+
+- 16/11 — capo: aperto il lavoro, lanciato l'architetto.
+- 16/11 — architetto: scritta la sezione 2. Fermo in attesa dell'OK di Giuseppe. Passo 0 (prova sul 7b) non fatto: la macchina era occupata dal giro `knowledge`.
