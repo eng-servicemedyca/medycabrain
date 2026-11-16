@@ -429,6 +429,62 @@ OK
   lettera, quello di sistema ha una frase in più. Se si vuole il blog identico anche lì, va diviso.
 - Nessuna prova della UI: cambiata solo una stringa di `it.json` (JSON valido, nessuna build fatta).
 
+## 4. Revisione          (revisore, 16/11/2026)
+
+**Verdetto: PASSA**, con un rilievo da correggere prima del rilascio (parole, non logica).
+
+Letto: il diff intero (`origin/main...HEAD`, un solo commit, nessun commit su `main`), la lavagna con le
+«Decisioni di Giuseppe». Provato `_parti` a mano (estratta da `server.py`, python isolato) su: testo
+vuoto, 30.000 esatti, 30.001, solo a capo (70.000), nessuno spazio, `"x. "*30000`. In tutti i casi
+`"".join(parti) == testo`, nessun pezzo supera 30.000, nessun pezzo vuoto (tranne il testo vuoto, che
+dà un solo pezzo vuoto, giusto), nessun ciclo.
+
+**Invarianti: tutti rispettati.** `owner_type` non toccato (nessun terzo valore). `di` e citazione
+restano calcolati come prima e compaiono anche dalla parte 2 (`tipo`, `titolo`, `di`, `apri_nel_brain`,
+`url`). Strumenti ancora di sola lettura (solo `.filter/.first`). Nessun segreto nel diff. Nessun
+fallito azzerato. `reprocess --ids` non scritto, come deciso. Le tre vie `leggi_*` passano per le
+stesse `_parse_parte`/`_pezzo`.
+
+**Rilievi, per gravità**
+
+1. **Medio - `troncato` è vero anche sull'ultima parte, ma le `instructions` e le descrizioni dicono
+   «se `troncato` è vero il testo continua: richiama con `parte` = `parte_successiva`»**
+   (`server.py`, `instructions` e `_PARTE_DESC`). Con un testo di 3 parti, alla parte 3:
+   `troncato: true`, `parte_successiva: null`. La frase promette un seguito che non c'è. Il
+   modello ha anche `come_leggere_il_resto` che dice «finisce qui», quindi il danno è piccolo (al
+   peggio `parte="None"` -> errore leggibile), ma è una promessa falsa. Il comportamento di `troncato`
+   è quello del disegno approvato e documentato in `04`; va corretta la frase: «se `parte_successiva`
+   non è vuoto il testo continua: richiama con `parte` = `parte_successiva`». Così `instructions`,
+   descrizioni e documento dicono la stessa cosa del codice.
+2. **Basso - `nota_analisi` dice «primi 6.000 caratteri» per riassunto E affermazioni**, ma le
+   affermazioni leggono 8.000 (`DOC_CLAIMS_CHARS_READ`). È il lato prudente (dice il numero più
+   stretto) e lo sviluppatore lo ha dichiarato; basta saperlo. I numeri vengono dalle stesse costanti
+   della pipeline (`DOC_SUMMARY_CHARS_READ`, `TRANSCRIPT_CHARS_READ`): non possono divergere.
+3. **Basso - taglio sullo spazio**: `_parti` cerca l'ultimo spazio in tutta la finestra da 30.000, non
+   solo nel tratto finale. Un testo con uno spazio all'inizio e poi 40.000 caratteri senza spazi dà un
+   primo pezzo di 1-6 caratteri. Non è un ciclo né un pezzo vuoto, il testo si riattacca esatto; capita
+   solo con testi che non esistono in banca dati. Non blocca.
+
+**`KB_SYSTEM` anche per i blog: rischio basso, accettabile.** La frase in più
+(«articoli di blog e trascrizioni di video e interviste») non dice nulla di diverso per un blog; il
+prompt utente dei blog è identico a lettera (lo fissa un test). Cambia solo per i documenti analizzati
+da ora in poi (i 2.281 già fatti non si rifanno), quindi i riassunti futuri dei blog potrebbero
+variare di una virgola, non di struttura. Era nel disegno approvato e nel documento `03`. Nota: il test
+fissa il prompt utente, non quello di sistema; se un giorno si vuole il blog identico anche lì, si
+divide `KB_SYSTEM`.
+
+**Documentazione: completa.** `02`, `03`, `04`, `BEC/docs/mcp-connettore-claude.md`,
+`architecture-summary.md` (corretto anche «quattro» -> «dieci»), pagina `Documentazione`
+(`it.json`: una riga nei risultati, un limite noto), commento in cima a `server.py` e
+`knowledge_agent.py`. Drawio non toccato: corretto, nessuno stadio cambia. Il limite noto «i riassunti
+di testi lunghi leggono l'inizio» è scritto in tre posti.
+
+**Non verificato da me**: i test non li ho rilanciati (lo sviluppatore riporta 372 OK); il parametro
+`parte` su claude.ai dal vero spetta al collaudo.
+
+`stato:` resta `revisione` finché il collaudo non scrive il suo esito; se passa e il rilievo 1 è
+corretto, `pronto`.
+
 ## Registro
 
 - 16/11 capo: tocca uno strumento MCP (struttura) → architetto.
