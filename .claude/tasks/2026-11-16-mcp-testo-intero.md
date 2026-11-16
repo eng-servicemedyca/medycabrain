@@ -485,6 +485,86 @@ di testi lunghi leggono l'inizio» è scritto in tre posti.
 `stato:` resta `revisione` finché il collaudo non scrive il suo esito; se passa e il rilievo 1 è
 corretto, `pronto`.
 
+## 5. Collaudo          (collaudatore, 16/11/2026)
+
+**Verdetto: PASSA.** (Il rilievo 1 della revisione resta da correggere: l'ho visto anche dal vivo, vedi sotto.)
+Commit provato: `9003d3a`, ramo `feat/mcp-testo-intero`. Non toccato nulla in produzione: nessun
+`migrate`, build, riavvio, scrittura. Nessuna chiamata a Groq (chiavi svuotate, `OLLAMA_URL` su porta morta).
+
+### 1. Suite intera su un Postgres usa-e-getta
+Postgres 16 in una cartella del scratchpad, porta 55612, chiavi `LLM_GROQ_API_KEY`, `FAST_LLM_API_KEY`,
+`LLM_API_KEY`, `HF_API_TOKEN`, `LLM_ENDPOINTS`, `YTDLP_PROXY` vuote. Python del venv di produzione, solo lettura.
+```
+$ manage.py test core --noinput
+Ran 372 tests in 51.220s
+
+OK
+Destroying test database for alias 'default'...
+```
+Le righe `WARNING/ERROR core.link_ingest ... yt-dlp` nel log sono attese (test di errore).
+
+### 2. Il codice del ramo contro i dati veri, in sola lettura
+Codice di `BEC/mcp_bridge/server.py` del worktree, funzioni `leggi(...)` chiamate in-process sul DB di
+produzione. La sessione era forzata a sola lettura dal server (`PGOPTIONS=-c default_transaction_read_only=on`):
+```
+transaction_read_only = on
+```
+Le parti 2.. chieste come testo (`"2"`), per provare anche questo.
+
+| id | tipo | di | caratteri_totali (= DB) | parti | riattaccato == salvato | fine del testo |
+|---|---|---|---|---|---|---|
+| blog:2212 | video di riferimento | riferimento: TVRS SRL | 16.865 | 1 | sì | «...Per info e prenotazioni 0733 20 28 80.» |
+| blog:2214 | video di riferimento | riferimento: TVRS SRL | 14.979 | 1 | sì | «...Pesaro e San Benedetto del Tronto.» |
+| blog:896 | video di riferimento | riferimento: TVRS SRL | 20.336 | 1 | sì | «...diafrate 10 Osimo.» |
+| blog:890 | video di riferimento | riferimento: YouTVRS | 16.919 | 1 | sì | «...via fratte 10 Osimo.» |
+| blog:296 | articolo | competitor: Farmagalenica | 42.123 | 2 (29.959 + 12.164) | sì | «...e vedere che gli dicono.» |
+| reel:960 | reel | competitor: @menopauseboost | 85.699 | 3 (29.719 + 29.999 + 25.981) | sì | «...ciao, è uno prossimo a settimana ciao» |
+
+- 2212 non finisce più con «Questo è il mod»: arriva in fondo alla trascrizione. Stesso per 2214 («corre ai»).
+- Tutte le fini sono fine frase o fine testo. Dove c'è un taglio (296 e 960) la parte 1 finisce a fine riga/frase
+  (296: «...per preparare cannabis:\n»; 960: «...ci tengo perché? »), mai a metà parola.
+- `nota_analisi` presente nella parte 1 di tutti e 6 («primi 6.000 caratteri su N» per i blog, «primi 3.000 su 85.699» per reel:960); assente dalla parte 2 in poi (verificato su 296 e 960).
+- Parte 2 leggera, solo: `apri_nel_brain, caratteri_totali, come_leggere_il_resto, di, parte, parte_successiva, parti_totali, testo, tipo, titolo, troncato, url` (per 960 `trascrizione` al posto di `testo`).
+- `come_leggere_il_resto` parte 1 di 296: «Testo lungo: questa è la parte 1 di 2. Per il seguito chiama leggi_articolo con parte=2.»
+- Errori: `leggi_articolo("blog:296", 3)` -> `{'errore': 'questo contenuto ha 2 parti: chiedi una parte da 1 a 2'}`;
+  `parte="0"` -> «`parte` parte da 1...»; `parte="x"` -> «`parte` deve essere un numero intero (1, 2, 3…)».
+- Risposta JSON più grande: parte 1 di blog:296, **33.620 caratteri / 34.207 byte** (~11-12.000 token con la
+  stima del disegno). Le altre: 32.755 byte (reel:960 p.1), 30.807, 26.758, 24.448 (896), 20.341, 20.108, 17.888.
+- Rilievo 1 della revisione **confermato dal vivo**: blog:296 parte 2 (ultima) ha `troncato: true` e
+  `parte_successiva: None`, mentre le `instructions` dicono «se `troncato` è vero il testo continua».
+  `come_leggere_il_resto` dice giusto («Questa è l'ultima parte (2 di 2): il testo finisce qui.»). È parole,
+  non logica; da correggere prima del rilascio come già scritto dal revisore.
+
+Nota sui dati: per 2212 e 2214 il `tipo` è «video di riferimento» e `di` «riferimento: TVRS SRL»: non più
+«articolo», e non «Medyca», come da disegno (sono `owned` + materiale di riferimento).
+
+### 3. Una copia del server MCP del ramo, con una chiamata MCP vera
+`uvicorn mcp_bridge.server:app` dal worktree su 127.0.0.1:18733 (non 8025), segreto di prova, DB in sola
+lettura come sopra, client HTTP semplice (JSON-RPC, `initialize`, `tools/list`, `tools/call`):
+- `instructions`: contengono `parte` e `troncato`, non contengono più «integrale».
+- `tools/list`: `leggi_reel`, `leggi_articolo`, `leggi` hanno la proprietà `parte` (`anyOf integer | string`,
+  non obbligatoria; obbligatorio solo `id`) e le descrizioni nuove («per intero fino a 30.000 caratteri,
+  poi a pezzi», «Guarda `tipo`: articolo, video o intervista», «Se `troncato` è vero il testo continua...»).
+- `tools/call leggi_articolo {id: "blog:296", parte: "2"}`: `isError: False`, `parte: 2`, `parti_totali: 2`,
+  `testo` di 12.164 caratteri, `tipo/titolo/di/apri_nel_brain/url` presenti, 13.693 byte di risposta.
+
+### 4. Pulizia
+Server uvicorn fermato (porta 18733 libera), Postgres usa-e-getta fermato e cancellato (cartella dati e
+socket), script temporanei cancellati. `git status` del worktree pulito prima di questa sezione.
+
+### Non provato
+- **claude.ai dal vero**: non si può provare prima del rilascio. Resta da fare dopo il riavvio di
+  `medycabrain-mcp`: scollegare e ricollegare il connettore se serve, poi chiedere a Claude di leggere
+  blog:2212, 2214, 896, 890, 296 (due parti) e reel:960 (tre parti) fino in fondo, e controllare che
+  mandi `parte` come testo o numero senza errori. Indirizzo: il connettore di produzione (l'URL di invito), gesto: la conversazione in claude.ai.
+- Le 13.000-34.000 byte per risposta sono accettate dal mio client: non so se claude.ai le accetta (nessun
+  limite ufficiale noto, vedi disegno).
+- La UI: non toccata da me (cambiata solo una stringa di `it.json`); `npm run build` non lanciato, perché
+  vietato toccare la produzione e il worktree non ha `node_modules`. Non provato.
+- Il prompt per i video (`knowledge_agent`) è provato solo dai test (nessuna chiamata a Groq, per vincolo).
+- Rete di test sottile: il verde dice che il connettore regge su questi 6 contenuti reali, non che ogni
+  contenuto lo sia (non ho scorso tutti i 2.302 articoli e 1.498 reel).
+
 ## Registro
 
 - 16/11 capo: tocca uno strumento MCP (struttura) → architetto.
