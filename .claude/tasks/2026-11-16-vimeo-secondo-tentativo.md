@@ -121,3 +121,46 @@ Rilievi (non bloccanti):
 2. Se `YTDLP_PROXY` non contiene `{session}`, `_fresh` restituisce lo stesso indirizzo e il «tentativo nuovo» riusa lo stesso IP. Il `.env.example` e `02-pipeline.md` (riga 227) già spiegano `{session}`, ma il nuovo paragrafo non dice che senza segnaposto i tentativi in più non servono. Una riga basterebbe.
 3. Il test del log mocka `_proxy` con lo stesso indirizzo per tutti i tentativi: non prova che il `_scrub` usi il proxy del tentativo giusto quando cambia. Il codice è corretto (usa il parametro), ma il test è più debole di quanto dica il nome.
 4. Telefono non visto da occhio umano (lo dice anche lo sviluppatore): resta al collaudatore. Sulla scheda, «Risultato» occupa mezza riga da solo: ok, non è un difetto.
+
+## 5. Collaudo          (collaudatore)
+
+**Verdetto: PASSA** (16/11/2026, commit `d27cb53` + la revisione `0211dc9`). Con due limiti detti sotto: il secondo tentativo non l'ho visto scattare dal vero, e la UI l'ho vista con dati finti.
+
+### 1. Suite intera
+Postgres 16 usa-e-getta (porta 55481, spento e cancellato), chiavi Groq svuotate, `OLLAMA_URL` su porta morta, `YTDLP_PROXY` vuoto, python del venv di produzione in sola lettura.
+```
+$ manage.py test core --noinput
+Ran 345 tests in 35.214s
+OK
+Destroying test database for alias 'default'...
+```
+
+### 2. Download vero da Vimeo col proxy
+Il proxy era configurato per il mio processo (`_proxy()` ha risposto, valore mai stampato). Video scelto: intervista 23 (`vimeo.com/1238423247`, 553,7 s, la più corta dei sei Vimeo in produzione, letta dal DB in sola lettura). Cartella mia nello scratchpad.
+```
+OK 29 s; chiamate a _proxy(): 1 dimensione byte: 2616838
+ffprobe durata: 553.716 s
+```
+- Tentativi: **1**. Il rifiuto passeggero questa volta non c'è stato, quindi il **secondo tentativo non è stato esercitato dal vero**: è provato solo dai 7 test con `subprocess.run` finto.
+- Per far trovare `yt-dlp` al worktree ho messo un link simbolico temporaneo `BEC/venv-ytdlp` verso quello di produzione (non è nel repo); tolto dopo. File mp3 cancellato.
+- Un solo video scaricato (circa 2,6 MB di audio sul proxy).
+
+### 3. UI (Gestione fonti, Interviste)
+`npm ci && npm run build` nel worktree: ok (0 errori tsc). `dist` servito da un server statico mio (porta 49211). **Produzione senza righe in errore** (20 interviste, tutte `done`) e senza una sessione di accesso che non richiedesse di scrivere nel DB, quindi non ho toccato il backend live: nessuna chiamata a `:8010`. Le chiamate `/api/v1/*` erano intercettate nel browser (Chromium headless) con dati finti: una riga pronta, una riga Vimeo in errore, una riga file in errore (solo GET, il resto bloccato). Il componente è quello vero compilato.
+```
+375 px:  Riprova x2  {"x":205,"width":65,"height":44}  dentro schermo: true   scrollWidth 375 (nessuno scroll orizzontale)
+1280 px: Riprova x2  {"x":1102,"width":65,"height":40} dentro schermo: true   scrollWidth 1280
+```
+Telefono: ogni riga è una scheda (nome, Stato con il testo dell'errore a tutta larghezza, Risultato, poi «Riprova» e «Rimuovi» in fondo). Desktop: tabella a colonne come prima, bottone alto 40 px.
+Screenshot: `/tmp/claude-1001/-home-medyca-admin-projects-medycabrain/7ebcc0ed-5ca3-4cf8-9600-f40c5d3f8664/scratchpad/shot-375.png` e `.../shot-1280.png`.
+Non premuto «Riprova» da nessuna parte.
+
+### Non provato
+- Un rifiuto vero di Vimeo seguito dal tentativo nuovo (non si può comandare; serve aspettare che capiti, o guardare il log del prossimo import).
+- UI con dati reali in errore e con login vero; a occhio umano sul telefono vero. Giuseppe può guardare `http://<server>:9093` → Fonti → Interviste dal telefono appena c'è una riga in errore (o dopo il rilascio).
+- Il bottone è alto 44 px ma l'etichetta resta piccola (testo del bottone invariato): è la zona di tocco a essere grande, non il testo.
+- I rilievi del revisore (90 min teorici, `{session}` mancante nel proxy, test del log) restano non bloccanti; non li ho provati.
+- Rete di test sottile: il verde dimostra che i 7 test nuovi e il resto non si rompono, non che il proxy passi sempre al secondo tentativo.
+
+### Pulizia
+Spento il Postgres, il server statico; cancellati `pgdata`, `node_modules`, `dist`, il link `venv-ytdlp`, il file audio e gli script. Il `.env` e la produzione non sono stati modificati.
