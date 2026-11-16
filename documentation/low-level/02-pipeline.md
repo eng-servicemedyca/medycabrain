@@ -329,6 +329,17 @@ Pages behind a login or paywall, or with under 120 characters of text, fail with
   the database constraint on `UploadedMedia.source_url`: the losing request gets an
   `IntegrityError`, reported as "già presente".
 
+### A rule on addresses does not fix rows saved before it (2026-11-16)
+
+Three `tvrs.it/...?v=<id>` links were pasted on 12/11 at 11:13, six hours **before** the rule that
+reads them as Vimeo (PR #14, 17:25). They were read as web pages and saved as `source_type="other"`
+(324 characters of the programme page, a summary about the wrong episode). The next day the same
+links became the real episodes. Today `extract_links` brings `tvrs.it/...?v=<id>` to
+`vimeo.com/<id>` and `from_links` answers «già presente» (test in `test_uploads.py`). The three old
+rows were removed by hand with the same action as «Rimuovi». **When an address rule is added, rows
+saved earlier are not corrected by it: look for them at release time** (same video under two
+addresses; at that date: none left).
+
 ### Known limit: a TV recording opens with its sponsors
 
 Measured on the first episode ingested (doc 842, 1 135 s, 14 733 characters): the transcript

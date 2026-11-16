@@ -260,6 +260,28 @@ document keeps being found by the wrong questions. `embed_status` says `done`, s
 revisits it on its own — set it back to `pending` for the rows you re-analysed. This bit the 323
 articles recovered on 2026-09-13: their summaries had been empty when they were first embedded.
 
+## What the document analysis reads, and what it calls the text (2026-11-16)
+
+`knowledge_agent.build_doc_enrich_prompt` reads **the first 6 000 characters** of a text for the
+summary and the topic, and **the first 8 000** for the claims (`DOC_SUMMARY_CHARS_READ`,
+`DOC_CLAIMS_CHARS_READ`); the reel analysis reads **3 000** (`enrich_agent.TRANSCRIPT_CHARS_READ`).
+Measured the same day: 854 of 2 302 articles and 17 of 18 episodes/interviews are longer than
+6 000, so the summary of a 17 000-character episode is made on its first third. Known limit, not
+changed here: reading everything means summarising in pieces and stitching (Groq allows 8 000
+tokens a minute, so a long text does not fit one call). The connector tells the client's Claude
+(`nota_analisi`, see `04-mcp-connector.md`). Also read only at the start: the article draft from an
+interview (12 000), the article/reel comparison (4 000), the document vector (4 000, softened by
+the passage vectors that cover the whole text).
+
+The words of the prompt follow `source_type` (`_intro`): a blog or a web page is «un articolo del
+blog di …», **to the letter as before** (2 281 analyses did not move; a test pins it); a video is
+«la trascrizione di questo video (una puntata o un intervento) di <canale>», an upload «questa
+intervista caricata da Medyca», both with «chiamala puntata, video o intervista: mai articolo», and
+for reference material «chi parla sono gli ospiti, non Medyca». Cause: the prompt said «articolo del
+blog di Medyca» for everything, and a TV episode kept as Medyca's came back as «L'articolo di
+Medyca…». `KB_SYSTEM` now also says «trascrizioni di video e interviste» (it changes for blogs too,
+by design). Summaries already written are **not** redone: 12 of them still say «articolo».
+
 ## Speech-to-text
 
 - **Remote (preferred when `USE_REMOTE_STT`):** `whisper-large-v3` via `transcribe_audio()`,

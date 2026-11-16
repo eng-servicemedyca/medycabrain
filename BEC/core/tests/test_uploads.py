@@ -230,6 +230,24 @@ class FromLinks(APITestCase):
         resp = self._post(YT)
         self.assertEqual(len(resp.data["creati"]), 1)
 
+    def test_a_tvrs_link_for_an_episode_already_in_as_vimeo_is_already_there(self):
+        """The 2198-2200 case: the same episode under its tvrs.it spelling.
+
+        Those three rows were saved six hours before the rule that reads
+        tvrs.it/...?v=<id> as Vimeo. With the rule in, pasting the tvrs.it
+        address again must find the Vimeo document and create nothing.
+        """
+        KnowledgeDocument.objects.create(
+            source_url="https://vimeo.com/1238425507", source_type="video",
+            title="Canale Salute", published_at=timezone.now())
+        resp = self._post(
+            "https://tvrs.it/programmi/canale-salute/?v=1238425507")
+        self.assertEqual(resp.data["gia_presenti"],
+                         ["https://vimeo.com/1238425507"])
+        self.assertEqual(resp.data["creati"], [])
+        self.assertEqual(UploadedMedia.objects.count(), 0)
+        self.spawn.assert_not_called()
+
     def test_a_live_document_under_the_address_blocks_a_duplicate(self):
         KnowledgeDocument.objects.create(
             source_url=ARTICLE, source_type="blog", title="t",

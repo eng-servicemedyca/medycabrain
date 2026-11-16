@@ -151,21 +151,22 @@ when he follows the link (decision, 2026-09-16). Known limit: many reels have a 
 `primary_topic` ("vampate di calore"), so two different reels can share a title — the link still
 disambiguates them, the title alone does not.
 
-### `leggi_reel(id)` / `leggi_articolo(id)` / `leggi(id)` — full text of one item
+### `leggi_reel(id, parte=1)` / `leggi_articolo(id, parte=1)` / `leggi(id, parte=1)` — full text of one item
 `_parse_id(id, atteso)` accepts `"reel:123"` or, for a typed tool that already knows the kind, a
 bare `"123"` — Claude routinely passes the bare number, and refusing it is pedantry, not safety.
 A typed tool given the other kind's id returns a readable redirect
 (`"questo id non è un reel: usa leggi_articolo"`) rather than an empty result.
 
 - **`leggi_reel`** — `Reel.objects.filter(id=pk, is_active=True).select_related("account","enrichment","transcript")`
-  → transcript (truncated to 12 000 chars), caption, `primary_topic`, `summary_it`, `topics`,
+  → transcript (field `trascrizione`), caption, `primary_topic`, `summary_it`, `topics`,
   **plus the video-only fields**: `gancio` (`hook_text`), `analisi_gancio`, `formato`
   (`content_format`), `pubblico` (`target_audience_it`), views/likes, and claims via
   `r.arguments.all()[:10]` (each `text_it` + verbatim `quote`).
 - **`leggi_articolo`** — `KnowledgeDocument.objects.filter(id=pk, is_active=True).select_related("source")`
-  → `content_text` (falls back to `content_md`, truncated to 12 000), plus `ispirazione`,
-  `trascrizione_disponibile` and a `nota` when there is no transcript; `tipo` reads
-  "video di riferimento" for `source_type="video"`. Then `fonte`, `autore`,
+  → `content_text` (falls back to `content_md`; field `testo`), plus `ispirazione`,
+  `trascrizione_disponibile` and a `nota` when there is no transcript. `tipo` (`_tipo_articolo`):
+  `manual` → "intervista"; `video` → "video di riferimento" if `is_inspiration`, else "video";
+  everything else "articolo". Then `fonte`, `autore`,
   `lingua`, `pubblicato`, `primary_topic`, `summary_it`, `topics`, `in_tema` +
   `fuori_tema_perche`, and `d.arguments.all()[:10]`. Plain text on purpose, so a quote can be
   verified verbatim against exactly what Claude was given.
@@ -173,6 +174,50 @@ A typed tool given the other kind's id returns a readable redirect
 
 All three also return `titolo` and `apri_nel_brain` (see the section above): the answer is written
 while *reading* a content, so the link has to be there too, not only on the search hit it came from.
+
+**Long texts come in parts (2026-11-16).** The text used to be cut with a hard `[:12000]`: the
+client read «Questo è il mod» as the end of an episode and nobody said it was cut. Measured on the
+DB that day: **239 of 2 302 articles and 176 of 1 498 reels** were over 12 000 characters.
+Now `TESTO_MAX_CARATTERI = 30_000` per answer. At 30 000, all 17 transcribed episodes fit in one
+piece; 13 articles (longest 42 123, `blog:296`) and 146 reels (longest 85 699, `reel:960`) come in
+parts. No limit at all was rejected: the longest reel would be ~25 000 tokens in one answer, where
+the known Claude clients start refusing or cutting on their own — a silent cut again, out of our
+hands. There is **no published limit for claude.ai**: 30 000 characters ≈ 8–10 000 tokens is an
+estimate (3–4 characters per token), not a measurement.
+
+- `_parti(testo, limite)` is pure. Pieces of at most `limite`, **no overlap, nothing stripped**:
+  `"".join(parts) == text`. The cut is after the last sentence end (`". "`, `"? "`, `"! "`,
+  newline) in the last 2 000 characters of the piece; else after the last space; only a text with
+  neither is cut hard. (`core.knowledge._chunks` is not reusable: fixed 700-character pieces with
+  overlap, cut mid-word.)
+- `parte` (default 1) is accepted as text too (`"2"`), like the ids. Zero, negative, not a number
+  or out of range → `{"errore": "questo contenuto ha 3 parti: chiedi una parte da 1 a 3"}`; never
+  an empty answer, which would read as «the text ends here».
+- Fields, same for reels and articles: `caratteri_totali`, `parte`, `parti_totali`, `troncato`
+  (true whenever the piece is not the whole text — the last part included), `parte_successiva`
+  (number, `null` on the last), `come_leggere_il_resto` (a ready sentence naming the tool and the
+  next `parte`).
+- **From part 2 on the answer is light**: `tipo`, `titolo`, `di`, `apri_nel_brain`, `url`, the
+  piece and its fields. Summary and claims are in part 1 only. The claims' quotes come from the first
+  8 000 characters, so they are always in part 1 and the `eval_mcp` check «the quote is in the
+  text» still holds. A quote straddling two parts is possible only for text that was never
+  analysed.
+- **`nota_analisi`** (part 1, only when the text is longer than what the model read): «Riassunto e
+  affermazioni sono stati fatti sull'inizio del testo (primi 6.000 caratteri su 16.865): per il
+  resto vale il testo.» The numbers are named constants read from the agents
+  (`knowledge_agent.DOC_SUMMARY_CHARS_READ = 6000`, `enrich_agent.TRANSCRIPT_CHARS_READ = 3000` for
+  reels), so the note cannot drift from what the pipeline really reads.
+- The server `instructions` and the three tool descriptions say it in plain words: if `troncato`
+  is true, call again with `parte` = `parte_successiva`; do not say a content ends there; do not
+  quote what you have not read.
+
+**Known limits.** (1) **The summary, the topic and the claims of a long text cover only its
+beginning**: 6 000 characters for the summary (854 articles; 17 of 18 episodes/interviews), 8 000
+for the claims (551), 3 000 for a reel's analysis (265 reels). `nota_analisi` says so; the fix
+(summarise in pieces and stitch, with Groq's 8 000 tokens/minute in mind) is a separate job.
+(2) **The new `parte` parameter and claude.ai**: claude.ai keeps the tool list in memory; after the
+release restart `medycabrain-mcp` and, if it still reads the old list, disconnect and reconnect the
+connector. (3) A long answer weighs more in the client's conversation (up to ~10 000 tokens).
 
 ### `cerca_riferimenti(query, scope="all", limite=8)` — the client's own reference shelf
 Searches **only** the material flagged `is_inspiration` — TV episodes, talks, external videos the
@@ -246,7 +291,10 @@ reel-majority corpus `cerca_articoli` still returns the seeded articles); that e
 `leggi_*` is **citable** — `apri_nel_brain` equals `{BRAIN_BASE_URL}/content/{kind}/{id}` for its
 *own* id (a link built from the wrong id would send the client to somebody else's content), the
 base URL comes from the module variable and not from a literal, and the server `instructions`
-still carry the citation rule; and that all ten tools are registered on the `MCPServer` (a barrier
+still carry the citation rule; that a long text read part by part glues back to the exact text,
+that a `parte` out of range is an error and `"2"` works (`TestoPerParti`, `LeggiTestoLungo` — the long
+text is created inside its own test and has no vector, so search never sees it and the «every seeded
+text under 700» rule above still holds); that `tipo` says "intervista" / "video"; and that all ten tools are registered on the `MCPServer` (a barrier
 against a lost or renamed tool). Note that because
 the test lives in `core/tests/`, the existing `manage.py test core` step already runs it; the
 dedicated step only makes the gate **readable** in the checks list.

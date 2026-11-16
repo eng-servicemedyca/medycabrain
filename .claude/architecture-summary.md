@@ -67,9 +67,12 @@ Groq refuses the search answers at once with the plain order. See `documentation
 ## MCP connector
 
 Standalone ASGI server `BEC/mcp_bridge/server.py` (systemd `medycabrain-mcp`, uvicorn `:8025`).
-`django.setup()` in-process → queries Postgres via ORM. Four read-only tools:
-- `panoramica()` — ORM counts. `temi(scope)` — cluster tables. `leggi("reel:ID"|"blog:ID")` —
-  direct ORM lookup. `cerca(query, scope, tipo)` — `core.knowledge.semantic_search(rerank=True)`.
+`django.setup()` in-process → queries Postgres via ORM. Ten read-only tools:
+- `panoramica()` — ORM counts. `temi(scope)` — cluster tables. `leggi_reel` / `leggi_articolo` /
+  `leggi("reel:ID"|"blog:ID", parte=1)` — direct ORM lookup; text up to 30 000 characters per answer,
+  longer texts in parts (`parte`, `troncato`). `cerca_reel` / `cerca_articoli` / `cerca_tutto` /
+  `cerca_riferimenti` — `core.knowledge.semantic_search(rerank=True)`. `fonti_blog` — the blogs.
+- Limit: summaries and claims of a long text cover only its beginning (6 000 / 8 000 / 3 000 chars).
 - Auth = secret path segment (`MCP_SECRET`); URL is the credential. See
   `documentation/low-level/04-mcp-connector.md`.
 
