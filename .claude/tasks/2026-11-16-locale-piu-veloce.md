@@ -1,7 +1,7 @@
 ---
 id: 2026-11-16-locale-piu-veloce
 titolo: Modello locale 7b più veloce sulla CPU
-stato: revisione
+stato: sviluppo
 ramo: feat/locale-piu-veloce
 pr: ""
 ticket: ""
@@ -893,3 +893,113 @@ Vale come OK al disegno, con queste modifiche (capo):
 - 16/11 — Giuseppe: «Puoi anche metterlo a DB mi fido». Vale come conferma anticipata
   per il caricamento con `import_reanalysis` (prima `--dry-run`, poi la scrittura), da
   fare dopo il merge e il rilascio della migrazione. Prima del merge niente scritture.
+
+## 4. Revisione          (revisore)
+
+Ramo `feat/locale-piu-veloce`, riletto contro `main` il 16/11/2026 (22 file, 7 commit, solo sul ramo).
+
+**Verdetto: NON PASSA.** Il cuore regge (vedi «Cosa è a posto»), ma il caricamento di Haiku
+**scrive sul database di produzione senza copia di sicurezza e senza due controlli che i file di
+input permettono già**, e due punti lasciano dati o note sbagliati. Sono correzioni piccole.
+`stato:` torna a `sviluppo`.
+
+### Rilievi, dal più grave
+
+1. **L'import non controlla a chi appartiene la risposta, né se il testo è cambiato.**
+   `import_reanalysis.py:139-148` e `:156-161`: la risposta si attacca all'`id` della chiave e basta.
+   Le righe di `input/` portano già `owner_type` (`owned`/`competitor`) e `text_chars` (es.
+   `article:2213`: `owned`, 7467), ma il comando legge dall'input soltanto `key` e `group`
+   (`:135`). Concreto: (a) se un agente Haiku scrive la risposta sotto la chiave sbagliata, il
+   riassunto di un articolo di competitor finisce su uno di Medyca e nessun controllo lo vede,
+   perché il riassunto non si verifica contro il testo; le citazioni lo fermano solo se ci sono
+   (un articolo da 6.000 a 8.000 caratteri con la sola analisi, `:268-273`, non ha nulla che lo
+   fermi); (b) se tra la costruzione dell'input e il caricamento lo scraper aggiorna
+   `content_text` di un articolo, riassunto e citazioni sono del testo vecchio. È proprio la
+   regola «Medyca non si mescola coi competitor» nel punto dove i dati entrano.
+   **Da fare**: per ogni chiave scartare il contenuto se `owner_type` dell'input non è uguale a
+   quello del database (reel: `account.owner_type`; documento: `owner_type`) e se `text_chars`
+   non è uguale a `len` del testo che si usa. Contarli nel rapporto («owner diverso»,
+   «testo cambiato»). Più un test per ciascuno.
+
+2. **Nessuna copia di sicurezza prima del `--write`, e un `[]` cancella le affermazioni vecchie.**
+   `save_whole_doc` (`knowledge_agent.py`, `doc.arguments.all().delete()`) e `save_whole_reel`
+   (`enrich_agent.py`, `reel.arguments.all().delete()`) buttano le affermazioni di prima; l'analisi
+   vecchia si sovrascrive. Non resta traccia di come erano. In più `import_reanalysis.py:284-286`
+   scarta una risposta solo se `rows and not claims`: con `"argomenti": []` su un testo lungo la
+   risposta passa, **si cancellano le affermazioni esistenti e se ne scrivono zero**, e la nota
+   sparisce (`full_text_status=done`) dicendo «letto tutto». Con dati: una puntata da 20.000
+   caratteri con 6 affermazioni, risposta `{"argomenti": []}` → 0 affermazioni, nota tolta. Nel
+   pipeline un elenco vuoto è lecito per un pezzo, non per tutto un testo lungo già con
+   affermazioni.
+   **Da fare**: sopra `whole_text.SHORT_MAX` (o quando il contenuto ha già affermazioni) un
+   elenco vuoto va scartato come «nessuna affermazione»; e scrivere nella lavagna che prima del
+   `--write` si fa un `pg_dump` (anche solo delle tabelle `enrichments`, `reel_arguments`,
+   `document_arguments`, `reels`, `knowledge_documents`) e dove sta.
+
+3. **`reprocess` non allinea `full_text_status`, quindi la nota resta falsa.**
+   `reprocess.py:136-142`: `_one` chiama `_enrich_one` + `_extract_arguments` e poi scrive
+   solo `enrich_status` e `argument_status`. Sulla strada corta `write_enrichment` non scrive
+   `full_text_status` (lo scrive `run()`, `enrich_agent.py` riga ~481, e `write_doc_enrich` per i
+   documenti). Con dati: reel da 5.000 caratteri di trascrizione, `full_text_status=pending`
+   (migrazione), `reprocess --stage enrich` → ora l'analisi legge tutto, ma lo stato resta
+   `pending` e il connettore continua a dire «solo l'inizio». Verso opposto del disegno:
+   §2.0-E prometteva anche che «una trascrizione rifatta rimette lo stato a `pending`»
+   (`reprocess.py:101-107` non lo fa: l'analisi vecchia resta con `done`). Inoltre un pezzo che
+   fallisce dentro `reprocess` non finisce in `failed` (non usa `_fail_whole`).
+   **Da fare**: in `_one` scrivere `full_text_status=DONE` come `run()`, e nel ramo trascrizione
+   `full_text_status=PENDING`; oppure far fare a `write_enrichment` quello che fa `write_doc_enrich`.
+
+4. **Documentazione rimasta indietro.** `documentation/low-level/04-mcp-connector.md:164` e `:171`
+   dicono ancora `arguments.all()[:10]`; il codice (`server.py`, `MAX_AFFERMAZIONI`) ora è 12.
+   Regola del progetto: nello stesso commit.
+
+5. **(minore) La migrazione segna `done` anche i reel con didascalia lunga.**
+   `0028_full_text_status.py:24-27`: `done` per trascrizione ≤ 3.000, ma la didascalia nell'analisi
+   vecchia era tagliata a 1.500 (197 reel la superano, lo dice il disegno §2.0-A). Per quei reel la
+   nota non comparirà mai e il riassunto non ha letto tutta la didascalia. Effetto piccolo;
+   va almeno scritto nei limiti noti (`02-pipeline.md`) o deciso a parte.
+
+6. **(minore) L'import lavora su oggetti letti all'inizio.** `import_reanalysis.py:156-161` carica
+   tutti i contenuti una volta; `_skip_reason` (`:217-225`) giudica lo stato di allora. Se
+   durante il caricamento (ore) il giro delle 03:30/14:15 mette un contenuto in `failed` o lo rifà,
+   l'import lo sovrascrive. Basta rileggere lo stato dentro la transazione prima di scrivere
+   (`select_for_update`) o non lanciare l'import a cavallo dei due giri.
+
+### Cosa è a posto (verificato nel codice)
+
+- **Nessun salvataggio parziale.** `whole_text.read_whole` (`:261-278`) trasforma ogni errore di un
+  pezzo o della chiamata finale in `WholeTextError`; il salvataggio è uno solo
+  (`save_whole_doc` / `save_whole_reel`, `transaction.atomic`) ed è l'ultimo passo: se prima
+  qualcosa fallisce, analisi e affermazioni vecchie restano. `_fail_whole` mette i tre stati a
+  `failed` con «pezzo N di M»; nessun azzeramento di `failed` (il giro non li riprende; l'import li
+  salta: `_skip_reason`). `NOT_THE_ITEMS_FAULT` passa intatto → `pending`. Più di 40 pezzi →
+  `failed` prima di ogni chiamata.
+- **Taglio**: pezzi ≤ 6.000, ricomposti uguali al testo, mai a metà parola salvo testo senza
+  spazi; termina sempre (`cut > start` in tutti i rami).
+- **Citazioni vere**: un solo controllo (`whole_text.verified_claims`, `_norm` ≥ 12 caratteri)
+  per reel, articoli, pezzi (contro il pezzo) e import (contro il testo vero, con la didascalia per
+  i reel come nel pipeline). Il tetto si applica dopo il controllo.
+- **Owned/competitor nel pipeline**: ogni chiamata e ogni unione lavorano un contenuto solo; nessun
+  codice tocca `owner_type`. Anche l'import non lo scrive mai (ma vedi rilievo 1).
+- **Provider**: pezzi e chiamata finale usano `client.chat_json` con `model_for("analysis")`, come
+  prima; l'import non chiama `client.chat` (usa solo `parse_json`). Niente Anthropic nel giro
+  quotidiano: Haiku esiste solo come file letti dall'import ed è scritto come eccezione in
+  `03-llm-and-embeddings.md:281` e `02-pipeline.md:948`.
+- **Migrazione 0028**: campo con default costante (nessuna riscrittura della tabella),
+  `RunPython` con numeri scritti dentro, inversa `noop` + campo tolto: reversibile. Circa 3.900
+  righe: secondi. Il blocco sulle due tabelle dura quanto la transazione (due `UPDATE`): conviene
+  non lanciarla a cavallo delle 03:30/14:15.
+- **Vettori**: `ReelEmbedding.vector=[]` è gestito (`cluster_agent._ensure_reel_embeddings`,
+  `strategy`, `knowledge`, `custom_topics` saltano i vuoti); i reel restano fuori da ricerca e
+  temi del cliente fino al giro `embed` successivo (poche ore): da sapere, non un errore.
+- **Segreti**: cercati `sk-ant-`, `gsk_`, `BEGIN ... PRIVATE KEY`, `api_key`, password nel diff:
+  nessuno. Drawio e `it.json` sono validi (XML e JSON letti senza errore).
+- **Documentazione**: 01, 02, 03, 04, architecture-summary, pagina Documentazione e drawio
+  toccati nello stesso ramo; eccezione Haiku scritta. Il diagramma ER non elenca i campi di stato:
+  non serviva toccarlo. Restano i punti 4 e 5.
+- **Ramo**: `git log main..HEAD` mostra solo commit del ramo; nessun commit su `main`.
+
+### Cosa non ho fatto
+
+Non ho eseguito la suite né l'import in dry-run (nessun accesso a un database di prova da qui);
+ho letto il codice e i test per nome. Dopo i rilievi 1-3 serve il dry-run sulla cartella vera.
