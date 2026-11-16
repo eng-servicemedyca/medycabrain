@@ -72,7 +72,7 @@ Standalone ASGI server `BEC/mcp_bridge/server.py` (systemd `medycabrain-mcp`, uv
   `leggi("reel:ID"|"blog:ID", parte=1)` — direct ORM lookup; text up to 30 000 characters per answer,
   longer texts in parts (`parte`, `troncato`). `cerca_reel` / `cerca_articoli` / `cerca_tutto` /
   `cerca_riferimenti` — `core.knowledge.semantic_search(rerank=True)`. `fonti_blog` — the blogs.
-- Limit: summaries and claims of a long text cover only its beginning (6 000 / 8 000 / 3 000 chars).
+- Whole text read (16/11/2026): up to 8 000 chars in two calls, above in ~6 000-char pieces (`pipeline/whole_text.py`), up to 12 claims. `full_text_status` says whether an analysis read everything; old ones (cut at 6 000 / 8 000 / 3 000) show `nota_analisi` until redone (`import_reanalysis`).
 - Auth = secret path segment (`MCP_SECRET`); URL is the credential. See
   `documentation/low-level/04-mcp-connector.md`.
 

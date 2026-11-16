@@ -151,6 +151,55 @@ Restituisci un JSON:
 """
 
 
+# ── Long texts, read in pieces (pipeline/whole_text.py) ───────────────────────
+# One call per piece: its claims (quotes checked against THAT piece) and a line of
+# notes. The pieces' notes then replace the long text in the analysis prompt.
+
+PIECE_USER_TEMPLATE = """Stai leggendo il pezzo {n} di {total} di {what}.
+Non è il testo completo: gli altri pezzi li leggi in altre richieste, quindi non
+trarre conclusioni su ciò che qui non vedi.
+
+Estrai le affermazioni principali effettivamente espresse in QUESTO pezzo e
+scrivi una riga di appunti su di cosa parla.
+
+PEZZO {n} DI {total}:
+{text}
+
+REGOLE:
+- Ogni affermazione deve essere sostenuta da una CITAZIONE TESTUALE copiata
+  parola per parola da questo pezzo.
+- Non parafrasare la citazione: deve essere una porzione esatta del testo.
+- Se il pezzo non contiene affermazioni chiare, restituisci lista vuota.
+  La lista vuota è una risposta corretta e preferibile a un'affermazione
+  generica.
+- Massimo 3 affermazioni. Nessun minimo.
+- "sintesi": una riga di appunti su di cosa parla questo pezzo, massimo 25 parole.
+
+Restituisci un JSON:
+{{"sintesi": "di cosa parla questo pezzo",
+  "argomenti": [{{"testo": "affermazione riformulata in modo autonomo",
+                 "citazione": "porzione esatta del testo che la sostiene"}}]}}
+"""
+
+# What the final analysis reads in place of the long text.
+WHOLE_NOTES_TEMPLATE = """[Il testo è lungo: è stato letto a pezzi, nell'ordine. Qui sotto trovi gli
+appunti di ogni pezzo e le affermazioni principali di tutto il testo.
+Riassumi TUTTO il testo, dall'inizio alla fine, non solo l'inizio.]
+
+{opening}APPUNTI, pezzo per pezzo:
+{notes}
+
+AFFERMAZIONI PRINCIPALI DI TUTTO IL TESTO:
+{claims}"""
+
+# Reels only: hook and hook analysis speak about the opening, so the real first
+# words go in as they are.
+WHOLE_OPENING_TEMPLATE = """INIZIO DEL PARLATO (parole vere, copiate dalla trascrizione):
+{opening}
+
+"""
+
+
 CLUSTER_NAME_SYSTEM = (
     "Sei un analista di contenuti Instagram. "
     + DOMAIN_CONTEXT

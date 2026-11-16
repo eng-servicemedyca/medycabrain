@@ -93,8 +93,9 @@ server = MCPServer(
         "è tutto il testo, anche sull'ultima parte.) Non dire che un "
         "contenuto finisce lì se `parte_successiva` non è vuoto e non citare "
         "ciò che non hai letto. Se c'è "
-        "`nota_analisi`, riassunto e affermazioni coprono solo l'inizio: per "
-        "il resto vale il testo.\n"
+        "`nota_analisi`, riassunto e affermazioni di quel contenuto coprono solo "
+        "l'inizio (lo sta rifacendo la piattaforma): per il resto vale il "
+        "testo. Senza la nota sono fatti su tutto il testo.\n"
         "Cita sempre da quale contenuto (e di chi) viene un'affermazione: "
         "confondere ciò che dice Medyca con ciò che dicono i competitor è "
         "l'errore peggiore possibile.\n"
@@ -378,14 +379,21 @@ def _pezzo(testo: str, parte: int, strumento: str) -> tuple[str, dict] | dict:
     }
 
 
-def _nota_analisi(testo: str, letti: int) -> str:
-    """Said when the text is longer than what the pipeline gave the model.
+# A long text is read in pieces and keeps up to 12 claims (pipeline/whole_text.py).
+MAX_AFFERMAZIONI = 12
 
-    The summary and the claims of a long text were written on its first
-    `letti` characters (a known limit, see documentation/low-level/03): the
-    client's Claude must not take them for a reading of the whole.
+
+def _nota_analisi(testo: str, letti: int, stato: str = "pending") -> str:
+    """Said while the analysis in force has not read the whole text.
+
+    `stato` is the row's `full_text_status`: `done` = the summary and the claims
+    were made on everything (a new analysis, or a redone old one), and nothing is
+    said. Otherwise they were made on the first `letti` characters — the OLD cut
+    of the pipeline (6 000 for documents, 3 000 for a transcript), kept as named
+    constants — and the client's Claude must not take them for a reading of the
+    whole. A text that fits in the old cut never gets the note.
     """
-    if len(testo) <= letti:
+    if stato == "done" or len(testo) <= letti:
         return ""
     def it(n: int) -> str:
         return f"{n:,}".replace(",", ".")
@@ -438,7 +446,8 @@ def _leggi_reel(pk: int, parte: int = 1) -> dict:
             "pubblico": enr.target_audience_it if enr else "",
             "didascalia": r.caption,
         })
-        nota = _nota_analisi(trascrizione, TRANSCRIPT_CHARS_READ)
+        nota = _nota_analisi(trascrizione, TRANSCRIPT_CHARS_READ,
+                             r.full_text_status)
         if nota:
             out["nota_analisi"] = nota
     out.update(campi)
@@ -446,7 +455,7 @@ def _leggi_reel(pk: int, parte: int = 1) -> dict:
     if parte == 1:
         out["affermazioni"] = [
             {"testo": a.text_it, "citazione": a.quote}
-            for a in r.arguments.all()[:10]
+            for a in r.arguments.all()[:MAX_AFFERMAZIONI]
         ]
     return out
 
@@ -530,7 +539,7 @@ def _leggi_articolo(pk: int, parte: int = 1) -> dict:
                 f"({d.off_topic_reason[:160]})" if d.off_topic_reason else
                 "Materiale di riferimento scelto dal cliente.")}),
     })
-    nota = _nota_analisi(intero, DOC_SUMMARY_CHARS_READ)
+    nota = _nota_analisi(intero, DOC_SUMMARY_CHARS_READ, d.full_text_status)
     if nota:
         out["nota_analisi"] = nota
     out.update(campi)
@@ -540,7 +549,7 @@ def _leggi_articolo(pk: int, parte: int = 1) -> dict:
     out["testo"] = testo
     out["affermazioni"] = [
         {"testo": a.text_it, "citazione": a.quote}
-        for a in d.arguments.all()[:10]
+        for a in d.arguments.all()[:MAX_AFFERMAZIONI]
     ]
     return out
 

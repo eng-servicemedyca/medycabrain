@@ -211,9 +211,18 @@ class Command(BaseCommand):
             # caption — the extraction prompt offers both. The haystack is
             # everything the tool returned, which is also everything the
             # client's Claude has available to verify against.
-            body = " ".join(filter(None, [doc.get("testo"),
-                                          doc.get("trascrizione"),
-                                          doc.get("didascalia")]))
+            parts = [doc]
+            # A text read whole has claims from every part of it, not only the
+            # first: follow `parte_successiva` to the end, like a client would.
+            while parts[-1].get("parte_successiva"):
+                nxt, ms = self._call("leggi", {"id": pid,
+                                               "parte": parts[-1]["parte_successiva"]})
+                latencies["leggi"].append(ms)
+                parts.append(nxt)
+            body = " ".join(filter(None, [t for p in parts
+                                          for t in (p.get("testo"),
+                                                    p.get("trascrizione"),
+                                                    p.get("didascalia"))]))
             body_n = _norm(body)
             for a in doc.get("affermazioni", []):
                 total_claims += 1

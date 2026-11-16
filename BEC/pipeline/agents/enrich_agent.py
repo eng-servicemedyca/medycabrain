@@ -22,6 +22,14 @@ the local model. If PIPELINE_LOCAL_MAX_CALLS is set above 0 (settings.py) and
 runs out (`LLMLocalBudget`) the stage stops, says so in its note, and the reels
 it did not try STAY `pending` for the next round — they are not `failed`.
 Real failures stay `failed`; this is not one.
+
+The whole transcript is read (2026-11-16; before, the first 3 000 characters).
+Up to 8 000 characters: one call for the analysis and one for the claims, both on
+the whole text and the whole caption. Above: pieces of ~6 000 characters, one call
+each, then one call that writes the analysis from the notes — see
+`pipeline/whole_text.py` for the rule and for why. In that case analysis AND
+claims are saved together at the end, and a failed piece makes the reel `failed`
+(`enrich_status`, `argument_status`, `full_text_status`), never half-saved.
 """
 
 from __future__ import annotations
@@ -33,16 +41,21 @@ from concurrent.futures import ThreadPoolExecutor
 
 from django.db.models import Q
 
+from django.db import transaction
+
 from core import progress
-from core.models import DONE, FAILED, PENDING, SKIPPED, Enrichment, Reel, ReelArgument
+from core.models import (DONE, FAILED, PENDING, SKIPPED, Enrichment, Reel,
+                         ReelArgument, ReelEmbedding)
 from llm import client, prompts
 from llm.client import NOT_THE_ITEMS_FAULT, LLMLocalBudget, LLMRateLimit
+from pipeline import whole_text
 
 logger = logging.getLogger(__name__)
 
-# How much of a transcript the analysis and the claims read. Named so the MCP
-# connector can tell the client's Claude where the summary stops (`nota_analisi`)
-# without a second copy of the number that could drift.
+# The OLD cut: until 2026-11-16 the analysis and the claims read only this much of
+# a transcript. Nothing is cut any more (whole_text.SHORT_MAX and the pieces);
+# the number stays because `nota_analisi` of the MCP connector names it for the
+# reels still waiting to be read whole (`full_text_status` not `done`).
 TRANSCRIPT_CHARS_READ = 3000
 
 VALID_FORMATS = {
@@ -191,6 +204,16 @@ def classify_evidence(reel: Reel) -> tuple[str, str]:
     return "insufficient", ""
 
 
+def cut_by_old_rule(transcript_text: str, caption: str) -> bool:
+    """Was the analysis made before 2026-11-16 on a cut text? Only a reel WITH
+    speech (a transcript of 40+ characters) is: its transcript went over 3 000 or
+    its caption over 1 500. One without speech had its caption read whole.
+    Migration 0028 writes the same rule with its own numbers."""
+    if len(transcript_text or "") < 40:
+        return False
+    return len(transcript_text) > TRANSCRIPT_CHARS_READ or len(caption or "") > 1500
+
+
 def canonical_topic(t: str) -> str:
     """Fold synonym variants onto one label so the same idea stops arriving
     under three names ("terapia con ormoni bioidentici" == "ormoni bioidentici")."""
@@ -223,27 +246,34 @@ def pick_primary_topic(raw: str, topics: list[str]) -> str:
 ENRICH_MAX_TOKENS = 2000
 
 
+def _enrich_user(caption: str, transcript: str, evidence: str) -> str:
+    user = prompts.ENRICH_USER_TEMPLATE.format(
+        caption=caption, transcript=transcript or "(nessuna trascrizione)")
+    if evidence == "caption_only":
+        user += prompts.ENRICH_CAPTION_ONLY_NOTE
+    return user
+
+
 def build_enrich_prompt(reel: Reel) -> tuple[str, str, str] | None:
-    """(system, user, evidence) for one reel, or None when there is nothing
-    worth asking. Kept apart from the call so the question has one definition.
+    """(system, user, evidence) for one reel read on the SHORT road (a transcript
+    up to whole_text.SHORT_MAX), or None when there is nothing worth asking.
+    Kept apart from the call so the question has one definition. Caption and
+    transcript go in whole: Instagram allows 2 200 characters of caption, and 197
+    reels went over the old 1 500 cut.
     """
     evidence, transcript_text = classify_evidence(reel)
     if evidence == "insufficient":
         return None
-    user = prompts.ENRICH_USER_TEMPLATE.format(
-        caption=(reel.caption or "")[:1500],
-        transcript=transcript_text[:TRANSCRIPT_CHARS_READ] or "(nessuna trascrizione)",
-    )
-    if evidence == "caption_only":
-        user += prompts.ENRICH_CAPTION_ONLY_NOTE
-    return prompts.ENRICH_SYSTEM, user, evidence
+    return (prompts.ENRICH_SYSTEM,
+            _enrich_user(reel.caption or "", transcript_text, evidence), evidence)
 
 
-def write_enrichment(reel: Reel, data: dict, evidence: str, model_name: str) -> None:
-    """Turn one model answer into the Enrichment row.
+def enrichment_fields(data, evidence: str, model_name: str) -> dict:
+    """Validate one model answer and turn it into the Enrichment columns, without
+    writing anything. Raises ValueError for an answer that is not an object.
 
     Same canonicalisation, same truncation, same guard on the hook for every
-    answer, whoever wrote it.
+    answer, whoever wrote it — the pipeline and `import_reanalysis` both come here.
     """
     # The model occasionally wraps the object in an array ([{...}]) — 10 of
     # ~150 answers on the 2026-09-13 run. The content is fine; only the
@@ -272,23 +302,87 @@ def write_enrichment(reel: Reel, data: dict, evidence: str, model_name: str) -> 
     if evidence == "caption_only":
         hook = ""  # there is no spoken opening to quote
 
+    return {
+        "summary_it": str(data.get("summary_it", ""))[:2000],
+        "topics": [t[:60] for t in topics][:6],
+        "primary_topic": primary,
+        "hook_text": hook,
+        "hook_analysis_it": "" if not hook else str(data.get("hook_analysis_it", ""))[:1000],
+        "target_audience_it": str(data.get("target_audience_it", ""))[:1000],
+        "content_format": fmt,
+        "llm_model": (model_name or "")[:64],
+        "evidence": evidence,
+        "is_on_topic": bool(data.get("is_on_topic", True)),
+        "off_topic_reason": str(data.get("off_topic_reason", ""))[:300],
+        "raw_response": data,
+    }
+
+
+def write_enrichment(reel: Reel, data: dict, evidence: str, model_name: str) -> None:
+    """Turn one model answer into the Enrichment row."""
     Enrichment.objects.update_or_create(
-        reel=reel,
-        defaults={
-            "summary_it": str(data.get("summary_it", ""))[:2000],
-            "topics": [t[:60] for t in topics][:6],
-            "primary_topic": primary,
-            "hook_text": hook,
-            "hook_analysis_it": "" if not hook else str(data.get("hook_analysis_it", ""))[:1000],
-            "target_audience_it": str(data.get("target_audience_it", ""))[:1000],
-            "content_format": fmt,
-            "llm_model": (model_name or "")[:64],
-            "evidence": evidence,
-            "is_on_topic": bool(data.get("is_on_topic", True)),
-            "off_topic_reason": str(data.get("off_topic_reason", ""))[:300],
-            "raw_response": data if isinstance(data, dict) else {},
-        },
-    )
+        reel=reel, defaults=enrichment_fields(data, evidence, model_name))
+
+
+def save_whole_reel(reel: Reel, data, evidence: str, model_name: str,
+                    claims: list[dict]) -> None:
+    """Analysis AND claims in one transaction, the reel marked read whole.
+
+    The one save of a reel read in pieces, and the one `import_reanalysis` uses
+    for answers made outside the pipeline. The answer is validated BEFORE
+    anything is written, so a bad one leaves the old analysis and the old claims
+    untouched; the customer never sees a reel without them.
+    """
+    fields = enrichment_fields(data, evidence, model_name)
+    with transaction.atomic():
+        Enrichment.objects.update_or_create(reel=reel, defaults=fields)
+        reel.arguments.all().delete()
+        ReelArgument.objects.bulk_create(
+            [ReelArgument(reel=reel, text_it=c["testo"], quote=c["citazione"])
+             for c in claims])
+        reel.enrich_status = reel.argument_status = reel.full_text_status = DONE
+        reel.last_error = ""
+        reel.save(update_fields=["enrich_status", "argument_status",
+                                 "full_text_status", "last_error"])
+        # The vector was built from the old summary: empty it, and the embed
+        # stage (which computes the vectors that are missing or empty) redoes it
+        # tonight. Saved, not .update(): `updated_at` is what makes the search
+        # index notice.
+        for emb in ReelEmbedding.objects.filter(reel=reel):
+            emb.vector = []
+            emb.save(update_fields=["vector", "updated_at"])
+
+
+def _embed_texts(texts: list[str]):
+    from pipeline.agents import cluster_agent
+    return cluster_agent._get_embedder().encode(
+        texts, normalize_embeddings=True, show_progress_bar=False)
+
+
+def _read_whole_reel(reel: Reel, transcript: str) -> list[dict]:
+    """A transcript over whole_text.SHORT_MAX: pieces, notes, one final analysis,
+    one save. Returns the claims saved."""
+    caption = reel.caption or ""
+
+    def ask_piece(user):
+        return client.chat_json(prompts.ARGUMENTS_SYSTEM, user, max_tokens=1200,
+                                model=client.model_for("analysis"))
+
+    def ask_final(block):
+        return client.chat_json(
+            prompts.ENRICH_SYSTEM, _enrich_user(caption, block, "transcript"),
+            max_tokens=ENRICH_MAX_TOKENS, model=client.model_for("analysis"))
+
+    # Hook and hook analysis speak about the opening: the final call also gets
+    # its first words as they are, not only notes about them.
+    data, claims = whole_text.read_whole(
+        transcript, "un reel di Instagram", ask_piece, ask_final,
+        opening=transcript[:1500], embed=_embed_texts)
+    try:
+        save_whole_reel(reel, data, "transcript", client.last_model_used(), claims)
+    except ValueError as exc:
+        raise whole_text.WholeTextError(f"riassunto finale: {exc!r}") from exc
+    return claims
 
 
 def _enrich_one(reel: Reel) -> None:
@@ -305,6 +399,10 @@ def _enrich_one(reel: Reel) -> None:
                       "evidence": evidence, "raw_response": {}},
         )
         logger.info("[enrich] %s: dati insufficienti — nessuna chiamata LLM", reel.shortcode)
+        return
+
+    if evidence == "transcript" and whole_text.is_long(transcript_text):
+        _read_whole_reel(reel, transcript_text)  # analysis + claims, saved together
         return
 
     built = build_enrich_prompt(reel)
@@ -324,42 +422,43 @@ def _extract_arguments(reel: Reel) -> int:
         reel.arguments.all().delete()
         return 0
 
+    if whole_text.is_long(transcript_text):
+        if reel.argument_status == DONE and reel.full_text_status == DONE:
+            # `_enrich_one` has just read it in pieces and saved the claims with
+            # the analysis (reprocess and uploads call the two in a row): reading
+            # it again would only repeat the same dozen calls.
+            return reel.arguments.count()
+        return len(_read_whole_reel(reel, transcript_text))
+
     user = prompts.ARGUMENTS_USER_TEMPLATE.format(
-        caption=(reel.caption or "")[:1500],
-        transcript=transcript_text[:TRANSCRIPT_CHARS_READ],
-    )
+        caption=reel.caption or "", transcript=transcript_text)
     # 1200, not 600: a reel with several claims plus its verbatim quotes does
     # not fit in 600 tokens, and a truncated answer is unparseable JSON, not a
     # shorter list. 74 of 139 extractions failed that way on 2026-09-13.
     data = client.chat_json(prompts.ARGUMENTS_SYSTEM, user, max_tokens=1200,
                             model=client.model_for("analysis"))
-    args = data.get("argomenti") if isinstance(data, dict) else data
-    if not isinstance(args, list):
-        args = []
-
-    haystack = _norm(transcript_text + " " + (reel.caption or ""))
+    # The claim survives only if its quote really appears in the source — the
+    # caption counts too, a reel can say it in writing.
+    claims, dropped, _ = whole_text.verified_claims(
+        data, transcript_text + " " + (reel.caption or ""), min_text=8,
+        limit=whole_text.CLAIMS_SHORT)
     reel.arguments.all().delete()  # re-extraction replaces
-    created = dropped = 0
-    for a in args:
-        if isinstance(a, dict):
-            text, quote = str(a.get("testo", "")).strip(), str(a.get("citazione", "")).strip()
-        else:
-            text, quote = str(a).strip(), ""
-        if len(text) < 8:
-            continue
-        # The claim survives only if its quote really appears in the source.
-        # This is what makes fabrication structurally impossible rather than
-        # merely discouraged by the prompt.
-        needle = _norm(quote)
-        if len(needle) < 12 or needle not in haystack:
-            dropped += 1
-            continue
-        ReelArgument.objects.create(reel=reel, text_it=text[:1000], quote=quote[:1000])
-        created += 1
+    for c in claims:
+        ReelArgument.objects.create(reel=reel, text_it=c["testo"],
+                                    quote=c["citazione"])
     if dropped:
         logger.info("[enrich] %s: %d affermazioni scartate (citazione non trovata)",
                     reel.shortcode, dropped)
-    return created
+    return len(claims)
+
+
+def _fail_whole(obj, exc) -> list[str]:
+    """A piece failed: the whole content is `failed`, all three states, and says
+    which piece. Returns the fields to save (the caller adds its own)."""
+    if not isinstance(exc, whole_text.WholeTextError):
+        return []
+    obj.enrich_status = obj.argument_status = obj.full_text_status = FAILED
+    return ["enrich_status", "argument_status", "full_text_status"]
 
 
 def run(ctx) -> dict:
@@ -389,13 +488,16 @@ def run(ctx) -> dict:
             break
         if exc is None:
             reel.enrich_status = DONE
+            reel.full_text_status = DONE  # read whole: short road or pieces
             reel.last_error = ""
-            reel.save(update_fields=["enrich_status", "last_error"])
+            reel.save(update_fields=["enrich_status", "full_text_status",
+                                     "last_error"])
             enriched += 1
         else:
             reel.enrich_status = FAILED
             reel.last_error = repr(exc)[:500]
-            reel.save(update_fields=["enrich_status", "last_error"])
+            reel.save(update_fields=["enrich_status", "last_error"]
+                      + _fail_whole(reel, exc))
             failed += 1
             logger.warning("[enrich] %s failed: %r", reel.shortcode, exc)
 
@@ -419,7 +521,8 @@ def run(ctx) -> dict:
         else:
             reel.argument_status = FAILED
             reel.last_error = repr(exc)[:500]
-            reel.save(update_fields=["argument_status", "last_error"])
+            reel.save(update_fields=["argument_status", "last_error"]
+                      + _fail_whole(reel, exc))
             arg_failed += 1
             logger.warning("[arguments] %s failed: %r", reel.shortcode, exc)
 

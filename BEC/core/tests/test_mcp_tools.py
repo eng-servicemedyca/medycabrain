@@ -508,6 +508,13 @@ class TestoPerParti(SimpleTestCase):
         self.assertIn("primi 6.000 caratteri su 16.865", nota)
         self.assertIn("vale il testo", nota)
 
+    def test_the_note_is_not_said_once_the_analysis_read_the_whole_text(self):
+        self.assertEqual(server._nota_analisi("a" * 16865, 6000, "done"), "")
+        for stato in ("pending", "failed"):
+            with self.subTest(stato=stato):
+                self.assertIn("primi 6.000 caratteri su 16.865",
+                              server._nota_analisi("a" * 16865, 6000, stato))
+
     def test_the_numbers_in_the_note_are_the_ones_the_pipeline_reads(self):
         from pipeline.agents import enrich_agent, knowledge_agent
         self.assertEqual(knowledge_agent.DOC_SUMMARY_CHARS_READ, 6000)
@@ -615,6 +622,28 @@ class LeggiTestoLungo(TestCase):
         self.assertIn("primi 6.000 caratteri", a["nota_analisi"])
         r = server.leggi_reel(f"reel:{self.reel.id}")
         self.assertIn("primi 3.000 caratteri", r["nota_analisi"])
+
+    def test_the_note_follows_full_text_status_for_both_kinds(self):
+        for stato, voluta in (("done", False), ("pending", True), ("failed", True)):
+            with self.subTest(stato=stato):
+                self.doc.full_text_status = stato
+                self.doc.save()
+                self.reel.full_text_status = stato
+                self.reel.save()
+                a = server.leggi_articolo(f"blog:{self.doc.id}")
+                r = server.leggi_reel(f"reel:{self.reel.id}")
+                self.assertEqual("nota_analisi" in a, voluta)
+                self.assertEqual("nota_analisi" in r, voluta)
+
+    def test_up_to_twelve_claims_are_given_not_ten(self):
+        from core.models import DocumentArgument, ReelArgument
+        for i in range(14):
+            DocumentArgument.objects.create(document=self.doc, text_it=f"a{i}", quote=f"q{i}")
+            ReelArgument.objects.create(reel=self.reel, text_it=f"a{i}", quote=f"q{i}")
+        self.assertEqual(
+            len(server.leggi_articolo(f"blog:{self.doc.id}")["affermazioni"]), 12)
+        self.assertEqual(
+            len(server.leggi_reel(f"reel:{self.reel.id}")["affermazioni"]), 12)
 
     def test_a_short_text_is_one_whole_part_without_a_note(self):
         from core.models import KnowledgeDocument

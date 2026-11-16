@@ -105,6 +105,13 @@ class Reel(models.Model):
     transcribe_status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=PENDING)
     enrich_status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=PENDING)
     argument_status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=PENDING)
+    # Did the analysis in force read the WHOLE transcript? `done` yes; `pending`
+    # it was made on the first 3 000 characters of the transcript or 1 500 of the
+    # caption (the old cut) and is to be
+    # redone; `failed` the redo failed. The MCP `nota_analisi` is said only when
+    # this is not `done`. Every new analysis writes `done`.
+    full_text_status = models.CharField(max_length=16, choices=STATUS_CHOICES,
+                                        default=PENDING)
     media_attempts = models.IntegerField(default=0)
     last_error = models.TextField(blank=True, default="")
 
@@ -515,6 +522,11 @@ class KnowledgeDocument(models.Model):
     enrich_status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=PENDING)
     embed_status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=PENDING)
     argument_status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=PENDING)
+    # Same meaning as Reel.full_text_status: did the summary and the claims in
+    # force read the whole text (`done`), only its beginning (`pending`, the old
+    # cut of 6 000 / 8 000 characters) or did the redo fail (`failed`)?
+    full_text_status = models.CharField(max_length=16, choices=STATUS_CHOICES,
+                                        default=PENDING)
     last_error = models.TextField(blank=True, default="")
 
     # Tags apply to articles and uploaded interviews too, not just reels —

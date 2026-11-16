@@ -161,14 +161,14 @@ A typed tool given the other kind's id returns a readable redirect
   → transcript (field `trascrizione`), caption, `primary_topic`, `summary_it`, `topics`,
   **plus the video-only fields**: `gancio` (`hook_text`), `analisi_gancio`, `formato`
   (`content_format`), `pubblico` (`target_audience_it`), views/likes, and claims via
-  `r.arguments.all()[:10]` (each `text_it` + verbatim `quote`).
+  `r.arguments.all()[:MAX_AFFERMAZIONI]` (12; each `text_it` + verbatim `quote`).
 - **`leggi_articolo`** — `KnowledgeDocument.objects.filter(id=pk, is_active=True).select_related("source")`
   → `content_text` (falls back to `content_md`; field `testo`), plus `ispirazione`,
   `trascrizione_disponibile` and a `nota` when there is no transcript. `tipo` (`_tipo_articolo`):
   `manual` → "intervista"; `video` → "video di riferimento" if `is_inspiration`, else "video";
   everything else "articolo". Then `fonte`, `autore`,
   `lingua`, `pubblicato`, `primary_topic`, `summary_it`, `topics`, `in_tema` +
-  `fuori_tema_perche`, and `d.arguments.all()[:10]`. Plain text on purpose, so a quote can be
+  `fuori_tema_perche`, and `d.arguments.all()[:MAX_AFFERMAZIONI]` (12). Plain text on purpose, so a quote can be
   verified verbatim against exactly what Claude was given.
 - **`leggi`** routes on the id prefix; it exists for `cerca_tutto` results.
 
@@ -198,25 +198,31 @@ estimate (3–4 characters per token), not a measurement.
   (number, `null` on the last), `come_leggere_il_resto` (a ready sentence naming the tool and the
   next `parte`).
 - **From part 2 on the answer is light**: `tipo`, `titolo`, `di`, `apri_nel_brain`, `url`, the
-  piece and its fields. Summary and claims are in part 1 only. The claims' quotes come from the first
-  8 000 characters, so they are always in part 1 and the `eval_mcp` check «the quote is in the
-  text» still holds. A quote straddling two parts is possible only for text that was never
-  analysed.
-- **`nota_analisi`** (part 1, only when the text is longer than what the model read): «Riassunto e
-  affermazioni sono stati fatti sull'inizio del testo (primi 6.000 caratteri su 16.865): per il
-  resto vale il testo.» The numbers are named constants read from the agents
-  (`knowledge_agent.DOC_SUMMARY_CHARS_READ = 6000`, `enrich_agent.TRANSCRIPT_CHARS_READ = 3000` for
-  reels), so the note cannot drift from what the pipeline really reads.
+  piece and its fields. Summary and claims are in part 1 only. **Since 16/11/2026 the claims of a long
+  text come from the whole of it** (up to 12, `MAX_AFFERMAZIONI`, it was 10), so a quote can be in
+  any part: `eval_mcp` follows `parte_successiva` to the end before checking «the quote is in the
+  text». (A quote is always inside ONE piece of the pipeline's cut, which is not the same cut as
+  the connector's 30 000 characters: one can straddle two parts of the connector.)
+- **`nota_analisi`** (part 1) — said **only while the analysis in force has not read the whole text**:
+  the row's `full_text_status` is not `done` (`pending`: made on the old cut; `failed`: the redo
+  failed) **and** the text is longer than the old cut. «Riassunto e affermazioni sono stati fatti
+  sull'inizio del testo (primi 6.000 caratteri su 16.865): per il resto vale il testo.» With
+  `done` — every new analysis, and every old one that was redone — the note is **absent** and the
+  summary and claims cover the whole text. The numbers are the old cut, kept as named constants in
+  the agents (`knowledge_agent.DOC_SUMMARY_CHARS_READ = 6000`, `enrich_agent.TRANSCRIPT_CHARS_READ =
+  3000` for reels); `server._nota_analisi(testo, letti, stato)`. The note disappears content by
+  content as they are redone.
 - The server `instructions` and the three tool descriptions say it in plain words: if
   `parte_successiva` has a number, call again with `parte` = that number, empty means the text is
   over (`troncato` only says «this piece is not the whole text», and stays true on the last part —
   it is NOT the signal to ask for more); do not say a content ends there while `parte_successiva`
   is not empty; do not quote what you have not read.
 
-**Known limits.** (1) **The summary, the topic and the claims of a long text cover only its
+**Known limits.** (1) **Until a content is redone, its summary, topic and claims cover only its
 beginning**: 6 000 characters for the summary (854 articles; 17 of 18 episodes/interviews), 8 000
-for the claims (551), 3 000 for a reel's analysis (265 reels). `nota_analisi` says so; the fix
-(summarise in pieces and stitch, with Groq's 8 000 tokens/minute in mind) is a separate job.
+for the claims (551), 3 000 for a reel's analysis (265 reels) — measured 16/11/2026. `nota_analisi`
+says so, content by content, until `full_text_status` is `done`. New contents are read whole (in
+pieces above 8 000 characters, `02-pipeline.md`); the old ones are loaded with `import_reanalysis`.
 (2) **The new `parte` parameter and claude.ai**: claude.ai keeps the tool list in memory; after the
 release restart `medycabrain-mcp` and, if it still reads the old list, disconnect and reconnect the
 connector. (3) A long answer weighs more in the client's conversation (up to ~10 000 tokens).

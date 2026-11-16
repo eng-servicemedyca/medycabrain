@@ -22,9 +22,16 @@ other instead of by subject.
 What the text is: the prompt names it by `source_type` — a blog or a web page is
 «un articolo del blog», a video «la trascrizione di un video» of its channel, an
 uploaded interview «un'intervista» — so the summary of an episode never calls it
-an article. Reading limit, known: the summary reads the first 6 000 characters
-and the claims the first 8 000; the rest of a long episode is not summarised
-(the MCP connector says so in `nota_analisi`).
+an article. Whole text (2026-11-16; before, the summary read the first 6 000 characters and
+the claims the first 8 000). Up to 8 000 characters: one call for the analysis and
+one for the claims, both on the whole text. Above: pieces of ~6 000 characters,
+one call each (at most 3 claims with a quote checked against the piece, plus a
+line of notes), then one call that writes the analysis from the notes, at most 12
+claims for the text — see `pipeline/whole_text.py` for the rule and for why. In
+that case analysis AND claims are saved together at the end, and a failed piece
+makes the document `failed`, never half-saved. `full_text_status` says whether the
+analysis in force read everything (`nota_analisi` of the MCP connector depends on
+it).
 
 Failures stay FAILED. The old blanket FAILED→PENDING reset at the end of
 every run was an infinite retry loop that also hid the failure; retry is now
@@ -37,17 +44,21 @@ import logging
 
 from django.conf import settings
 
+from django.db import transaction
+
 from core import progress
 from core.models import DONE, FAILED, PENDING, DocumentArgument, KnowledgeDocument
 from llm import client, prompts
 from llm.client import NOT_THE_ITEMS_FAULT
+from pipeline import whole_text
 
 logger = logging.getLogger(__name__)
 
-# How much of a text the model reads for the summary / topic and for the claims.
-# Named so the MCP connector can say where the analysis stops (`nota_analisi`)
-# from the same number the prompts use. Known limit: a long episode is
-# summarised on its first third (documentation/low-level/03).
+# The OLD cut: until 2026-11-16 the summary / topic read this much of a text and
+# the claims the second number. Nothing is cut any more (whole_text.SHORT_MAX and
+# the pieces); the numbers stay because `nota_analisi` of the MCP connector names
+# them for the documents still waiting to be read whole (`full_text_status` not
+# `done`), so the note says what really happened to THOSE analyses.
 DOC_SUMMARY_CHARS_READ = 6000
 DOC_CLAIMS_CHARS_READ = 8000
 
@@ -59,6 +70,19 @@ KB_SYSTEM = (
     "Rispondi SEMPRE ed esclusivamente con un oggetto JSON valido."
 )
 
+# The JSON the analysis asks for, apart from the rest so the short road (the
+# text itself) and the long one (the notes of its pieces) ask the very same thing.
+KB_ENRICH_JSON = """\
+Restituisci un JSON:
+{{
+  "summary_it": "riassunto in 2-3 frasi, in italiano",
+  "topics": ["4-8 argomenti/parole chiave in italiano, minuscolo"],
+  "primary_topic": "IL soggetto specifico dell'articolo, 2-5 parole. Mai un termine ombrello come 'menopausa' o 'salute femminile': ciò che distingue QUESTO articolo dagli altri",
+  "is_on_topic": true,
+  "off_topic_reason": "se is_on_topic è false: perché (es. ricetta di cucina, pagina promozionale)"
+}}
+"""
+
 KB_ENRICH_USER = """\
 {intro}
 
@@ -69,15 +93,7 @@ TESTO:
 
 Il testo può essere in un'altra lingua: analizza comunque IN ITALIANO.
 
-Restituisci un JSON:
-{{
-  "summary_it": "riassunto in 2-3 frasi, in italiano",
-  "topics": ["4-8 argomenti/parole chiave in italiano, minuscolo"],
-  "primary_topic": "IL soggetto specifico dell'articolo, 2-5 parole. Mai un termine ombrello come 'menopausa' o 'salute femminile': ciò che distingue QUESTO articolo dagli altri",
-  "is_on_topic": true,
-  "off_topic_reason": "se is_on_topic è false: perché (es. ricetta di cucina, pagina promozionale)"
-}}
-"""
+""" + KB_ENRICH_JSON
 
 
 def _embedder():
@@ -117,15 +133,21 @@ def _intro(doc: KnowledgeDocument) -> str:
     return intro
 
 
+def _doc_enrich_user(doc: KnowledgeDocument, text: str) -> str:
+    return KB_ENRICH_USER.format(intro=_intro(doc), title=doc.title, text=text)
+
+
 def build_doc_enrich_prompt(doc: KnowledgeDocument) -> tuple[str, str]:
-    """(system, user) for one article, episode or interview."""
-    return KB_SYSTEM, KB_ENRICH_USER.format(
-        intro=_intro(doc), title=doc.title,
-        text=(doc.content_text or "")[:DOC_SUMMARY_CHARS_READ])
+    """(system, user) for one article, episode or interview read on the SHORT
+    road (up to whole_text.SHORT_MAX characters: the text goes in whole). A longer
+    text is read in pieces (`_read_whole_doc`) and never comes here."""
+    return KB_SYSTEM, _doc_enrich_user(doc, doc.content_text or "")
 
 
-def write_doc_enrich(doc: KnowledgeDocument, data) -> None:
-    """Store one analysis."""
+def apply_doc_enrich(doc: KnowledgeDocument, data) -> list[str]:
+    """Validate one analysis answer and put it on the instance, WITHOUT saving.
+    Returns the fields it set. Raises ValueError for an answer that is not an
+    object. The pipeline and `import_reanalysis` both come here."""
     from pipeline.agents.enrich_agent import canonical_topic, pick_primary_topic
 
     # The model occasionally wraps the object in an array; the content is
@@ -148,12 +170,84 @@ def write_doc_enrich(doc: KnowledgeDocument, data) -> None:
         if not doc.is_on_topic else ""
     doc.enrich_status = DONE
     doc.last_error = ""
-    doc.save(update_fields=["summary_it", "topics", "primary_topic",
-                            "is_on_topic", "off_topic_reason",
-                            "enrich_status", "last_error"])
+    return ["summary_it", "topics", "primary_topic", "is_on_topic",
+            "off_topic_reason", "enrich_status", "last_error"]
+
+
+def write_doc_enrich(doc: KnowledgeDocument, data) -> None:
+    """Store one analysis (short road)."""
+    fields = apply_doc_enrich(doc, data)
+    # The short road read the whole text (a long one is saved by
+    # `save_whole_doc`, never here).
+    doc.full_text_status = DONE
+    doc.save(update_fields=fields + ["full_text_status"])
+
+
+def save_whole_doc(doc: KnowledgeDocument, data, claims: list[dict] | None) -> None:
+    """Analysis AND claims in one transaction, the document marked read whole.
+
+    The one save of a document read in pieces, and the one `import_reanalysis`
+    uses for answers made outside the pipeline. The answer is validated BEFORE
+    anything is written, so a bad one leaves the old analysis and claims intact.
+    `claims=None` keeps the claims there are (an article of up to 8 000
+    characters had them made on the whole text already).
+    The vector is put back in the queue: it was built from the old summary
+    (documentation/low-level/03, «Re-embed after a re-analysis»).
+    """
+    fields = apply_doc_enrich(doc, data)  # ValueError here: nothing written yet
+    with transaction.atomic():
+        if claims is not None:
+            doc.arguments.all().delete()
+            DocumentArgument.objects.bulk_create(
+                [DocumentArgument(document=doc, text_it=c["testo"],
+                                  quote=c["citazione"]) for c in claims])
+            doc.argument_status = DONE
+            fields.append("argument_status")
+        doc.full_text_status = DONE
+        doc.embed_status = PENDING
+        doc.save(update_fields=fields + ["full_text_status", "embed_status"])
+
+
+def _what(doc: KnowledgeDocument) -> str:
+    """What the text is, for «pezzo 3 di 7 di …»: the model must not treat a piece
+    as a whole text, nor call an episode an article."""
+    kind = {"manual": "un'intervista", "video": "un video"}.get(
+        doc.source_type, "un articolo del blog")
+    return f"{kind} intitolato «{doc.title}»"
+
+
+def _read_whole_doc(doc: KnowledgeDocument) -> list[dict]:
+    """A text over whole_text.SHORT_MAX: pieces, notes, one final analysis, one
+    save. Returns the claims saved."""
+    text = doc.content_text or ""
+
+    def ask_piece(user):
+        return client.chat_json(prompts.ARGUMENTS_SYSTEM, user, max_tokens=1200,
+                                model=client.model_for("analysis"))
+
+    def ask_final(block):
+        return client.chat_json(
+            KB_SYSTEM, _doc_enrich_user(doc, block), max_tokens=DOC_MAX_TOKENS,
+            model=client.model_for("analysis"))
+
+    data, claims = whole_text.read_whole(
+        text, _what(doc), ask_piece, ask_final, embed=_embed_texts)
+    try:
+        save_whole_doc(doc, data, claims)
+    except ValueError as exc:
+        raise whole_text.WholeTextError(f"riassunto finale: {exc!r}") from exc
+    return claims
+
+
+def _embed_texts(texts: list[str]):
+    return _embedder().encode(texts, normalize_embeddings=True,
+                              show_progress_bar=False)
 
 
 def _enrich_one(doc: KnowledgeDocument) -> None:
+    if whole_text.is_long(doc.content_text):
+        _read_whole_doc(doc)  # analysis + claims, saved together
+        return
     system, user = build_doc_enrich_prompt(doc)
     data = client.chat_json(system, user, max_tokens=DOC_MAX_TOKENS,
                             # The same deep-reading tier the reels get: what
@@ -164,9 +258,9 @@ def _enrich_one(doc: KnowledgeDocument) -> None:
 
 
 def build_doc_arguments_prompt(doc: KnowledgeDocument) -> tuple[str, str] | None:
-    """(system, user) for claim extraction, or None when the article is too
-    short to carry a claim worth quoting."""
-    text = (doc.content_text or "")[:DOC_CLAIMS_CHARS_READ]
+    """(system, user) for claim extraction on the short road, or None when the
+    article is too short to carry a claim worth quoting."""
+    text = doc.content_text or ""
     if len(text.strip()) < 200:
         return None
     return prompts.ARGUMENTS_SYSTEM, prompts.ARGUMENTS_USER_TEMPLATE.format(
@@ -174,37 +268,28 @@ def build_doc_arguments_prompt(doc: KnowledgeDocument) -> tuple[str, str] | None
 
 
 def write_doc_arguments(doc: KnowledgeDocument, data) -> int:
-    """Store the claims. The quote must appear verbatim in the article or the
-    claim is dropped — the grounding contract, identical for reels."""
-    from pipeline.agents.enrich_agent import _norm
-
-    text = (doc.content_text or "")[:DOC_CLAIMS_CHARS_READ]
-    if isinstance(data, list) and data and isinstance(data[0], dict) \
-            and "argomenti" in data[0]:
-        data = data[0]
-    rows = (data.get("argomenti") if isinstance(data, dict) else data) or []
+    """Store the claims (short road). The quote must appear verbatim in the text
+    or the claim is dropped — the grounding contract, identical for reels."""
+    claims, dropped, _ = whole_text.verified_claims(
+        data, doc.content_text or "", limit=whole_text.CLAIMS_SHORT)
     doc.arguments.all().delete()  # idempotent re-extraction
-    haystack = _norm(text)
-    created = dropped = 0
-    for row in rows[:6]:
-        claim = str(row.get("testo") or "").strip()
-        quote = str(row.get("citazione") or "").strip()
-        if not claim or not quote:
-            continue
-        needle = _norm(quote)
-        if len(needle) < 12 or needle not in haystack:
-            dropped += 1
-            continue
-        DocumentArgument.objects.create(document=doc, text_it=claim[:1000],
-                                        quote=quote[:1000])
-        created += 1
+    for c in claims:
+        DocumentArgument.objects.create(document=doc, text_it=c["testo"],
+                                        quote=c["citazione"])
     if dropped:
         logger.info("[knowledge] %s: %d affermazioni scartate (citazione non trovata)",
                     doc.source_url, dropped)
-    return created
+    return len(claims)
 
 
 def _extract_arguments(doc: KnowledgeDocument) -> int:
+    if whole_text.is_long(doc.content_text):
+        if doc.argument_status == DONE and doc.full_text_status == DONE:
+            # `_enrich_one` has just read it in pieces and saved the claims with
+            # the analysis (uploads and reprocess call the two in a row): reading
+            # it again would only repeat the same dozen calls.
+            return doc.arguments.count()
+        return len(_read_whole_doc(doc))
     built = build_doc_arguments_prompt(doc)
     if built is None:
         return 0
@@ -235,7 +320,7 @@ def _embed_one(doc: KnowledgeDocument) -> None:
 
 
 def run(ctx) -> dict:
-    from pipeline.agents.enrich_agent import _parallel
+    from pipeline.agents.enrich_agent import _fail_whole, _parallel
 
     enriched = enrich_failed = embedded = embed_failed = 0
     arg_docs = total_args = arg_failed = deferred = 0
@@ -263,7 +348,8 @@ def run(ctx) -> dict:
             else:
                 doc.enrich_status = FAILED
                 doc.last_error = repr(exc)[:500]
-                doc.save(update_fields=["enrich_status", "last_error"])
+                doc.save(update_fields=["enrich_status", "last_error"]
+                         + _fail_whole(doc, exc))
                 enrich_failed += 1
                 logger.warning("[knowledge] enrich failed %s: %r", doc.source_url, exc)
 
@@ -288,7 +374,8 @@ def run(ctx) -> dict:
             else:
                 doc.argument_status = FAILED
                 doc.last_error = repr(exc)[:500]
-                doc.save(update_fields=["argument_status", "last_error"])
+                doc.save(update_fields=["argument_status", "last_error"]
+                         + _fail_whole(doc, exc))
                 arg_failed += 1
                 logger.warning("[knowledge] arguments failed %s: %r",
                                doc.source_url, exc)
