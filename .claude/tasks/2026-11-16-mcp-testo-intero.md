@@ -1,7 +1,7 @@
 ---
 id: 2026-11-16-mcp-testo-intero
 titolo: leggi_articolo non taglia più le trascrizioni lunghe; puntate TVRS doppie
-stato: revisione
+stato: pronto
 ramo: feat/mcp-testo-intero
 pr: ""
 ticket: ""
@@ -599,3 +599,7 @@ socket), script temporanei cancellati. `git status` del worktree pulito prima di
 4. Lavoro separato, dopo questo, perché i riassunti leggano tutto il testo. Qui solo
    `nota_analisi`.
 5. Le puntate TVRS restano `owned`; nessuna categoria «partner».
+
+- 16/11 capo: il secondo giro tocca solo parole (istruzioni del connettore, documento) e
+  un test esteso; diff riletto dal capo, suite 372 OK riportata dallo sviluppatore. Nessun
+  nuovo giro di revisione e collaudo.

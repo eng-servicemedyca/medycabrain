@@ -1,9 +1,9 @@
 ---
 id: 2026-11-16-vimeo-secondo-tentativo
 titolo: Vimeo, secondo tentativo automatico e pulsante Riprova sul telefono
-stato: pronto
+stato: rilasciato
 ramo: feat/vimeo-secondo-tentativo
-pr: ""
+pr: "26"
 ticket: ""
 ---
 
@@ -164,3 +164,11 @@ Non premuto «Riprova» da nessuna parte.
 
 ### Pulizia
 Spento il Postgres, il server statico; cancellati `pgdata`, `node_modules`, `dist`, il link `venv-ytdlp`, il file audio e gli script. Il `.env` e la produzione non sono stati modificati.
+
+## 6. Rilascio           (capo, 16/11/2026)
+
+Su conferma di Giuseppe («Sì, rilascia»): cartella di produzione a `d93e7d1`, nessuna
+migrazione, `.env` non toccato, `npm run build` riuscita alle 11:25 (la pagina Interviste a
+schede è online da allora). Riavvio di `medycabrain-backend` lanciato da Giuseppe, attivo
+dalle 13:18; nessun errore nel log; `_PROXY_RETRIES = 2` caricato. Un rifiuto vero di Vimeo
+seguito dal secondo tentativo non è ancora stato visto.
