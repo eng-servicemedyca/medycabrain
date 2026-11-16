@@ -1,7 +1,7 @@
 ---
 id: 2026-11-16-locale-7b-veloce
 titolo: Il 7b locale più veloce nel giro di ogni giorno
-stato: disegno
+stato: approvato
 ramo: feat/locale-7b-veloce
 pr: ""
 ticket: ""
@@ -320,7 +320,86 @@ la sua riga in `03-llm-and-embeddings.md`.
 6. **Il passo 0 (40 minuti di 7b) si fa prima di scrivere il codice?** *Raccomando sì*: senza,
    il punto 1 è una scommessa e i tetti delle affermazioni non hanno numeri.
 
+## Passo 0 — risultati (sviluppatore, 16-17/11/2026, 23:04-00:20)
+
+**Esito: NON passa, per poco, su due righe. Nessun codice scritto.** Stato lasciato a `approvato`.
+
+Come: sei contenuti corti (3 articoli, 3 reel; Medyca e competitor in chiamate separate, un
+contenuto per prompt), 18 chiamate sul 7b con `harness` adattato (stesso lucchetto della
+pipeline, 6 thread, `num_ctx` 8192, `keep_alive` 30m; database solo in lettura, nessuna
+chiamata a Groq). Per ognuno: analisi di oggi, affermazioni **nuove** (testa uguale
+all'analisi, coda nuova con limiti di parole), affermazioni **di oggi**. Tetto 2000 su tutte
+le nuove per misurare quanto scrive davvero. Finita alle 00:20, ben prima delle 03:00. File
+grezzi (anche le risposte): `/home/medyca-admin/ricerche/banco-7b-2026-11-16/passo0/` (`raw0.jsonl`,
+`run0.log`, `sample0.json`, gli script `pick0.py`, `run0.py`, `newprompts.py`).
+
+**La cache scatta, con i template veri.** Seconda chiamata, secondi di lettura:
+
+| Contenuto | Token del prompt | Lettura nuova | Lettura di oggi |
+|---|---|---|---|
+| articolo Medyca medio (2.034 car.) | 893 | 22,7 | 56,8 |
+| articolo Medyca lungo (7.387 car.) | 2.575 | 21,0 | 189,4 |
+| articolo competitor (3.069 car.) | 1.310 | 20,7 | 75,5 |
+| reel Medyca 1 | 1.426 | 18,5 | 81,6 |
+| reel Medyca 2 | 1.046 | 24,5 | 61,3 |
+| reel competitor | 1.198 | 20,0 | 80,0 |
+| **media** | | **21,2** (mediana 20,9) | **90,8** |
+
+Il guadagno sulla seconda chiamata è di **circa 70 s a contenuto in media** (articolo lungo:
+−168 s). Ma la soglia del disegno era «sotto 20 s» e la media è 21,2: **solo 1 su 6 è sotto
+(18,5), uno è a 20,0**. La lettura non dipende dalla lunghezza del testo (21,0 s a 2.575 token,
+come a 893): è la coda nuova che pesa, circa 260 token (calcolo: 893 meno la testa; ~21 s a
+~12 token/s sulla coda in cache lunga).
+
+**Affermazioni tenute dal controllo delle citazioni** (nuove / di oggi): 4/6, 6/6, 1/0, 2/3,
+4/3, 2/6. Totale **19 contro 24: −0,8 a contenuto in media** (soglia: non più di 1 in meno:
+passa), ma **scartate 9 contro 8** (soglia: non di più: non passa per una). Il campione è di sei:
+le differenze stanno dentro il rumore tra una chiamata e l'altra, e sul competitor le
+vecchie hanno scartato tutte e 4 le righe. Le nuove hanno scritto righe troppo corte da tenere
+(testo sotto 8 caratteri non succede: sono le citazioni sotto i 12 caratteri, es. 3 parole,
+che il controllo scarta).
+
+**Il 7b non rispetta il limite di parole della citazione.** Nell'articolo lungo le nuove
+citazioni sono di 38, 47, 54, 51, 26, 38 parole (limite chiesto: 25), contro 13-29 di oggi.
+Il limite «testo massimo 20 parole» invece lo rispetta, anzi scrive più corto (6-12 parole
+contro 9-19). Quindi la citazione non si accorcia con le parole; le citazioni più lunghe non
+sono un guadagno ma un costo di scrittura (742 token scritti nell'articolo lungo, 2,9 token/s).
+
+**Token scritti, per i tetti (§2.4)**
+
+| | Massimo scritto | Doppio |
+|---|---|---|
+| affermazioni nuove (6 contenuti) | **742** (articolo lungo, 6 affermazioni) | **1.484** |
+| affermazioni di oggi | 883 (reel, tetto 1.200 non toccato) | — |
+| analisi (6 chiamate) | 202 | 404 (il banco già diceva 800 col triplo) |
+
+Quindi il tetto provvisorio 1.000 delle affermazioni corte **era troppo basso**: la regola
+«doppio del massimo» dà almeno 1.480 (per gli articoli; i reel hanno scritto al massimo 382,
+cioè 764). Il tetto di 700 per i pezzi non è stato provato (il passo 0 non li tocca).
+
+**Velocità di scrittura in questa prova: 2,0-3,5 token/s**, mediana 2,9 (il banco aveva 2,5-4,2).
+Il modello è stato scaricato e ricaricato due volte da qualcuno fuori dalla prova (190 s e 173 s
+di caricamento, prima dell'analisi di `art-comp-medio` e di `reel-comp-1`): non so da chi; la
+cache fra analisi e affermazioni non ne ha sofferto, perché le due chiamate stanno sempre
+dopo il ricaricamento.
+
+**Cosa si può fare (scelta del capo / di Giuseppe, non mia).** Il disegno dice: se la lettura
+non passa, il punto 1 non entra. Dai numeri, due strade che non ho provato:
+1. *Accorciare la coda* (260 → ~120 token: tolgo il «Ora non fare l'analisi…» ripetuto, i limiti
+   di parole che il 7b non rispetta, e riporto le regole in due righe). Calcolo: lettura ~10-12 s.
+   Richiede una seconda prova (6 × ~200 s ≈ 20 minuti, solo le chiamate nuove) prima del codice.
+2. *Accettare il 21,2 come «quasi 20»* e andare avanti con la coda di oggi. Non lo faccio io: la
+   regola era scritta e il capo mi ha detto di fermarmi.
+In tutti e due i casi: tetto delle affermazioni corte **non 1.000 ma almeno 1.500**, e il limite
+«citazione massimo 25 parole» non regge sul 7b (si toglie, o si lascia come desiderio).
+
 ## Registro
 
 - 16/11 — capo: aperto il lavoro, lanciato l'architetto.
 - 16/11 — architetto: scritta la sezione 2. Fermo in attesa dell'OK di Giuseppe. Passo 0 (prova sul 7b) non fatto: la macchina era occupata dal giro `knowledge`.
+- 16/11 23:00 — capo: Giuseppe dà l'OK («Ok») a passo 0 e PR. Risposte alle domande di §2.8:
+  1 sì (limiti di parole anche per Groq); 2 sì (una barra); 3 regola più stretta; 4 sì ma in
+  una PR dopo, non in questa; 5 no; 6 sì, il passo 0 si fa prima del codice. Sul 2214: le due
+  frasi quasi uguali hanno somiglianza 0,771, nessuna regola le prende, ed è accettato così.
+  Giro `knowledge` finito (2.299 documenti con vettore), la macchina è libera.
+- 17/11 00:20 — sviluppatore: passo 0 fatto (18 chiamate sul 7b, 23:04-00:20). Non passa: lettura della seconda chiamata 21,2 s in media (soglia 20; oggi 90,8), scartate 9 contro 8. Fermato, nessun codice. Numeri e strade nella sezione «Passo 0 — risultati».
