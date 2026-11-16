@@ -161,14 +161,14 @@ A typed tool given the other kind's id returns a readable redirect
   → transcript (field `trascrizione`), caption, `primary_topic`, `summary_it`, `topics`,
   **plus the video-only fields**: `gancio` (`hook_text`), `analisi_gancio`, `formato`
   (`content_format`), `pubblico` (`target_audience_it`), views/likes, and claims via
-  `r.arguments.all()[:10]` (each `text_it` + verbatim `quote`).
+  `r.arguments.all()[:MAX_AFFERMAZIONI]` (12; each `text_it` + verbatim `quote`).
 - **`leggi_articolo`** — `KnowledgeDocument.objects.filter(id=pk, is_active=True).select_related("source")`
   → `content_text` (falls back to `content_md`; field `testo`), plus `ispirazione`,
   `trascrizione_disponibile` and a `nota` when there is no transcript. `tipo` (`_tipo_articolo`):
   `manual` → "intervista"; `video` → "video di riferimento" if `is_inspiration`, else "video";
   everything else "articolo". Then `fonte`, `autore`,
   `lingua`, `pubblicato`, `primary_topic`, `summary_it`, `topics`, `in_tema` +
-  `fuori_tema_perche`, and `d.arguments.all()[:10]`. Plain text on purpose, so a quote can be
+  `fuori_tema_perche`, and `d.arguments.all()[:MAX_AFFERMAZIONI]` (12). Plain text on purpose, so a quote can be
   verified verbatim against exactly what Claude was given.
 - **`leggi`** routes on the id prefix; it exists for `cerca_tutto` results.
 

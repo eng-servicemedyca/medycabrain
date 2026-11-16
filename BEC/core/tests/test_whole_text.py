@@ -542,3 +542,59 @@ class StatoNuovoDiDefault(TestCase):
         acc = TrackedAccount.objects.create(username="z", owner_type="owned")
         self.assertEqual(Reel.objects.create(account=acc, shortcode="Z").full_text_status,
                          PENDING)
+
+
+class ReprocessAllineaLoStato(TestCase):
+    """`reprocess` keeps `full_text_status` true, like the pipeline stage does."""
+
+    def reel(self, text, **kw):
+        acc = TrackedAccount.objects.create(username="rp", owner_type="competitor")
+        r = Reel.objects.create(account=acc, shortcode="RP1", caption="c",
+                                transcribe_status=DONE, enrich_status=DONE,
+                                argument_status=DONE, **kw)
+        Transcript.objects.create(reel=r, text=text)
+        return r
+
+    def run_enrich(self, model):
+        from django.core.management import call_command
+        a, b, c = _patches(model)
+        import io
+        with a, b, c:
+            call_command("reprocess", "--stage", "enrich", stdout=io.StringIO(),
+                         stderr=io.StringIO())
+
+    def test_a_reel_of_5000_characters_becomes_done_after_reprocess(self):
+        r = self.reel(testo(70))  # ~5 000 characters: read whole on the short road
+        self.assertEqual(r.full_text_status, PENDING)
+        self.run_enrich(FakeModel())
+        r.refresh_from_db()
+        self.assertEqual(r.full_text_status, DONE)
+
+    def test_a_failed_piece_in_reprocess_ends_failed_not_done(self):
+        r = self.reel(testo(500))
+        self.run_enrich(FakeModel(fail_piece=2))
+        r.refresh_from_db()
+        self.assertEqual((r.enrich_status, r.argument_status, r.full_text_status),
+                         (FAILED, FAILED, FAILED))
+        self.assertIn("pezzo 2 di", r.last_error)
+
+    def test_a_new_transcript_puts_the_status_back_to_pending(self):
+        import io
+        import tempfile
+        from pathlib import Path
+        from django.core.management import call_command
+        from django.test import override_settings
+        r = self.reel("vecchio", audio_file="a/x.mp3", full_text_status=DONE)
+        with tempfile.TemporaryDirectory() as media:
+            (Path(media) / "a").mkdir()
+            (Path(media) / "a/x.mp3").write_bytes(b"x")
+            res = {"text": "nuovo parlato", "segments": [], "language": "it",
+                   "model_name": "m", "duration": 1}
+            with override_settings(MEDIA_ROOT=media), \
+                    mock.patch("pipeline.agents.transcriber_agent._transcribe",
+                               return_value=res):
+                call_command("reprocess", "--stage", "transcribe",
+                             stdout=io.StringIO(), stderr=io.StringIO())
+        r.refresh_from_db()
+        self.assertEqual((r.enrich_status, r.argument_status, r.full_text_status),
+                         (PENDING, PENDING, PENDING))

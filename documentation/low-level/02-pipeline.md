@@ -950,25 +950,53 @@ For the one-off redo of the old content (16/11/2026, with Claude Haiku, see
 with `key`, `group`, `task`, `cap`) and `output/*.jsonl` with `{"key": "<article|reel>:<id>:<analysis|claims>",
 "response": "<raw JSON text>"}` (`article` = a `KnowledgeDocument`).
 
-- **Dry run by default**: validates and counts, writes nothing; `--write` writes.
+- **Dry run by default**: validates and counts, writes nothing. `--write` writes, and **refuses to
+  run without `--backup-fatto`**: the save replaces the old analysis and claims and leaves no trace of
+  them, so the dump comes first (see «Before `--write`» below).
 - The **same parser and the same save** as the pipeline: `llm.client.parse_json`;
   `enrichment_fields` / `apply_doc_enrich` for the analysis; `whole_text.verified_claims` for the
   claims (every quote verbatim in the real text, folded the same way; ≤ 6 claims up to 8 000
   characters, ≤ 12 above); `save_whole_reel` / `save_whole_doc` for the write.
 - **A content is written only if both answers are valid** (broken JSON, empty summary, an answer with
   no list of claims, or with claims **all** failing the quote check → nothing, the old analysis and
-  claims stay). One transaction per content; the vector is put back in the queue (`embed_status`
-  `pending` for a document; for a reel the vector is emptied and the `embed` stage recomputes it).
-  Exception: an article of up to 8 000 characters may come with the analysis only — its claims had been
-  made on the whole text already, and stay.
+  claims stay). **An empty list of claims is refused** for a text over 8 000 characters or for a
+  content that already has claims: it never wipes what is there to write zero. One transaction per
+  content; the vector is put back in the queue (`embed_status` `pending` for a document; for a reel
+  the vector is emptied and the `embed` stage recomputes it). Exception: an article of up to 8 000
+  characters may come with the analysis only — its claims had been made on the whole text already,
+  and stay.
+- **Whose and which text.** The input rows carry `owner_type` and `text_chars`. A content is refused
+  («owner diverso», «testo cambiato» in the report) if the input's `owner_type` is not the database's
+  (a reel's is its account's) or `text_chars` is not the length of the text now (a reel: transcript +
+  caption; a document: `content_text`): the answer was written for another content or another text.
+- **The state is read again, locked** (`select_for_update`), inside the transaction before writing:
+  a content the 03:30 / 14:15 round failed or redid meanwhile is left alone («cambiati nel
+  frattempo»).
 - **Idempotent**: a content already `full_text_status=done` is not rewritten. Contents `failed` for any
-  reason, and those not yet analysed, are skipped (counted in the report). `owner_type` is never
-  touched; an answer lands only on the id in its key.
+  reason, and those not yet analysed, are skipped (counted in the report) — **unless `--anche-falliti`
+  is written by hand**: then a *valid* answer for a `failed` content is accepted and the content goes
+  to `done` (`last_error` cleared). That is not a silent reset of a failure: it is a new analysis that
+  succeeded (a broken answer leaves it `failed`; a content still `pending` stays the pipeline's).
+  `owner_type` is never touched; an answer lands only on the id in its key.
 - `--group` uses the `group` carried by the input (1 episodes/videos/interviews, 2 Medyca's articles,
   3 competitors' on-topic articles, 4 reels, 5 off-topic articles); without it the command works it out
   the same way.
 - The model name goes in `Enrichment.llm_model` for reels (`--model`, default `claude-haiku`). Documents
   have no such column. **No row is added to `llm_calls`**: no call went through this server.
+- **Before `--write`: the dump.** From the folder of the project, with the production credentials:
+  `pg_dump "$DATABASE_URL" -Fc -t enrichments -t reel_arguments -t document_arguments -t reels
+  -t knowledge_documents -f /home/medyca-admin/backup/prima-import-$(date +%F).dump`. To go back:
+  `pg_restore -d <db> --clean --if-exists -t <table> <file>` for the tables that need it. Then
+  `--write --backup-fatto`. (`reel_embeddings` is not in the list: the vector is recomputed anyway.)
+- **After the import: embed, then cluster.** Verified in the code: the `embed` stage
+  (`cluster_agent._ensure_reel_embeddings`) recomputes the reel vectors that are missing **or
+  empty**, and the documents with `embed_status=pending` are re-embedded by `knowledge`. The reel's
+  assignments to the themes (`argument_assignments`) go away with the old claims (cascade) and are
+  rebuilt only by the next **`cluster`** run, which embeds the new claims and assigns them (in a
+  fresh `ClusterRun`; the old one stays current until the new one is done). So the imported reels
+  are out of the themes, and their new claims are not assigned, **until the next round** (03:30 /
+  14:15). To not wait: `python manage.py run_pipeline --only embed` and then `--only cluster` right
+  after the import. On a copy of the data the assignments went 50 042 → 42 802 after the import.
 - **Not in this change**: a command that redoes the old content on the local 7b (`reanalyze_whole`),
   the third level of the local lock, and a box on the «Avanzamento» page. They are in the work file as
   the way to redo what is not done with Haiku.
@@ -988,8 +1016,8 @@ All under `BEC/core/management/commands/`. Run with `python manage.py <name>`.
 |---|---|
 | `run_pipeline` | Run the DAG (cron entrypoint). Flags: `--dry-run`, `--limit`, `--only <stage>`, `--skip-<stage>`. Stages come from `pipeline.dag.build_steps()`, shared with the manual run. |
 | `run_job <id>` | Execute a queued `Job` by id, detached. |
-| `import_reanalysis` | Load analyses/claims written outside the pipeline (one-off redo on the whole text). Dry run unless `--write`. See [above](#import_reanalysis--loading-answers-written-outside-the-pipeline). |
-| `reprocess` | Re-run stages (`transcribe`, `enrich`, `knowledge`), resumable. Flags: `--stage`, `--scope`, `--limit`, `--only-stale`, `--with-transcript`, `--not-model`. |
+| `import_reanalysis` | Load analyses/claims written outside the pipeline (one-off redo on the whole text). Dry run unless `--write --backup-fatto`; `--anche-falliti` on purpose. See [above](#import_reanalysis--loading-answers-written-outside-the-pipeline). |
+| `reprocess` | Re-run stages (`transcribe`, `enrich`, `knowledge`), resumable (`transcribe` puts `full_text_status` back to `pending`; `enrich` sets it `done`, or `failed` with the stage's other two states if a piece fails). Flags: `--stage`, `--scope`, `--limit`, `--only-stale`, `--with-transcript`, `--not-model`. |
 | `ingest_blog` | Fetch a specific Medyca blog article (or several). |
 | `import_apify` | Fill `video_url`/`caption`/`posted_at`/`duration` from an Apify export. |
 | `backfill_meta` | Backfill `posted_at` and other metadata. |

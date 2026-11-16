@@ -2,7 +2,8 @@
 # force read the WHOLE text?
 #
 # Until 2026-11-16 the summary read the first 6 000 characters of a document and
-# the first 3 000 of a reel's transcript (the claims 8 000 for documents). Those
+# the first 3 000 of a reel's transcript and 1 500 of its caption (the claims 8 000
+# for documents). Those
 # whose text fits inside the old cut were read whole: `done`. The others were
 # made on the beginning only: `pending`, to be redone. The numbers are written
 # here and not imported from the agents: a migration must keep meaning what it
@@ -16,14 +17,18 @@ from django.db import migrations, models
 
 OLD_CUT_DOCUMENT = 6000
 OLD_CUT_TRANSCRIPT = 3000
+OLD_CUT_CAPTION = 1500  # the old reel analysis cut the caption here too
 
 
 def mark_already_whole(apps, schema_editor):
     Reel = apps.get_model("core", "Reel")
     KnowledgeDocument = apps.get_model("core", "KnowledgeDocument")
+    # A reel was cut if its transcript OR its caption went over the old cut.
     long_reels = (Reel.objects
-                  .annotate(n=django.db.models.functions.Length("transcript__text"))
-                  .filter(n__gt=OLD_CUT_TRANSCRIPT).values("pk"))
+                  .annotate(n=django.db.models.functions.Length("transcript__text"),
+                            c=django.db.models.functions.Length("caption"))
+                  .filter(models.Q(n__gt=OLD_CUT_TRANSCRIPT)
+                          | models.Q(c__gt=OLD_CUT_CAPTION)).values("pk"))
     Reel.objects.exclude(pk__in=long_reels).update(full_text_status="done")
     long_docs = (KnowledgeDocument.objects
                  .annotate(n=django.db.models.functions.Length("content_text"))

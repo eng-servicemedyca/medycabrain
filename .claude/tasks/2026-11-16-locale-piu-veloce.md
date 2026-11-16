@@ -1,7 +1,7 @@
 ---
 id: 2026-11-16-locale-piu-veloce
 titolo: Modello locale 7b più veloce sulla CPU
-stato: sviluppo
+stato: revisione
 ramo: feat/locale-piu-veloce
 pr: ""
 ticket: ""
@@ -827,6 +827,44 @@ la produzione e il suo database non sono stati toccati.
 - I limiti dell'architetto non toccati: bozze di blog (12.000 / 4.000), vettore (4.000).
 - Frontend non ricompilato (cambiate solo stringhe in `it.json`, JSON valido); le due scritte nuove
   nel drawio potrebbero uscire dal riquadro: da guardare aprendo il file.
+
+### Giro 2 (dopo revisione NON passa e collaudo passa)
+
+Suite intera: **455 test verdi** (erano 440; 15 nuovi), `makemigrations --check` pulito.
+
+1. **Rev. 1** — `import_reanalysis` scarta se `owner_type` dell'input non è quello del database (reel:
+   dell'account) o se `text_chars` non è la lunghezza del testo di oggi (reel: trascrizione +
+   didascalia, come in `costruisci.py`; documento: `content_text`). Nel rapporto: «owner diverso»,
+   «testo cambiato». Se la riga di input non porta i campi, il controllo non scatta.
+2. **Rev. 2** — un elenco di affermazioni vuoto è scartato se il testo è oltre 8.000 caratteri o il
+   contenuto ha già affermazioni. `--write` **pretende `--backup-fatto`** (senza: errore, niente
+   scritto). Il `pg_dump` da fare prima è in `02-pipeline.md`, sezione `import_reanalysis` («Before
+   `--write`»): `pg_dump "$DATABASE_URL" -Fc -t enrichments -t reel_arguments -t document_arguments
+   -t reels -t knowledge_documents -f <file>`.
+3. **Rev. 3** — `reprocess`: `_one` scrive `full_text_status=done`; il ramo trascrizione lo rimette
+   `pending`; un `WholeTextError` porta i tre stati a `failed` con `last_error` (come `run()`).
+4. **Rev. 4** — `04-mcp-connector.md` righe 164 e 171: 12.
+5. **Rev. 5 / collaudo** — migrazione 0028: `pending` se trascrizione > 3.000 **oppure** didascalia
+   > 1.500 (anche reel senza trascrizione con didascalia lunga). Atteso 265 → ~381 reel pending (il
+   numero vero lo darà il collaudo sulla copia; i test coprono i bordi 1.500/1.501). Doc 01 aggiornato.
+   Un reel `pending` solo per la didascalia non ha `nota_analisi` (la nota parla della trascrizione).
+6. **Rev. 6** — l'import rilegge lo stato dentro la transazione con `select_for_update` e non tocca un
+   contenuto diventato `failed` o `done` («cambiati nel frattempo»).
+7. **Collaudo 2** — `--anche-falliti`: solo scritto a mano accetta una risposta valida per un
+   contenuto `failed` (analisi o affermazioni) e lo porta a `done`, `last_error` vuoto; senza
+   opzione restano `failed`; una risposta non valida lo lascia `failed`; un contenuto ancora
+   `pending` resta della pipeline. Se le affermazioni erano `failed` anche un articolo corto deve
+   avere la risposta delle affermazioni. Scritto in `02-pipeline.md` come «nuova analisi riuscita».
+8. **Collaudo 3** — verificato nel codice: `embed` (`_ensure_reel_embeddings`) ricalcola i vettori dei
+   reel mancanti **o vuoti**; i documenti `embed_status=pending` li rifà `knowledge`; le assegnazioni
+   ai temi (`argument_assignments`) spariscono con le vecchie affermazioni (cascade) e le ricostruisce
+   solo `cluster` (embedda le affermazioni nuove e le assegna in un `ClusterRun` nuovo; quello vecchio
+   resta corrente finché il nuovo non è finito). Passo in più per non aspettare il giro: `run_pipeline
+   --only embed` poi `--only cluster` subito dopo l'import. Scritto in `02-pipeline.md`.
+   **Non provato** con un embedder vero: è lettura del codice.
+
+Fuori anche in questo giro: nessuna prova su dati veri; il numero esatto di reel pending dopo la
+migrazione corretta va riconfermato dal collaudo sulla copia.
 
 ## Registro
 

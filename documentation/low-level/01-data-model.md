@@ -151,9 +151,11 @@ link** (a doctor interview; a TV episode on YouTube or Vimeo kept as reference).
   analysis in force read the **whole** transcript? `done` yes; `pending` it was made on the first
   3 000 characters (the old cut) and is to be redone; `failed` a redo of a long text failed (a piece
   went wrong, see `02-pipeline.md`). Every new analysis writes `done`. The migration set `done` for
-  reels without a transcript or with 3 000 characters or fewer, `pending` for the others (it
-  writes the number 3 000 itself, it does not read it from the agent). It decides whether the
-  connector says `nota_analisi` (`04-mcp-connector.md`).
+  reels whose transcript has 3 000 characters or fewer **and** whose caption has 1 500 or fewer
+  (the old analysis cut both: about 116 more reels than the transcript alone, 265 → ~381 `pending`, measured on a copy), `pending` for the others
+  (it writes the numbers itself, it does not read them from the agent). It decides whether the
+  connector says `nota_analisi` (`04-mcp-connector.md`); a reel `pending` only for its caption has no
+  note (the note speaks of the transcript).
 - **Index `reels_caption_fts_gin`** — GIN on `SearchVector("caption", config="italian")` (migration `0025_search_indexes`). Expression index, no new column: the library search must use exactly the same expression (config included) or Postgres ignores it.
 
 **`Transcript`** — `transcripts`. **1:1** with `Reel`.

@@ -106,7 +106,8 @@ class Reel(models.Model):
     enrich_status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=PENDING)
     argument_status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=PENDING)
     # Did the analysis in force read the WHOLE transcript? `done` yes; `pending`
-    # it was made on the first 3 000 characters (the old cut) and is to be
+    # it was made on the first 3 000 characters of the transcript or 1 500 of the
+    # caption (the old cut) and is to be
     # redone; `failed` the redo failed. The MCP `nota_analisi` is said only when
     # this is not `done`. Every new analysis writes `done`.
     full_text_status = models.CharField(max_length=16, choices=STATUS_CHOICES,

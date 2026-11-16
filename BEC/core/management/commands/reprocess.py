@@ -104,7 +104,11 @@ class Command(BaseCommand):
                 # A new transcript invalidates the analysis built on the old one.
                 reel.enrich_status = PENDING
                 reel.argument_status = PENDING
-                reel.save(update_fields=["enrich_status", "argument_status"])
+                # ...and so does "it read the whole text": the old analysis was
+                # made on the old transcript. The enrich stage sets it back.
+                reel.full_text_status = PENDING
+                reel.save(update_fields=["enrich_status", "argument_status",
+                                         "full_text_status"])
                 ok += 1
             except Exception as exc:  # noqa: BLE001
                 self.stderr.write(f"  {reel.shortcode}: {exc!r}")
@@ -138,7 +142,9 @@ class Command(BaseCommand):
             n = ea._extract_arguments(reel)
             reel.enrich_status = DONE
             reel.argument_status = DONE
-            reel.save(update_fields=["enrich_status", "argument_status"])
+            reel.full_text_status = DONE  # read whole: short road or pieces
+            reel.save(update_fields=["enrich_status", "argument_status",
+                                     "full_text_status"])
             return n
 
         # Both calls are network waits, so these run several at a time. In
@@ -169,6 +175,12 @@ class Command(BaseCommand):
                 else:
                     self.stderr.write(f"  {reel.shortcode}: {exc!r}")
                     fail += 1
+                    # A piece that failed makes the reel `failed`, as in the
+                    # pipeline: never left looking done with an old analysis.
+                    fields = ea._fail_whole(reel, exc)
+                    if fields:
+                        reel.last_error = repr(exc)[:500]
+                        reel.save(update_fields=fields + ["last_error"])
             self.stdout.write(f"  {done}/{len(todo)} (ok={ok} ko={fail})")
         if stop:
             self.stdout.write(self.style.WARNING(

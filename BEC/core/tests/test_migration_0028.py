@@ -1,9 +1,9 @@
 """
 Migration 0028 (`full_text_status`).
 
-A row whose text fitted in the old cut was read whole: `done`. A longer one was
+A row whose text (a reel: transcript AND caption) fitted in the old cut was read whole: `done`. A longer one was
 made on its beginning only: `pending`, to be redone. The cut is 6 000 characters
-for a document and 3 000 for a reel's transcript; a text of exactly that many
+for a document and 3 000 for a reel's transcript and 1 500 for its caption; a text of exactly that many
 characters is inside it. It must also walk back.
 """
 
@@ -30,8 +30,11 @@ class FullTextStatusMigrationTests(TransactionTestCase):
         acct = apps.get_model("core", "TrackedAccount").objects.create(username="a")
         Reel, Transcript = apps.get_model("core", "Reel"), apps.get_model("core", "Transcript")
         Doc = apps.get_model("core", "KnowledgeDocument")
-        for code, n in (("NOSPEECH", None), ("EDGE", 3000), ("SHORT", 100), ("LONG", 3001)):
-            r = Reel.objects.create(account=acct, shortcode=code)
+        caps = {"LONGCAP": 1501, "EDGECAP": 1500, "CAPONLY": 2000}
+        for code, n in (("NOSPEECH", None), ("EDGE", 3000), ("SHORT", 100), ("LONG", 3001),
+                        ("LONGCAP", 100), ("EDGECAP", 100), ("CAPONLY", None)):
+            r = Reel.objects.create(account=acct, shortcode=code,
+                                    caption="c" * caps.get(code, 10))
             if n is not None:
                 Transcript.objects.create(reel=r, text="a" * n)
         for i, n in enumerate((0, 6000, 6001, 20000)):
@@ -42,7 +45,10 @@ class FullTextStatusMigrationTests(TransactionTestCase):
         Reel, Doc = apps.get_model("core", "Reel"), apps.get_model("core", "KnowledgeDocument")
         got = dict(Reel.objects.values_list("shortcode", "full_text_status"))
         self.assertEqual(got, {"NOSPEECH": "done", "EDGE": "done",
-                               "SHORT": "done", "LONG": "pending"})
+                               "SHORT": "done", "LONG": "pending",
+                               # the old analysis cut the caption at 1 500 too
+                               "LONGCAP": "pending", "EDGECAP": "done",
+                               "CAPONLY": "pending"})
         got = {len(c): s for c, s in Doc.objects.values_list("content_text", "full_text_status")}
         self.assertEqual(got, {0: "done", 6000: "done", 6001: "pending", 20000: "pending"})
 

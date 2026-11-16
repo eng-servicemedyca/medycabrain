@@ -26,6 +26,7 @@ from django.test import TestCase
 from core.models import (DONE, FAILED, PENDING, DocumentArgument, Enrichment,
                          KnowledgeDocument, LLMCall, Reel, ReelArgument,
                          ReelEmbedding, TrackedAccount, Transcript)
+from core.management.commands.import_reanalysis import Command
 from core.tests.test_whole_text import testo
 from llm import client
 
@@ -115,15 +116,22 @@ class ImportaLeRisposte(TestCase):
         self.assertEqual(Enrichment.objects.get(reel=self.reel).summary_it, "vecchio")
         self.assertEqual(self.reel.full_text_status, PENDING)
 
+    def test_write_without_the_backup_flag_is_refused_and_writes_nothing(self):
+        self.everything()
+        with self.assertRaisesRegex(CommandError, "copia di sicurezza"):
+            self.run_cmd("--write")
+        self.refresh()
+        self.assertEqual(self.doc.full_text_status, PENDING)
+
     def test_write_and_dry_run_together_are_refused(self):
         self.everything()
         with self.assertRaises(CommandError):
-            self.run_cmd("--write", "--dry-run")
+            self.run_cmd("--write", "--backup-fatto", "--dry-run")
 
     # write
     def test_write_saves_analysis_claims_and_marks_the_content_done(self):
         self.everything()
-        out = self.run_cmd("--write", "--model", "claude-haiku")
+        out = self.run_cmd("--write", "--backup-fatto", "--model", "claude-haiku")
         self.assertIn("scritti: 2", out)
         self.refresh()
         self.assertEqual((self.doc.full_text_status, self.doc.enrich_status,
@@ -144,12 +152,12 @@ class ImportaLeRisposte(TestCase):
     def test_no_llm_call_is_recorded_and_no_model_is_called(self):
         self.everything()
         before = LLMCall.objects.count()
-        self.run_cmd("--write")   # `client.chat` raises if touched (setUp)
+        self.run_cmd("--write", "--backup-fatto")   # `client.chat` raises if touched (setUp)
         self.assertEqual(LLMCall.objects.count(), before)
 
     def test_the_owner_never_changes(self):
         self.everything()
-        self.run_cmd("--write")
+        self.run_cmd("--write", "--backup-fatto")
         self.refresh()
         self.assertEqual(self.doc.owner_type, "competitor")
         self.assertEqual(self.reel.account.owner_type, "competitor")
@@ -160,17 +168,17 @@ class ImportaLeRisposte(TestCase):
             content_text=testo(500, "o"), summary_it="Mia.", enrich_status=DONE,
             argument_status=DONE)
         self.everything()
-        self.run_cmd("--write")
+        self.run_cmd("--write", "--backup-fatto")
         other.refresh_from_db()
         self.assertEqual((other.summary_it, other.full_text_status), ("Mia.", PENDING))
 
     # idempotence and skips
     def test_a_second_run_rewrites_nothing(self):
         self.everything()
-        self.run_cmd("--write")
+        self.run_cmd("--write", "--backup-fatto")
         self.refresh()
         first = list(self.doc.arguments.values_list("id", flat=True))
-        out = self.run_cmd("--write")
+        out = self.run_cmd("--write", "--backup-fatto")
         self.assertIn("scritti: 0", out)
         self.assertIn("già fatti (full_text_status=done): 2", out)
         self.refresh()
@@ -180,7 +188,7 @@ class ImportaLeRisposte(TestCase):
         self.doc.enrich_status = FAILED
         self.doc.save()
         self.everything()
-        out = self.run_cmd("--write")
+        out = self.run_cmd("--write", "--backup-fatto")
         self.assertIn("saltati: failed per altri motivi: 1", out)
         self.doc.refresh_from_db()
         self.assertEqual((self.doc.enrich_status, self.doc.summary_it),
@@ -190,7 +198,7 @@ class ImportaLeRisposte(TestCase):
         self.reel.enrich_status = PENDING
         self.reel.save()
         self.everything()
-        out = self.run_cmd("--write")
+        out = self.run_cmd("--write", "--backup-fatto")
         self.assertIn("non ancora analizzati: 1", out)
         self.reel.refresh_from_db()
         self.assertEqual(self.reel.full_text_status, PENDING)
@@ -200,7 +208,7 @@ class ImportaLeRisposte(TestCase):
         self.ask("article", self.doc.id, "analysis", ANALISI_DOC)
         self.ask("article", self.doc.id, "claims", {"argomenti": [
             {"testo": "x", "citazione": "una citazione che il testo non contiene mai"}]})
-        out = self.run_cmd("--write")
+        out = self.run_cmd("--write", "--backup-fatto")
         self.assertIn("scartati (risposta non valida): 1", out)
         self.assertIn("nessuna citazione trovata", out)
         self.refresh()
@@ -213,13 +221,13 @@ class ImportaLeRisposte(TestCase):
         data["argomenti"].append({"testo": "x", "citazione": "frase del tutto inventata qui"})
         self.ask("article", self.doc.id, "analysis", ANALISI_DOC)
         self.ask("article", self.doc.id, "claims", data)
-        self.run_cmd("--write")
+        self.run_cmd("--write", "--backup-fatto")
         self.assertEqual(self.doc.arguments.count(), 3)
 
     def test_broken_json_discards_the_content(self):
         self.ask("article", self.doc.id, "analysis", "{non è json")
         self.ask("article", self.doc.id, "claims", claims_from(self.testo_doc))
-        out = self.run_cmd("--write")
+        out = self.run_cmd("--write", "--backup-fatto")
         self.assertIn("JSON non valido", out)
         self.refresh()
         self.assertEqual(self.doc.full_text_status, PENDING)
@@ -227,18 +235,18 @@ class ImportaLeRisposte(TestCase):
     def test_an_analysis_with_no_summary_is_refused(self):
         self.ask("article", self.doc.id, "analysis", dict(ANALISI_DOC, summary_it=""))
         self.ask("article", self.doc.id, "claims", claims_from(self.testo_doc))
-        self.assertIn("riassunto vuoto", self.run_cmd("--write"))
+        self.assertIn("riassunto vuoto", self.run_cmd("--write", "--backup-fatto"))
 
     def test_one_answer_missing_discards_the_content(self):
         self.ask("reel", self.reel.id, "analysis", ANALISI_REEL, group=4)
-        out = self.run_cmd("--write")
+        out = self.run_cmd("--write", "--backup-fatto")
         self.assertIn("manca una delle due risposte", out)
         self.reel.refresh_from_db()
         self.assertEqual(self.reel.full_text_status, PENDING)
 
     def test_a_long_article_needs_its_claims_too(self):
         self.ask("article", self.doc.id, "analysis", ANALISI_DOC)
-        self.assertIn("manca la risposta delle affermazioni", self.run_cmd("--write"))
+        self.assertIn("manca la risposta delle affermazioni", self.run_cmd("--write", "--backup-fatto"))
 
     def test_an_article_up_to_8000_may_come_with_the_analysis_only(self):
         t = testo(100, "c")   # ~7 000 characters: its claims were made whole already
@@ -248,7 +256,7 @@ class ImportaLeRisposte(TestCase):
             argument_status=DONE, embed_status=DONE)
         DocumentArgument.objects.create(document=short, text_it="resta", quote="resta qui")
         self.ask("article", short.id, "analysis", ANALISI_DOC, group=2)
-        out = self.run_cmd("--write")
+        out = self.run_cmd("--write", "--backup-fatto")
         self.assertIn("scritti: 1", out)
         short.refresh_from_db()
         self.assertEqual((short.summary_it, short.full_text_status, short.embed_status),
@@ -267,13 +275,13 @@ class ImportaLeRisposte(TestCase):
     # filters
     def test_group_and_limit(self):
         self.everything()
-        out = self.run_cmd("--write", "--group", "4")
+        out = self.run_cmd("--write", "--backup-fatto", "--group", "4")
         self.assertIn("scritti: 1", out)
         self.assertIn("fuori dal gruppo scelto: 1", out)
         self.refresh()
         self.assertEqual((self.doc.full_text_status, self.reel.full_text_status),
                          (PENDING, DONE))
-        out = self.run_cmd("--write", "--limit", "1")
+        out = self.run_cmd("--write", "--backup-fatto", "--limit", "1")
         self.assertIn("scritti: 1", out)
         self.refresh()
         self.assertEqual(self.doc.full_text_status, DONE)
@@ -281,3 +289,146 @@ class ImportaLeRisposte(TestCase):
     def test_a_missing_output_folder_is_an_error(self):
         with self.assertRaises(CommandError):
             call_command("import_reanalysis", str(self.dir / "non-esiste"))
+
+    # ── round 2 of the review: whose the answer is, which text, empty claims,
+    #    the lock, `--anche-falliti` ──
+
+    def ask_meta(self, kind, pk, task, response, **meta):
+        self.ask(kind, pk, task, response)
+        self.rows_in[-1].update(meta)
+
+    def test_an_owner_that_differs_from_the_database_is_refused(self):
+        self.ask_meta("article", self.doc.id, "analysis", ANALISI_DOC, owner_type="owned")
+        self.ask_meta("article", self.doc.id, "claims", claims_from(self.testo_doc),
+                      owner_type="owned")
+        out = self.run_cmd("--write", "--backup-fatto")
+        self.assertIn("owner diverso fra input e database: 1", out)
+        self.refresh()
+        self.assertEqual((self.doc.summary_it, self.doc.full_text_status),
+                         ("Riassunto vecchio.", PENDING))
+
+    def test_a_reel_owner_is_read_from_its_account(self):
+        self.ask_meta("reel", self.reel.id, "analysis", ANALISI_REEL, owner_type="owned")
+        self.ask_meta("reel", self.reel.id, "claims", claims_from(self.testo_reel),
+                      owner_type="owned")
+        self.assertIn("owner diverso fra input e database: 1",
+                      self.run_cmd("--write", "--backup-fatto"))
+
+    def test_a_text_that_changed_since_the_input_was_built_is_refused(self):
+        self.ask_meta("article", self.doc.id, "analysis", ANALISI_DOC,
+                      owner_type="competitor", text_chars=len(self.testo_doc) - 5)
+        self.ask_meta("article", self.doc.id, "claims", claims_from(self.testo_doc),
+                      owner_type="competitor", text_chars=len(self.testo_doc) - 5)
+        out = self.run_cmd("--write", "--backup-fatto")
+        self.assertIn("testo cambiato dopo la costruzione dell'input: 1", out)
+        self.refresh()
+        self.assertEqual(self.doc.full_text_status, PENDING)
+
+    def test_matching_owner_and_length_pass_and_a_reel_counts_caption_too(self):
+        for t in ("analysis", "claims"):
+            self.ask_meta("article", self.doc.id, t,
+                          ANALISI_DOC if t == "analysis" else claims_from(self.testo_doc),
+                          owner_type="competitor", text_chars=len(self.testo_doc))
+            self.ask_meta("reel", self.reel.id, t,
+                          ANALISI_REEL if t == "analysis" else claims_from(self.testo_reel),
+                          owner_type="competitor",
+                          text_chars=len(self.testo_reel) + len("Didascalia"))
+        self.assertIn("scritti: 2", self.run_cmd("--write", "--backup-fatto"))
+
+    def test_an_empty_claims_list_on_a_long_text_is_refused_and_nothing_is_wiped(self):
+        self.ask("article", self.doc.id, "analysis", ANALISI_DOC)
+        self.ask("article", self.doc.id, "claims", {"argomenti": []})
+        out = self.run_cmd("--write", "--backup-fatto")
+        self.assertIn("nessuna affermazione", out)
+        self.refresh()
+        self.assertEqual([a.text_it for a in self.doc.arguments.all()], ["vecchia"])
+        self.assertEqual(self.doc.full_text_status, PENDING)
+
+    def test_an_empty_list_is_refused_when_the_content_already_has_claims(self):
+        t = testo(100, "c")  # short
+        short = KnowledgeDocument.objects.create(
+            source_url="https://x.example/c", title="Media", owner_type="owned",
+            content_text=t, summary_it="v", enrich_status=DONE, argument_status=DONE)
+        DocumentArgument.objects.create(document=short, text_it="resta", quote="resta qui")
+        self.ask("article", short.id, "analysis", ANALISI_DOC)
+        self.ask("article", short.id, "claims", {"argomenti": []})
+        self.assertIn("nessuna affermazione", self.run_cmd("--write", "--backup-fatto"))
+        self.assertEqual(short.arguments.count(), 1)
+
+    def test_an_empty_list_is_fine_for_a_short_text_with_no_claims(self):
+        t = testo(100, "c")
+        short = KnowledgeDocument.objects.create(
+            source_url="https://x.example/c", title="Media", owner_type="owned",
+            content_text=t, summary_it="v", enrich_status=DONE, argument_status=DONE)
+        self.ask("article", short.id, "analysis", ANALISI_DOC)
+        self.ask("article", short.id, "claims", {"argomenti": []})
+        self.assertIn("scritti: 1", self.run_cmd("--write", "--backup-fatto"))
+
+    def test_a_content_that_became_failed_meanwhile_is_not_touched(self):
+        self.everything()
+        real = Command._skip_reason
+        calls = {"n": 0}
+
+        def flip(obj, allow_failed=False):
+            calls["n"] += 1
+            if calls["n"] == 2:  # the locked re-read of the first content
+                KnowledgeDocument.objects.filter(pk=self.doc.pk).update(
+                    enrich_status=FAILED)
+                obj.enrich_status = FAILED
+            return real(obj, allow_failed)
+        with mock.patch.object(Command, "_skip_reason", staticmethod(flip)):
+            out = self.run_cmd("--write", "--backup-fatto", "--group", "1")
+        self.assertIn("cambiati nel frattempo (non toccati): 1", out)
+        self.refresh()
+        self.assertEqual(self.doc.summary_it, "Riassunto vecchio.")
+
+    def test_a_content_that_became_done_meanwhile_is_not_rewritten(self):
+        self.everything()
+        # Simulate the round redoing it between the judgement and the write.
+        orig_plan = Command._plan_doc
+
+        def plan_then_round(self_, doc, got, model):
+            fn = orig_plan(self_, doc, got, model)
+            KnowledgeDocument.objects.filter(pk=doc.pk).update(full_text_status=DONE)
+            return fn
+        with mock.patch.object(Command, "_plan_doc", plan_then_round):
+            out = self.run_cmd("--write", "--backup-fatto", "--group", "1")
+        self.assertIn("già fatti (full_text_status=done): 1", out)
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.summary_it, "Riassunto vecchio.")
+
+    def test_failed_contents_are_taken_only_with_anche_falliti(self):
+        self.doc.enrich_status = FAILED
+        self.doc.last_error = "timeout"
+        self.doc.save()
+        self.reel.argument_status = FAILED
+        self.reel.save()
+        self.everything()
+        out = self.run_cmd("--write", "--backup-fatto")
+        self.assertIn("saltati: failed per altri motivi: 2", out)
+        self.refresh()
+        self.assertEqual(self.doc.enrich_status, FAILED)
+        out = self.run_cmd("--write", "--backup-fatto", "--anche-falliti")
+        self.assertIn("scritti: 2", out)
+        self.assertIn("ripresi da failed (--anche-falliti): 2", out)
+        self.refresh()
+        self.assertEqual((self.doc.enrich_status, self.doc.argument_status,
+                          self.doc.full_text_status, self.doc.last_error),
+                         (DONE, DONE, DONE, ""))
+        self.assertEqual((self.reel.argument_status, self.reel.full_text_status),
+                         (DONE, DONE))
+
+    def test_anche_falliti_still_needs_a_valid_answer_and_skips_the_unanalysed(self):
+        self.doc.enrich_status = FAILED
+        self.doc.save()
+        self.reel.enrich_status = PENDING
+        self.reel.save()
+        self.ask("article", self.doc.id, "analysis", "{rotto")
+        self.ask("article", self.doc.id, "claims", claims_from(self.testo_doc))
+        self.ask("reel", self.reel.id, "analysis", ANALISI_REEL, group=4)
+        self.ask("reel", self.reel.id, "claims", claims_from(self.testo_reel), group=4)
+        out = self.run_cmd("--write", "--backup-fatto", "--anche-falliti")
+        self.assertIn("scartati (risposta non valida): 1", out)
+        self.assertIn("non ancora analizzati: 1", out)
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.enrich_status, FAILED)
