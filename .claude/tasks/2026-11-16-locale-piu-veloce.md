@@ -1003,3 +1003,98 @@ input permettono già**, e due punti lasciano dati o note sbagliati. Sono correz
 
 Non ho eseguito la suite né l'import in dry-run (nessun accesso a un database di prova da qui);
 ho letto il codice e i test per nome. Dopo i rilievi 1-3 serve il dry-run sulla cartella vera.
+
+## 5. Collaudo          (collaudatore, 16/11/2026)
+
+**Verdetto: PASSA.** Con tre punti da guardare (sotto, «Da sapere») che non bloccano.
+
+Metodo: Postgres privato (porta 54329, fuori da quello di produzione), nessuna chiave Groq/Ollama
+(variabili vuote), nessuna chiamata di rete a modelli. La produzione è stata solo letta
+(`pg_dump` e due `select` di confronto). Copia, dump e cartella di lavoro dei lotti cancellati alla fine.
+
+### 1. Suite e build (nel worktree)
+
+```
+makemigrations --check --dry-run  ->  No changes detected
+manage.py check                   ->  System check identified no issues (0 silenced).
+manage.py test core               ->  Ran 440 tests in 102.247s   OK
+npm run build (tsc -b && vite build) -> ✓ 1690 modules transformed. ... ✓ built in 48.22s
+```
+
+### 2. Migrazione 0028 su una copia dei dati veri (1.648 reel, 2.308 documenti)
+
+`pg_restore` della copia, ultima migrazione 0027, poi `migrate` applica `0028_full_text_status` OK.
+
+| | pending | done |
+|---|---|---|
+| reel | 265 | 1.383 |
+| documenti | 855 | 1.453 |
+
+Controllo incrociato con SQL: reel con trascrizione > 3.000 caratteri = 265 (tutti `pending`, nessun
+corto `pending`); documenti con testo > 6.000 = 855 (tutti `pending`, nessun corto `pending`).
+I reel senza trascrizione (145) sono `done`. **Totale pending 1.120, non ~1.235**: la differenza è
+nei reel (265 contro i 358 del conteggio del capo). Il comando fa quello che dice la regola della
+migrazione; il numero 358 non l'ho riprodotto (vedi «Da sapere»).
+
+### 3. `import_reanalysis` sulla copia
+
+Usati solo i lotti con `.esito.json` presente al momento (190 file `.jsonl`, 1.285 righe), copiati in una
+cartella mia; i file di Haiku non sono stati toccati.
+
+Dry-run (non scrive: stati identici dopo):
+```
+contenuti con risposte: 715      chiavi nell'input senza risposta: 882
+  validi: 512
+  già fatti (full_text_status=done): 116
+  scartati (risposta non valida): 0
+  saltati: failed per altri motivi: 87
+  per gruppo: 1: 15, 2: 25, 3: 297, 4: 175
+```
+`--write`: `scritti: 512` (337 documenti + 175 reel), 0 scartati, stessi 116 e 87.
+- I 116 «già fatti» sono reel con trascrizione corta (≤ 3.000) che Haiku ha comunque rifatto: l'import non li riscrive, giusto.
+- I 87 saltati sono i `failed` della copia: 25 documenti con analisi `failed`, 49 documenti e 13 reel con affermazioni `failed`.
+- Dopo la scrittura: `full_text_status` pending reel 265→90, documenti 855→518; `embed_status` documenti: 337 `pending`; reel con vettore vuoto (da ricalcolare): 175.
+
+Prima/dopo su 5 contenuti (posizione della citazione = frazione del testo, 0 = inizio, 1 = fine):
+
+| contenuto | riassunto | affermazioni | posizioni citazioni prima → dopo | fts | coda embed |
+|---|---|---|---|---|---|
+| puntata (video, competitor) doc 894, 22.410 car. | 511 → 251 car., tema «insulino-resistenza…» → «pressione, diabete e glp-1» | 5 → 12 | 0,11–0,30 → 0,06–0,70 | pending → done | done → pending |
+| articolo owned doc 2194, 37.931 car. | 173 → 333 car. | 3 → 12 | 0,00–0,17 → 0,00–0,84 | pending → done | done → pending |
+| articolo competitor doc 38, 32.590 car. | 376 → 274 car. | 6 → 11 | 0,01–0,13 → 0,32–0,95 | pending → done | done → pending |
+| reel 873, 46.827 car. | 227 → 252 car., modello `claude-opus-5` → `claude-haiku` | 5 → 12 | 0,04–0,05 → 0,03–0,94 | pending → done | vettore 384 → [] (da ricalcolare) |
+| reel 1201, 46.590 car. | 300 → 241 car. | 6 → 10 | 0,01–0,05 → 0,04–0,91 | pending → done | vettore 384 → [] |
+
+Le affermazioni vengono quindi anche dalla seconda metà del testo (fino a 0,94-0,95).
+
+Altri controlli dopo la scrittura:
+- Regola owned/competitor: documenti `owned` 61 / `competitor` 2.247 identici a prima; hash di `(id, owner_type)` dei documenti identico prima/dopo; hash di `(id, account_id)` dei reel identico alla produzione. Nessun contenuto ha cambiato proprietario.
+- Nessuna riga nuova in `llm_calls` (677, uguale alla produzione).
+- **Secondo `--write`**: `scritti: 0`, `già fatti: 628` (= 512 + 116), `saltati failed: 87`; hash di `document_arguments`, `reel_arguments`, `enrichments` e dei documenti (riassunto, stati, `updated_at`) **identici** prima e dopo il secondo giro: non riscrive nulla.
+
+### 4. Server MCP del ramo (porta 8931, secret finto, DB copia)
+
+Chiamate `tools/call` vere via HTTP:
+```
+blog:894  (puntata importata)      nota_analisi: <ASSENTE>   affermazioni: 12
+blog:2194 (articolo importato)     nota_analisi: <ASSENTE>   affermazioni: 12
+reel:873  (importato)              nota_analisi: <ASSENTE>   affermazioni: 12
+reel:1497 (importato)              nota_analisi: <ASSENTE>   affermazioni: 11
+blog:296  (42.123 car., non imp.)  nota_analisi: «Riassunto e affermazioni sono stati fatti sull'inizio del testo (primi 6.000 caratteri su 42.123): per il resto vale il testo.»   affermazioni: 4
+blog:1023 (38.590 car., non imp.)  nota_analisi: (stessa frase, su 38.590)   affermazioni: 6
+reel:345  (54.459 car., non imp.)  nota_analisi: «... (primi 3.000 caratteri su 54.459) ...»
+```
+
+### Da sapere (non blocca, ma Giuseppe deve saperlo)
+
+1. **1.120 pending, non ~1.235.** Reel 265 (non 358). Non so se il 358 contava un'altra cosa (didascalia, contenuti non attivi, dati cambiati): la regola della migrazione e il SQL indipendente coincidono tra loro. Da chiarire dal capo, non cambia il codice.
+2. **I `failed` restano `pending` senza via d'uscita**: l'import salta 87 contenuti (nella copia) con analisi o affermazioni `failed`; restano `pending` e con la nota. È coerente con «i fallimenti restano `failed`», ma nessuno li rifarà finché non c'è un modo di ritentarli (nel disegno era `--ritenta-falliti`, ora fuori dal ramo).
+3. **Le assegnazioni dei reel ai temi sono sparite per i 175 reel riscritti**: `argument_assignments` da 50.042 a 42.802 (−7.240), perché le affermazioni vecchie sono state sostituite. Non ho lanciato lo stadio `cluster` né `embed`: **non provato** che li riassegnino bene. Fino al giro notturno quei reel non sono nei temi.
+
+### NON provato
+
+- Gli stadi `embed` e `cluster` dopo l'import (nessun modello d'embedding caricato, nessuna chiamata di rete).
+- La qualità dei riassunti e delle affermazioni scritti da Haiku: ho solo confrontato numeri e posizioni, non ho letto i testi.
+- Il percorso dei contenuti nuovi lunghi (pezzi sul 7b / Groq): coperto solo dai test con modelli finti, non da una chiamata vera.
+- Pagina Documentazione e drawio a occhio (due scritte nuove nel drawio potrebbero uscire dal riquadro): **da guardare a mano** aprendo `docs/medycabrain-pipeline-cliente.drawio`; la pagina `Documentazione` nell'app dopo il rilascio, su `:9093` a 380 px e desktop (la build compila, ma non l'ho aperta nel browser: il ramo non è in produzione).
+- I lotti scritti da Haiku dopo l'istantanea (ora ne esistono di più): l'import va rilanciato quando saranno finiti.
