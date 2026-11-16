@@ -74,7 +74,333 @@ Stato: **in attesa dell'OK di Giuseppe**. Nessuna riga di codice è stata scritt
 Il banco di prova (passo 1) non aveva ancora numeri quando ho chiuso (16/11, `banco/risultati.md`
 assente, `raw.jsonl` vuoto): dove una scelta dipende dal banco è scritto **[BANCO]**.
 
-### 2.0 In tre righe
+### 2.0 Testo intero (diventa la PR numero 1)
+
+Aggiunta del 16/11 pomeriggio, dopo il «Cambio di priorità» di Giuseppe. Passa davanti a tutto
+il resto del disegno. Stato: **in attesa dell'OK di Giuseppe**, nessun codice scritto.
+
+**In quattro righe**
+1. Fino a 8.000 caratteri si fa come oggi, ma leggendo tutto. Oltre, il testo si divide in pezzi
+   da circa 6.000 caratteri tagliati a fine frase: ogni pezzo dà le sue affermazioni (con citazione
+   vera) e una riga di appunti; alla fine una chiamata sola scrive il riassunto dagli appunti.
+   **Il testo lungo si legge una volta sola, non due come oggi.**
+2. Se un pezzo fallisce, il contenuto è `failed` e non si salva niente a metà.
+3. Serve un campo nuovo (una migrazione piccola) che dice «questo è stato letto per intero»: la
+   nota del connettore sparisce solo per quelli.
+4. Il passato lo rifà **il 7b locale, giorno e notte** (deciso da Giuseppe), dopo il giro quotidiano
+   e mai al suo posto: **~243 ore di modello, circa 13 giorni a calendario** (calcolo); le 17 puntate
+   ~4 ore, gli articoli di Medyca ~9.
+
+#### A. Cosa taglia oggi (elenco verificato nel codice con `grep`)
+
+| Dove | Taglio | Entra nella PR 1? |
+|---|---|---|
+| `knowledge_agent.py:124` riassunto articoli/puntate | 6.000 | sì |
+| `knowledge_agent.py:169,181` affermazioni articoli | 8.000 | sì |
+| `enrich_agent.py:235,329` trascrizione reel (analisi e affermazioni) | 3.000 | sì |
+| `enrich_agent.py:234,328` didascalia reel | 1.500 (197 reel la superano) | sì: si legge intera (Instagram ne ammette 2.200) |
+| `blog_workflow.py:136` bozza da intervista | 12.000, **in silenzio** | no: PR a parte; subito scritto nei limiti noti |
+| `blog_workflow.py:180` articolo da espandere | 4.000, in silenzio | no: come sopra |
+| `blog_workflow.py:51` ogni reel del tema nella bozza | 700 | no: è un estratto voluto, va solo dichiarato |
+| `knowledge_agent.py:228`, `cluster_agent.py:72` testo dentro il vettore | 4.000 | no: il vettore contiene anche il riassunto (che ora copre tutto), e la ricerca ha già i vettori di ogni passaggio del testo intero |
+
+#### B. Vincoli misurati
+
+- **Groq** (`03-llm-and-embeddings.md`, limite pubblico, quello del nostro conto non è verificato):
+  8.000 token al minuto, 200.000 al giorno su `gpt-oss-120b`. Misurato in `llm_calls`: 15/11
+  155 mila letti + 63 mila scritti; 16/11 119 + 37 mila; fratelli 20-45 mila. La richiesta più
+  grande mai servita: 3.278 token letti, 4.878 contando il tetto di risposta.
+  Quindi **un testo da 30.000 caratteri (~8.700 token) non può partire in una richiesta sola**: supera
+  il minuto. `client._patient` aspetta il minuto fino a 6 volte, ma una richiesta troppo grande
+  spreca tutte e sei le attese (limite già scritto nella documentazione).
+  Non verificato: se Groq conta nel minuto anche il tetto di risposta. Disegno come se sì.
+- **7b locale**: finestra 8.192 token, limite 1.500 s a chiamata. Primi numeri veri del banco
+  (letti da `banco/run.log` e `run2.log`; `risultati.md` non c'è ancora, quindi **provvisori**):
+  legge 15-17,8 token/s, scrive 2,5-4,2; un'analisi vera 116-189 s. Un po' meglio dei 13 / 2,8
+  della lavagna.
+- **Chi risponde si decide dentro `client.chat()`, chiamata per chiamata**: lo stesso contenuto può
+  avere il pezzo 1 su Groq e il pezzo 2 sul 7b. Perciò **la misura del pezzo è una sola**, quella
+  che entra in tutti e due. Due soglie diverse vorrebbero dire due comportamenti e pezzi che
+  cambiano a metà contenuto.
+- Quanto c'è da rifare (mia query in sola lettura, `scratchpad/arch/q6.py`; 3,45 caratteri per token misurati):
+
+| Gruppo | Contenuti | Caratteri | di cui ≤ 8.000 | di cui lunghi | Pezzi |
+|---|---|---|---|---|---|
+| 1. Puntate, video, interviste | 17 | 282 mila | 2 | 15 | 51 |
+| 2. Blog di Medyca | 38 | 663 mila | 3 | 35 | 122 |
+| 3. Articoli competitor in tema | 360 | 3,60 milioni | 140 | 220 | 548 |
+| 4. Reel in tema > 3.000 | 225 | 7,14 milioni | 62 | 163 | 1.233 |
+| 5a. Reel fuori tema > 3.000 | 40 | 1,08 milioni | 14 | 26 | 182 |
+| 5b. Articoli competitor fuori tema | 439 | 4,69 milioni | 158 | 281 | 736 |
+
+  Nota: il capo conta 358 reel (2 di Medyca), io 265 e nessuno di Medyca. La mia query tiene solo i
+  reel attivi con trascrizione e account collegato; lo sviluppatore deve far tornare i due conti
+  prima del rifacimento. I «reel» lunghi sono video veri: metà supera i 36.000 caratteri, il più
+  lungo 85.699 (15 pezzi).
+
+#### C. Come si legge tutto
+
+**Testo fino a 8.000 caratteri — strada corta, come oggi.** Due chiamate (analisi, affermazioni),
+stessi prompt di oggi, ma tutte e due leggono il testo intero: il taglio 6.000 sale a 8.000 e
+quello dei reel da 3.000 a 8.000. Entra in Groq (al massimo ~3.400 token letti + tetto) e nel 7b.
+
+**Testo oltre 8.000 — strada lunga, a pezzi.**
+1. **Taglio.** Pezzi tutti simili, mai più di ~6.000 caratteri (`n = lunghezza / 6.000` arrotondato
+   in su, poi pezzi di lunghezza uguale). Il taglio cade sull'ultima fine frase (`. ! ?` o a capo)
+   prima del limite; se non c'è punteggiatura (capita con Whisper) sull'ultimo spazio. Mai a metà
+   parola. **Nessuna sovrapposizione** fra pezzi: così niente affermazioni doppie nate dal taglio.
+   6.000 caratteri sono ~1.750 token, la misura che il rapporto di ricerca consiglia per i modelli
+   piccoli. È un'impostazione: il banco (punti 5 e 9, non ancora fatti) può cambiarla **[BANCO]**.
+2. **Ogni pezzo — una chiamata.** È il prompt delle affermazioni di oggi, con due ritocchi: al
+   massimo 3 affermazioni per pezzo, e in più una riga di appunti («di cosa parla questo pezzo»,
+   massimo 25 parole). Risposta: `{"sintesi": "...", "argomenti": [{"testo","citazione"}]}`.
+   Sono fatti brevi, non prosa. Il prompt dice «pezzo 3 di 7 di …» perché il modello non lo tratti
+   come un testo completo.
+3. **Citazioni vere.** Ogni citazione si controlla **contro il suo pezzo**, con lo stesso controllo
+   di oggi (`_norm(citazione) in _norm(testo)`): se non c'è, l'affermazione si scarta. Il modello
+   vede un pezzo solo, quindi non può cucire una citazione a cavallo di due.
+4. **Unione delle affermazioni** (nel codice, nessuna chiamata): si tolgono le doppie (stessa
+   citazione, o testi quasi uguali misurati con il modello dei vettori che la piattaforma usa già,
+   soglia da tarare sui primi contenuti); poi si sceglie a giro, la prima di ogni pezzo, poi la
+   seconda, così **le affermazioni coprono tutto il testo** e non solo l'inizio; ordine finale:
+   quello del testo.
+5. **Tetto.** Oggi 6 per qualunque testo. Per un testo di 15 pezzi 6 sono poche. Propongo: 6 fino a
+   8.000 caratteri; per i lunghi fino a **12** (domanda 2). Il connettore oggi ne mostra al massimo
+   10 (`server.py:449,543`): va portato a 12.
+6. **Riassunto — una chiamata finale.** Riceve titolo, la riga di apertura di oggi (`_intro`), gli
+   appunti di tutti i pezzi e i testi delle affermazioni tenute, e restituisce **lo stesso JSON
+   dell'analisi di oggi** (riassunto, argomenti, tema, in tema / fuori tema). Per i reel riceve in
+   più i primi ~1.500 caratteri veri della trascrizione e la didascalia, perché gancio e analisi
+   del gancio parlano dell'inizio. Con 15 pezzi sono ~3.400 token: entra ovunque. Limite dichiarato:
+   oltre ~40 pezzi (240.000 caratteri) gli appunti non entrano più; oggi il massimo è 15. Se
+   succede, `failed` con un messaggio chiaro, non un taglio.
+7. **Si salva tutto insieme, alla fine.** Analisi e affermazioni entrano nel database in un'unica
+   scrittura.
+
+Perché così: gli appunti dei pezzi **sono** le affermazioni, quindi il testo lungo si legge una
+volta. Con due passate separate (come oggi) il rifacimento costerebbe quasi il doppio in lettura.
+
+**Cosa riuso**: `ARGUMENTS_USER_TEMPLATE` e il controllo della citazione (`enrich_agent._norm`,
+`write_doc_arguments`); `build_doc_enrich_prompt`, `_intro`, `write_doc_enrich`, `write_enrichment`
+(il JSON finale è quello di oggi, quindi chi lo salva non cambia); `_embedder()` per le doppie;
+`_parallel` / `_tracked` per barra e stati; `LLMTruncated` e `NOT_THE_ITEMS_FAULT` del client.
+Codice nuovo: un modulo solo, piccolo (`pipeline/whole_text.py`: tagliare, unire, togliere le doppie),
+usato da reel e articoli.
+
+#### D. Fallimenti
+
+- Un pezzo che fallisce (JSON rotto, risposta tagliata, errore) → **tutto il contenuto è `failed`**
+  (`enrich_status` e `argument_status`), con scritto quale pezzo («pezzo 3 di 7: …»). Niente viene
+  salvato. Mai un'analisi di 6 pezzi su 7 mostrata come intera.
+- Un pezzo senza affermazioni non è un errore (lista vuota = risposta corretta, come oggi).
+- Modello non disponibile a metà (non è colpa del contenuto) → resta `pending`; i pezzi già fatti
+  si buttano e si rifanno al giro dopo. Scelta voluta: salvare i pezzi a metà chiederebbe una
+  tabella nuova. Costo: al massimo il lavoro di un contenuto per ogni interruzione.
+- Nessun secondo tentativo automatico, come oggi.
+
+#### E. Come si segna «letto per intero»
+
+Oggi `_nota_analisi` (`server.py:381`) decide solo dalla lunghezza. Dopo la PR direbbe il falso in
+un senso o nell'altro. **Serve un campo, quindi una migrazione.**
+
+- `full_text_status` su `reels` e su `knowledge_documents` (stessi valori degli altri stati):
+  `done` = l'analisi in vigore ha letto tutto; `pending` = fatta sull'inizio, da rifare;
+  `failed` = il rifacimento è fallito.
+- La migrazione mette `done` a chi ha un testo che stava già dentro il vecchio taglio (lì l'analisi
+  aveva letto tutto) e `pending` agli altri. Circa 3.900 righe, pochi secondi. Aggiungere la
+  colonna non blocca la tabella.
+- La nota compare **solo se lo stato non è `done`**, con i numeri di allora (3.000 e 6.000, tenuti
+  come costanti «del vecchio taglio»). Sparisce contenuto per contenuto, man mano che si rifà.
+- Ogni analisi nuova scrive `done`. Una trascrizione rifatta rimette il contenuto in coda come oggi.
+
+#### F. Rifare quelli già dentro — sul 7b locale, giorno e notte
+
+Deciso da Giuseppe (16/11 sera): **Groq a pagamento no; il rifacimento lo fa il modello locale**, e
+che duri giorni non importa. Groq gratuito resta com'è, tutto per il giro quotidiano dei contenuti
+nuovi: non vedo motivi contrari, anzi così il rifacimento non gli toglie un solo token.
+
+**Comando nuovo** `manage.py reanalyze_whole`, costruito sul modello di `reprocess --stage enrich`
+(che già rifà analisi + affermazioni un contenuto alla volta). Non uso `reprocess --stage
+knowledge`: quello rimette in coda tutti i `failed`, cosa che qui non si vuole.
+
+- **Solo locale.** Le sue chiamate non passano mai da Groq. Serve un parametro piccolo in
+  `client.chat()`, gemello di `remote_only` che esiste già.
+- **Cosa prende**: i contenuti attivi con `full_text_status="pending"`. È il dato a dire cosa
+  manca: **non rifà mai due volte**, e ripartire vuol dire solo rilanciarlo.
+- **Ordine** (`--gruppo`): 1 puntate/video/interviste → 2 articoli di Medyca → 3 articoli competitor
+  in tema → 4 reel lunghi in tema → 5 fuori tema. Miglioria che propongo: **dentro ogni gruppo dal
+  più corto al più lungo**, così ogni giorno si chiudono più contenuti e le note spariscono prima.
+- **Non blocca il giro delle 03:30 e delle 14:15.** Oggi il lucchetto del modello locale
+  (`client._ollama_slot`) ha due livelli: una persona che aspetta passa davanti al lavoro di fondo.
+  Ne aggiungo un terzo, con lo stesso meccanismo: **persona → giro della pipeline → rifacimento**.
+  Il giro, quando parte, alza una bandierina (un file accanto al lucchetto, come fa già la
+  priorità); il rifacimento la guarda **prima di ogni chiamata** e, se è alzata, si mette da parte
+  finché il giro finisce. Una chiamata del rifacimento dura 3-5 minuti: è l'attesa massima per il
+  giro (che ne tollera 30, `OLLAMA_LOCK_WAIT`). Il rifacimento non tocca il lucchetto «un giro alla
+  volta» (`PIPELINE_LOCK_PATH`), quindi non può far saltare un giro.
+- **Come gira giorno e notte**: lanciato dal cron ogni ora, con un suo lucchetto «una copia sola».
+  Se è già in corso, il nuovo lancio esce subito. Dopo un riavvio del server o un rilascio riparte
+  da solo entro un'ora.
+- **Come si ferma**: un interruttore in `ScraperConfig` (tabella che esiste già), letto fra una
+  chiamata e l'altra: spento → finisce la chiamata in corso e si ferma; riacceso → riparte da dove
+  era. Se viene ucciso a metà di un contenuto si perdono solo i pezzi di quel contenuto.
+- **Come si vede a che punto è** (pagina «Avanzamento»):
+  - gratis, già oggi: ogni chiamata locale fuori dal giro compare nella lista «altre chiamate» con
+    il nome del contenuto; basta darle l'etichetta «Rifacimento sul testo intero»;
+  - in più un riquadro piccolo: per ogni gruppo «fatti / da fare / falliti», il contenuto in
+    lavorazione («pezzo 4 di 9»), in pausa o no, e la fine stimata. I conti vengono da
+    `full_text_status` nel database (veri anche dopo un riavvio); la stima dai secondi medi delle
+    ultime chiamate locali del rifacimento, come fa già `progress_report` per gli stadi.
+- **I falliti**: `full_text_status="failed"` con il motivo in `last_error`. Restano tali: si
+  ritentano solo con `--ritenta-falliti`, scritto a mano. Il riquadro li conta.
+- **Il cliente non vede mai un contenuto vuoto**: tutto si calcola in memoria e solo a lavoro
+  finito analisi e affermazioni si sostituiscono in una scrittura unica. Fino ad allora restano
+  riassunto, affermazioni e nota vecchi (la nota è ancora vera). Se fallisce resta tutto com'era.
+- **Vettori**: dopo il rifacimento `embed_status` torna `pending` e il giro notturno ricalcola il
+  vettore (regola già scritta in `03-llm-and-embeddings.md`, «Re-embed after a re-analysis»). Per i
+  reel lo stadio dei vettori calcola solo quelli mancanti (`embed_agent.py:32`): il vettore vecchio
+  va tolto insieme alla scrittura nuova. I vettori dei passaggi non cambiano.
+- **Temi**: lo stadio `cluster` della notte lavora sui vettori nuovi. Durante il rifacimento
+  qualche contenuto cambia tema da una notte all'altra; un articolo che letto per intero risulta
+  in tema (o fuori) entra o esce da ricerca e temi. È l'effetto voluto, ma va detto al cliente.
+
+#### G. Tempi del rifacimento sul 7b
+
+Come ho contato (calcolo, su caratteri misurati e sulle velocità **provvisorie** del banco: 16,5
+token/s in lettura, 3,4 in scrittura; fra parentesi con le velocità più lente della lavagna, 13 e 2,8):
+- un pezzo: ~2.040 token letti, ~300 scritti → **~212 s** (264);
+- chiamata finale: articolo ~100 s (124), reel ~215 s (267);
+- un contenuto corto (fino a 8.000, due chiamate): articolo ~455 s, reel ~430 s.
+
+| Gruppo | Contenuti | Chiamate | Ore di modello (calcolo) |
+|---|---|---|---|
+| 1. Puntate, video, interviste | 17 | 51 pezzi + 15 finali + 4 | **~4 h** (fino a 5) |
+| 2. Articoli di Medyca | 38 | 122 + 35 + 6 | **~9 h** (fino a 11) |
+| 3. Articoli competitor in tema | 360 | 548 + 220 + 280 | **~56 h** (fino a 70) |
+| 4. Reel lunghi in tema | 225 | 1.233 + 163 + 124 | **~90 h** (fino a 112) |
+| 5. Fuori tema (40 reel + 439 articoli) | 479 | 918 + 307 + 344 | **~85 h** (fino a 106); **~73 h** con la PR «fuori tema» |
+| **Totale** | 1.119 | ~4.370 | **~243 h, cioè ~10 giorni filati**; senza i fuori tema ~158 h, ~6,5 giorni |
+
+A calendario conto un 20-30% in più: le pause per i due giri al giorno, i lavori chiesti dal
+cliente, e la macchina che rallenta quando gira altro (misurato in passato: fino al 70% su una
+chiamata). Quindi **circa 13 giorni per tutto, 8-9 senza i fuori tema**. Le prime due righe (i
+contenuti del reclamo e quelli di Medyca) stanno in **una notte e un giorno**.
+
+Avvertenze:
+- le velocità sono di una decina di chiamate del banco, non ancora il suo rapporto finale; i token
+  scritti per pezzo sono una stima. **Il gruppo 1 è la misura vera**: dopo le 17 puntate questa
+  tabella si rifà con numeri cronometrati;
+- la CPU resta occupata per quasi due settimane. Chi chiede una bozza ha la precedenza ma aspetta
+  la chiamata in corso (3-5 minuti);
+- **qualità**: tutto il rifatto sarà scritto dal 7b. Oggi 1.177 analisi dei reel sono di Claude
+  (Opus 5 e Sonnet 5, misurato in `enrichments.llm_model`) e gli articoli recenti di `gpt-oss-120b`.
+  La documentazione ha già scritto che la qualità del 7b «non è provata» e che storpia termini
+  («brain fog» → «fuga del cervello»). Si guadagna la copertura di tutto il testo; lo stile può
+  scendere. È il motivo per cui ci si ferma a guardare le 17 puntate (domanda 5).
+
+#### H. Ordine nuovo: cosa serve PRIMA del rifacimento grosso
+
+Regola per decidere: **obbliga a rifare due volte solo ciò che cambia il contenuto salvato**
+(quante affermazioni, quanto lunghe le citazioni, misura dei pezzi, parole dei prompt). Ciò che
+cambia solo il tempo si può aggiungere a rifacimento in corso, ma prima arriva più ore toglie.
+
+| Passo | Contenuto | Perché a questo punto | Ore tolte al rifacimento (calcolo) |
+|---|---|---|---|
+| **PR 1** | Testo intero: pezzi e unione (**una lettura sola** per i testi lunghi), **affermazioni asciutte (ex 2b)**, campo + migrazione + nota del connettore, comando di rifacimento solo locale con la sua priorità, riquadro in Avanzamento | È il minimo che toglie il limite. Le asciutte stanno qui perché cambiano il contenuto: dopo vorrebbe dire rifare | lettura unica: circa metà della lettura dei lunghi, ~60 h già dentro la stima; asciutte: ~13% della scrittura, già dentro |
+| **Giro 1** | Le 17 puntate (~4 h), poi **ci si ferma**: Giuseppe le legge | Primissima cosa, come chiesto. È anche il banco vero del 7b: tempi, token scritti, quante affermazioni scarta | — |
+| **Ritocco** | Se la lettura dice di cambiare qualcosa (tetto di 12, lunghezza delle citazioni, misura dei pezzi) si cambia **adesso** e le 17 si rifanno: sono 4 ore | Dopo costerebbe giorni | — |
+| **Giro 2** | Articoli di Medyca (~9 h) | Può partire appena le 17 sono approvate | — |
+| **PR 2** | **Tetto locale** (`local_max_tokens`, valori presi dal giro 1) + **niente affermazioni sugli articoli corti fuori tema (ex 2a)** + **testa comune dei due prompt per i testi corti (ex PR 4)** | Da avere **prima del gruppo 3**. Il tetto protegge ~4.000 chiamate dal caso «12 minuti a vuoto». La testa comune fa leggere il testo corto una volta sola: il banco (provvisorio) dice che la cache funziona con il testo prima (9 s invece di 99) e non con i prompt di oggi (109 s) | testa comune ~12 h su 379 contenuti corti; fuori tema ~12 h sul gruppo 5 |
+| **Giri 3, 4, 5** | Articoli in tema (~56 h), reel lunghi (~90 h), fuori tema (~73 h) | Di fila, senza altre soste | — |
+| **Dopo** | Bozze di blog dal testo intero (`blog_workflow`, tagli 12.000 e 4.000) | Non riguarda riassunti e affermazioni | — |
+
+Se la PR 2 tarda, i giri 3-5 possono partire lo stesso: niente andrà rifatto, si spendono solo
+~24 ore in più. I ritocchi piccoli all'analisi (ex 2c) non li metto più: cambierebbero il prompt
+dell'analisi a metà rifacimento per pochi secondi di guadagno.
+
+#### I. File da toccare nella PR 1
+
+- `BEC/pipeline/whole_text.py` (nuovo) — tagliare a fine frase, unire, togliere le doppie.
+- `BEC/llm/prompts.py` — prompt del pezzo e della chiamata finale; limite di parole su testo e citazione.
+- `BEC/pipeline/agents/knowledge_agent.py`, `enrich_agent.py` — strada corta sul testo intero, strada lunga, scrittura unica, stato nuovo.
+- `BEC/core/models.py` + migrazione — `full_text_status` su `Reel` e `KnowledgeDocument`.
+- `BEC/mcp_bridge/server.py` — `_nota_analisi` legge il campo; fino a 12 affermazioni; istruzioni del connettore (riga 96).
+- `BEC/core/management/commands/reanalyze_whole.py` (nuovo), e `reprocess.py` da rileggere (una trascrizione rifatta deve rimettere lo stato a `pending`).
+- `BEC/llm/client.py` — il parametro «solo locale» e il terzo livello del lucchetto (il rifacimento si mette da parte se un giro è in corso).
+- `BEC/pipeline/dag.py` — il giro alza e abbassa la sua bandierina.
+- `BEC/core/progress_report.py`, `FEC` pagina Avanzamento — etichetta della chiamata e riquadro del rifacimento (seguendo `.claude/skills/ui-design/`).
+- `BEC/core/management/commands/eval_mcp.py` — oggi dà per certo che ogni citazione stia nella prima parte del testo (`04-mcp-connector.md:202`): non sarà più vero.
+- `BEC/core/queue_eta.py` — la stima dei tempi conta una chiamata per contenuto: con i pezzi non vale più.
+- `BEC/core/tests/test_mcp_tools.py:513-515` — afferma i tagli 6000 / 8000 / 3000.
+
+**Documentazione nello stesso commit**: `01-data-model.md` (campo e diagramma); `02-pipeline.md`
+(stadi `enrich` e `knowledge`, comando nuovo, i tre livelli del lucchetto locale, stima dei tempi); `06-frontend.md` (riquadro in Avanzamento); `03-llm-and-embeddings.md` («What
+the document analysis reads» riscritta, limiti noti); `04-mcp-connector.md` (nota, affermazioni,
+righe 202-219); `.claude/architecture-summary.md` (riga del limite 6.000 / 8.000 / 3.000); pagina
+`Documentazione` in parole del cliente («leggiamo tutto il testo; i contenuti vecchi si stanno
+rifacendo, la nota dice quali mancano»); pagina tecnica del drawio; docstring dei moduli.
+
+**Test** (risposte finte, nessuna chiamata a Groq né a Ollama)
+- taglio: mai a metà parola; a fine frase quando c'è; i pezzi rimessi insieme danno il testo identico; testo senza punteggiatura; 8.000 esatti = strada corta, 8.001 = pezzi;
+- una citazione vera del pezzo 3 viene tenuta, una inventata scartata, una che sta in un altro pezzo scartata;
+- due pezzi con la stessa affermazione → una sola; tetto rispettato; le affermazioni tenute vengono da pezzi diversi;
+- pezzo 2 di 3 con JSON rotto o tagliato → contenuto `failed`, niente salvato, analisi vecchia intatta;
+- modello non disponibile a metà → `pending`, non `failed`;
+- `nota_analisi`: presente con `pending` e testo lungo, assente con `done`, presente con `failed`;
+- migrazione: testo corto → `done`, lungo → `pending`;
+- rifacimento: non riprende i `done`; non riprende i `failed` senza `--ritenta-falliti`; non chiama mai Groq; con un giro in corso non prende il modello e riparte quando finisce; interruttore spento → si ferma dopo la chiamata in corso; due copie insieme → la seconda esce; rilanciato continua; rispetta l'ordine dei gruppi; `owner_type` non cambia mai; dopo il rifacimento il vettore è da ricalcolare;
+- il prompt dell'analisi di un articolo corto resta uguale a oggi alla lettera (test esistente).
+
+**Rischi**
+- **Qualità del riassunto fatto dagli appunti** invece che dal testo: non provata, né su Groq né
+  sul 7b. È il rischio principale: per questo i primi 17 si guardano a mano.
+- **Regola owned/competitor**: non la sfioro. Ogni chiamata lavora un contenuto solo; pezzi e
+  appunti non escono dal loro contenuto; il comando non tocca `owner_type`.
+- Il 7b può ignorare «massimo 3» o «massimo 25 parole»: più token, niente di rotto.
+- Più chiamate per contenuto = più occasioni di un `failed` (un pezzo su 15 basta). I `failed`
+  storici per JSON tagliato sono stati 143: va guardato il numero dopo il primo gruppo.
+- Un giro notturno con un video nuovo da 85.000 caratteri fa 16 chiamate invece di 2: se Groq è
+  finito, sul 7b è circa un'ora.
+- Le affermazioni cambiano per tutti i contenuti rifatti: il cliente può non ritrovare una frase
+  che ricordava.
+- Il limite del minuto di Groq: se conta anche il tetto di risposta, un pezzo chiede ~3.300 token
+  su 8.000. Regge, ma non è verificato sul nostro conto.
+
+**Alternative scartate**
+- *Una richiesta sola a Groq per i testi lunghi* (la finestra c'è): il limite di 8.000 token al
+  minuto la rifiuta, e se cade sul 7b non entra in 8.192.
+- *Soglie diverse per Groq e per il 7b*: chi risponde si sa solo a chiamata fatta.
+- *Pezzi con sovrapposizione*: crea affermazioni doppie; il taglio a fine frase basta.
+- *Due passate sui pezzi* (una per il riassunto, una per le affermazioni): quasi il doppio di lettura.
+- *Strada lunga anche per i testi corti*: cambierebbe tutte le analisi nuove senza motivo.
+- *Salvare i pezzi a metà in una tabella*: più codice e una tabella in più per risparmiare poco.
+- *Alzare la finestra del 7b a 16.384*: leggere 9.000 token in un colpo sono 10-12 minuti e i
+  modelli piccoli perdono il centro dei testi lunghi (rapporto di ricerca).
+
+#### L. Domande per Giuseppe (testo intero)
+
+Già decise da Giuseppe e messe nel disegno: Groq a pagamento no; il rifacimento gira sul 7b
+locale giorno e notte; la durata in giorni non è un problema.
+
+1. **Quante affermazioni per un testo lungo?** *Raccomando fino a 12*, scelte da tutti i pezzi. Con
+   6 una puntata di un'ora resterebbe coperta a metà. Va deciso prima del giro 1.
+2. **Ci fermiamo dopo le 17 puntate per leggerle**, prima di rifare il resto con il 7b? *Raccomando
+   sì*: è l'unica prova di qualità del 7b su questo compito, e cambiare idea dopo costa giorni.
+3. **Rifacciamo anche i fuori tema** (479 contenuti, ~73-85 ore, nascosti da ricerca e temi)?
+   *Raccomando sì, per ultimi*: il giudizio «fuori tema» era stato dato leggendo solo l'inizio, e una
+   puntata che apre con gli sponsor può essere stata giudicata male. La loro nota resta vera finché non tocca a loro.
+4. **Va bene che riassunto e affermazioni rifatti cambino** (e siano scritti dal 7b al posto di
+   Claude o di Groq), e che qualche contenuto cambi tema o entri/esca dalla ricerca? *Raccomando sì*,
+   dicendolo al cliente nella pagina Documentazione.
+5. **Il riquadro in Avanzamento sta nella PR 1 o subito dopo?** *Raccomando nella PR 1*: è il modo
+   di vedere a che punto è un lavoro di due settimane. Senza, resta solo la riga della chiamata in corso.
+6. **Le bozze di blog** (`blog_workflow`) tagliano a 12.000 e 4.000 caratteri senza dirlo. *Raccomando
+   una PR a parte, dopo*, e di scriverlo subito nei limiti noti.
+
+### 2.0b In tre righe (disegno del mattino: passi 2, 3, 4)
+
+L'ordine delle PR qui sotto (§2.6) è superato da §2.0-H. Il resto vale.
+
 
 1. La chiamata che costa di più sul modello locale non è l'analisi, è **l'estrazione delle
    affermazioni**: scrive circa 590 token contro 158. E **più di metà di quelle chiamate lavora
