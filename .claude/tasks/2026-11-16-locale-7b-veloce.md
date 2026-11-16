@@ -355,9 +355,7 @@ come a 893): è la coda nuova che pesa, circa 260 token (calcolo: 893 meno la te
 4/3, 2/6. Totale **19 contro 24: −0,8 a contenuto in media** (soglia: non più di 1 in meno:
 passa), ma **scartate 9 contro 8** (soglia: non di più: non passa per una). Il campione è di sei:
 le differenze stanno dentro il rumore tra una chiamata e l'altra, e sul competitor le
-vecchie hanno scartato tutte e 4 le righe. Le nuove hanno scritto righe troppo corte da tenere
-(testo sotto 8 caratteri non succede: sono le citazioni sotto i 12 caratteri, es. 3 parole,
-che il controllo scarta).
+vecchie hanno scartato tutte e 4 le righe. Nelle nuove, due reel hanno citazioni di 3 parole (sotto i 12 caratteri): il controllo le scarta.
 
 **Il 7b non rispetta il limite di parole della citazione.** Nell'articolo lungo le nuove
 citazioni sono di 38, 47, 54, 51, 26, 38 parole (limite chiesto: 25), contro 13-29 di oggi.
