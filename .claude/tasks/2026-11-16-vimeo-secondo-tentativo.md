@@ -1,7 +1,7 @@
 ---
 id: 2026-11-16-vimeo-secondo-tentativo
 titolo: Vimeo, secondo tentativo automatico e pulsante Riprova sul telefono
-stato: revisione
+stato: pronto
 ramo: feat/vimeo-secondo-tentativo
 pr: ""
 ticket: ""
