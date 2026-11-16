@@ -406,3 +406,38 @@ velocità misurate e quote misurate, non un tempo cronometrato.
 
 - 16/11 15:10 — capo: aperto il lavoro. Lanciati insieme il banco di prova (passo 1, sola
   misura) e l'architetto (passi 2-4). Il disegno aspetta l'OK di Giuseppe.
+
+## Cambio di priorità (Giuseppe, 16/11/2026 pomeriggio)
+
+Il cliente ha letto nel connettore: «Un limite che resta: il riassunto e le affermazioni
+vengono ancora ricavati solo dai primi 6.000 caratteri. Il database lo dichiara in
+nota_analisi, quindi per quelle puntate vale il testo e non le affermazioni.»
+
+Parole di Giuseppe: «Aggiusta tutto, non possiamo lasciare questo limite. Fai un assesment
+e vedi quanto ci metto prima, poi rilasciamo dobbiamo provvedere a questo errore»
+
+Quindi: **riassunto e affermazioni devono leggere tutto il testo, per tutti i contenuti**,
+e quelli già analizzati sull'inizio vanno rifatti. Questo passa davanti al resto del
+disegno; il resto (fuori tema, risposte asciutte, niente rilettura) resta e serve a pagare
+il conto.
+
+### Numeri (capo, sola lettura sulla produzione, 16/11)
+
+Contenuti attivi analizzati solo sull'inizio:
+
+| Cosa | Quanti | Caratteri totali |
+|---|---|---|
+| Puntate/video di riferimento > 6.000 | 17 | 282 mila |
+| Articoli in tema > 6.000 (358 competitor + 38 owned circa; 396 blog) | 396 | 4,24 milioni |
+| Articoli fuori tema > 6.000 | 441 | 4,71 milioni |
+| Reel > 3.000 (356 competitor, 2 owned) | 358 | 8,41 milioni (il più lungo 85.699) |
+
+Articoli > 30.000 caratteri: 13. Reel > 8.000: 189.
+
+Groq oggi: circa 200-250 mila token al giorno sul modello principale prima di «daily token
+budget exhausted» (15/11: 155 mila letti + 63 mila scritti su gpt-oss-120b), più i modelli
+fratelli (20-45 mila al giorno visti). 7b locale: legge ~13 token/s, scrive ~2,8.
+
+Stima grezza (3,5 caratteri per token, due letture per contenuto come oggi): puntate ~0,16
+milioni di token; articoli in tema ~3,3 milioni; reel lunghi ~4,8 milioni; articoli fuori
+tema ~1,4 milioni se solo riassunto. Totale ~10 milioni di token. È un calcolo.
