@@ -208,6 +208,9 @@ class Provider:
     # Needles that mean "the host wants a login / thinks we are a bot". With
     # the proxy on, the cookie remedy would be false (no cookies are used).
     auth_needles: tuple[str, ...] = ()
+    # Refusals that are not a login but are just as passing: the proxy path
+    # retries them like the auth ones (see fetch_audio).
+    transient_needles: tuple[str, ...] = ()
 
 
 def _yt_extra_args() -> list[str]:
@@ -291,6 +294,8 @@ PROVIDERS: tuple[Provider, ...] = (
         proxied_url=_vimeo_player_url,
         proxied_args=("--referer", "https://vimeo.com/"),
         auth_needles=("only works when logged-in", "HTTP Error 401"),
+        # Same random refusal as above, worded differently (15/11/2026).
+        transient_needles=("No video formats found",),
         errors=(
             # yt-dlp raises this before contacting Vimeo (vimeo.py:391,
             # REQUIRES_AUTH on the web client), so it is always the cookies —
@@ -324,6 +329,9 @@ _COMMON_ERRORS: tuple[tuple[tuple[str, ...], str], ...] = (
      "Il servizio che instrada i download non ha risposto (o ha finito il "
      "traffico). Riprova più tardi, oppure carica il file a mano."),
 )
+
+# Extra tries, each with a new proxy address, after a passing refusal.
+_PROXY_RETRIES = 2
 
 _PROXY_BLOCKED = ("Anche passando dal proxy il sito ha rifiutato il download. "
                   "Riprova tra poco, oppure carica il file a mano.")
@@ -598,6 +606,30 @@ def fetch_audio(url: str, dest_mp3: Path) -> None:
     # IP is a flag, and an expired one only adds failures) and, on Vimeo, the
     # public player address. Without it: the old cookie path, unchanged.
     target = prov.proxied_url(url) if (proxy and prov.proxied_url) else url
+    # Through the proxy Vimeo refuses AT RANDOM: the same video, the same
+    # command, one address says "only works when logged-in" or "No video
+    # formats found!" and a fresh address (a new `{session}` in the proxy
+    # user) lets it through. Measured on 15/11/2026: interviews 21, 22, 23
+    # failed on the first try, 21 passed on the third. So a refusal of that
+    # kind is retried with a NEW proxy, at most twice more. Without the proxy
+    # there is no other address to try: one attempt, as before.
+    attempts = 1 + _PROXY_RETRIES if proxy else 1
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            proxy = _proxy()
+        if _download(prov, url, target, dest_mp3, proxy,
+                     last=attempt == attempts, attempt=attempt):
+            return
+    # Unreachable: the last attempt either returns or raises.
+    raise LinkRefused(_PROXY_BLOCKED)
+
+
+def _download(prov, url: str, target: str, dest_mp3: Path, proxy: str,
+              *, last: bool, attempt: int) -> bool:
+    """One yt-dlp attempt. True when `dest_mp3` is written; False when the
+    refusal looks passing and the caller may try again with another proxy
+    (never on `last`: then it raises). Every other failure raises at once."""
+    prov_needles = (*prov.auth_needles, *prov.transient_needles)
     with tempfile.TemporaryDirectory(dir=str(settings.TMP_DIR)) as tmp:
         out = Path(tmp) / "a.%(ext)s"
         cmd = [
@@ -647,10 +679,12 @@ def fetch_audio(url: str, dest_mp3: Path) -> None:
         err = _scrub(proc.stderr or "", proxy)[-800:]
         if proc.returncode != 0:
             lowered = err.lower()
-            if proxy and any(n.lower() in lowered for n in prov.auth_needles):
+            if proxy and any(n.lower() in lowered for n in prov_needles):
                 # Cookie remedies would be false here: none were used.
-                logger.warning("[link] bloccato anche via proxy %s: %s",
-                               url, err.strip())
+                logger.warning("[link] bloccato anche via proxy %s "
+                               "(tentativo %d): %s", url, attempt, err.strip())
+                if not last:
+                    return False
                 raise LinkRefused(_PROXY_BLOCKED)
             for needles, message in (*prov.errors, *_COMMON_ERRORS):
                 if any(n.lower() in lowered for n in needles):
@@ -666,3 +700,4 @@ def fetch_audio(url: str, dest_mp3: Path) -> None:
         if mp3 is None:
             raise LinkRefused("Il download non ha prodotto un file audio.")
         os.replace(mp3, dest_mp3)
+        return True

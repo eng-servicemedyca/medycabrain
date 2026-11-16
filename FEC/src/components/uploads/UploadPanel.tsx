@@ -384,6 +384,7 @@ export function UploadPanel() {
           ) : (
             <TableFrame
               minWidth={600}
+              stacked
               head={
                 <>
                   <Th>{t("uploads.file")}</Th>
@@ -424,7 +425,7 @@ export function UploadPanel() {
                       </a>
                     )}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 max-md:col-span-2" data-label={t("accounts.status")}>
                     {statusBadge(u)}
                     {u.transcribe_status === "pending" && u.job_progress != null && (
                       <div className="mt-2 max-w-xs">
@@ -455,7 +456,7 @@ export function UploadPanel() {
                       <p className="mt-1 max-w-xs text-xs text-danger">{u.last_error}</p>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-xs">
+                  <td className="px-4 py-3 text-xs" data-label={t("uploads.result")}>
                     {u.transcribe_status === "done" ? (
                       <div className="flex flex-col gap-1">
                         {u.document && (

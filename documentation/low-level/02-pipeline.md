@@ -248,9 +248,22 @@ usa `BEC/venv`. Si usa **solo con il proxy**: senza proxy resta `BEC/venv/bin/yt
 python3 -m venv BEC/venv-ytdlp && BEC/venv-ytdlp/bin/pip install -r BEC/requirements-ytdlp.txt
 ```
 
+**Vimeo rifiuta a caso: fino a 3 tentativi, ognuno con un indirizzo nuovo.** Misurato il
+2026-11-15 sulle interviste 21, 22 e 23: stesso video, stesso comando, e Vimeo risponde ora «only
+works when logged-in», ora «No video formats found!»; con un IP nuovo passa (la 21 è passata al
+terzo tentativo a mano). Per questo, **solo con il proxy**, se yt-dlp fallisce con uno di questi
+testi (gli `auth_needles` del sito, più «No video formats found» per Vimeo, in
+`transient_needles`) `fetch_audio` riprova subito con un proxy nuovo (`_proxy()` di nuovo: nuova
+`{session}`, nuovo IP), al massimo **2 volte in più** (`_PROXY_RETRIES`), poi la frase di sempre
+(«bloccato anche tramite proxy»). Ogni tentativo parte da una cartella temporanea pulita e il log
+scrive quelli falliti (senza l'indirizzo del proxy). Vale anche per YouTube. Un video privato o
+rimosso, o qualunque altro errore, **non** si ritenta. Senza proxy: un solo tentativo, come prima.
+Costo: ogni tentativo che fallisce consuma poco traffico (si ferma prima dell'audio), ma sono fino
+a 3 richieste invece di 1.
+
 **Limiti noti.** Il traffico del proxy costa a GB. Se il
 traffico finisce, i download falliscono con la frase «il proxy non ha risposto» (restano `failed`,
-nessun ritentativo automatico; la scheda-riferimento resta salvata). L'indirizzo del proxy, con la
+nessun ritentativo automatico oltre ai 3 tentativi qui sopra; la scheda-riferimento resta salvata). L'indirizzo del proxy, con la
 password, sta sulla riga di comando di yt-dlp: gli altri utenti del server lo vedono con `ps`.
 Va bene su un VPS con un solo utente; non su una macchina condivisa.
 
