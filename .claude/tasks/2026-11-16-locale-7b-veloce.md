@@ -488,6 +488,56 @@ produzione non può creare database).
   volte, 145-190 s): non so da chi.
 - Il drawio: modificato solo il testo della pagina tecnica (stadio `enrich`); non ho rigenerato altro.
 
+## 4. Revisione          (revisore, 17/11/2026, giro 1)
+
+**Verdetto: passa.** Nessun rilievo bloccante. Restano da `stato: revisione` finché non c'è il collaudo.
+Non ho eseguito i test (servirebbe un database); ho letto il diff e verificato a parte i punti sotto.
+
+**Controllato e a posto**
+- **Prompt dell'analisi identico a `main`.** Ho confrontato a parte, con `ast`, le costanti
+  `ENRICH_USER_TEMPLATE`, `ENRICH_SYSTEM`, `ARGUMENTS_SYSTEM` (prompts.py) e `KB_ENRICH_USER`,
+  `KB_SYSTEM`, `KB_ENRICH_JSON` (knowledge_agent.py) tra `main` e `HEAD`: tutte uguali, carattere per
+  carattere. `_enrich_user` ricompone testa + regole (+ nota «solo didascalia» dopo, come prima). Anche i
+  test con sha256 congelato lo coprono. Groq non cambia per l'analisi.
+- **`local_max_tokens` solo a Ollama.** `client.py`: `local_max = local_max_tokens or max_tokens` è usato
+  solo nel ramo locale (`usage.begin` e `_ollama_chat`); i rami Groq usano ancora `max_tokens`. Senza il
+  parametro, il comportamento è quello di prima. Troncamento locale: `LLMTruncated`, «not retrying», `failed`.
+- **Stati.** Analisi fallita: eccezione, `enrich_status=failed`, nessuna affermazione chiesta. Affermazioni
+  fallite: ritornate (non sollevate), analisi resta `done`, `argument_status=failed`, nessun reset.
+  `_fail_whole` cambia i tre stati solo per `WholeTextError`, cioè solo per i testi lunghi, che qui non
+  fanno la seconda chiamata. Modello sparito fra le due: analisi salvata prima del `break`, affermazioni
+  `pending`, `deferred` contato giusto (`1 + restanti`), e la fase «Affermazioni» non parte (`not stopped`).
+  Niente stato nuovo.
+- **owned / competitor.** `owner_type` non è toccato; ogni prompt contiene un solo contenuto; nessun
+  codice che confronti o unisca contenuti diversi (`merge_claims` lavora su un contenuto alla volta).
+- **Doppie.** `_same_claim`: `sim >= 0,95` oppure `>= 0,90` con citazioni sovrapposte; tetto 6 applicato
+  in `merge_claims` dopo il filtro (verified_claims senza `limit`). Embedder che non carica: restano le
+  affermazioni, tolte solo le esatte (`except` con avviso, non inghiotte l'errore del contenuto).
+- **Documentazione nello stesso commit**: 02, 03, 06, architecture-summary, drawio (XML valido),
+  `it.json` (JSON valido). Nessun segreto nel diff (cercati `sk-ant-`, `gsk_`, `BEGIN PRIVATE KEY`).
+  Nessun commit su `main` (5 commit sul ramo, tutti `feat/locale-7b-veloce`).
+
+**Rilievi (tutti non bloccanti, in ordine di gravità)**
+1. **Tetto locale delle affermazioni dei reel più alto di prima.** `enrich_agent.py:~265`:
+   `max_tokens=1200, local_max_tokens=LOCAL_MAX_CLAIMS (1500)`. Per i reel il tetto sul 7b passa da
+   1.200 a 1.500, cioè il caso peggiore di scrittura sale (~+100 s a 3 tok/s) invece di scendere. Il
+   disegno diceva «1000» per le affermazioni corte; il passo 0 ha misurato al massimo 382 token sui reel
+   (doppio: 764) e 528 sugli articoli. Non è un errore (il documento 03 scrive 1.500 e dice come è nato),
+   ma la documentazione non dice che per i reel è un aumento. Scelta: tenere 1.500 e scriverlo, oppure
+   usare 1.000-1.200 per i reel.
+2. **Tetto dei pezzi (1.000) non misurato**, come ammesso. Se un pezzo viene tagliato sul 7b,
+   `LLMTruncated` → `WholeTextError` → l'intero testo lungo diventa `failed` e non si riprova. Il calcolo
+   (~330 token, 3 volte di margine) è ragionevole; da guardare al primo testo lungo letto dal 7b.
+3. **Documentazione: frase doppia** in `documentation/low-level/02-pipeline.md` (~riga 904): «The caption
+   of a reel goes in whole; the caption of a reel goes in whole (Instagram allows 2 200 characters…».
+   Un taglia-e-incolla rimasto in mezzo; va tolta una metà.
+4. **Rischio già dichiarato, qui solo ricordato:** le affermazioni di Groq cambiano prompt (sistema
+   dell'analisi + testa + coda corta, citazione senza il limite di parole) e non sono state provate su
+   Groq. La difesa vera (citazione verificata dal codice) regge; il primo giro con Groq va guardato come
+   scritto in §3. Un reel su sei con affermazioni da 1-3 parole sul 7b: da guardare nelle prime notti.
+
+Nessuno dei quattro cambia il verdetto. I numeri 1 e 3 sono due righe.
+
 ## Registro
 
 - 16/11 — capo: aperto il lavoro, lanciato l'architetto.
@@ -499,3 +549,4 @@ produzione non può creare database).
   Giro `knowledge` finito (2.299 documenti con vettore), la macchina è libera.
 - 17/11 00:20 — sviluppatore: passo 0 fatto (18 chiamate sul 7b, 23:04-00:20). Non passa: lettura della seconda chiamata 21,2 s in media (soglia 20; oggi 90,8), scartate 9 contro 8. Fermato, nessun codice. Numeri e strade nella sezione «Passo 0 — risultati».
 - 17/11 09:10 — sviluppatore: Giuseppe sceglie la strada 1 (coda corta). Seconda prova: lettura 9,95 s, tenute 25 contro 24, scartate 3 contro 8: passa. Implementati i punti 1-3, 490 test verdi, documentazione nello stesso commit. Stato: revisione.
+- 17/11 — revisore: giro 1, passa. 4 rilievi non bloccanti (tetto 1.500 dei reel più alto di prima, tetto dei pezzi non misurato, frase doppia in 02-pipeline.md, rischio Groq già dichiarato). Prompt dell'analisi identico a `main` verificato costante per costante. `stato` resta `revisione` fino al collaudo.
