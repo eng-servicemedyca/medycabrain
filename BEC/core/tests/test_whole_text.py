@@ -339,7 +339,7 @@ class ArticoliLetturaIntera(TestCase):
 
         def short(system, user, **kw):
             seen.append(user)
-            if "TITOLO" in user:
+            if "Ora estrai solo le affermazioni" not in user:
                 return analysis
             return {"argomenti": [{"testo": "affermazione",
                                    "citazione": t[-150:-60]}]}  # from the END

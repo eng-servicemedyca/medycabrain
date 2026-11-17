@@ -34,7 +34,7 @@ Four inputs → derived layers → themes. See `documentation/low-level/01-data-
 `pipeline/dag.py` (which also owns the stage list, via `build_steps()`), entry
 `core/management/commands/run_pipeline.py`, one agent per stage:
 `scrape → download → transcribe → enrich → embed → blogscrape → knowledge → cluster`
-(eight stages; the old `batch` stage, which handed the analysis to the Anthropic Batch API, was
+(eight stages; in `enrich` and `knowledge` each content's analysis and claims are asked back to back, with the same beginning of prompt, so the local model reads the text once; the old `batch` stage, which handed the analysis to the Anthropic Batch API, was
 removed 2026-11-15 — `dag.HISTORY_ORDER` keeps it only to draw old rounds). Models are a
 two-link chain: **Groq** (declared in `.env` as `LLM_ENDPOINTS=groq`) and then the **local
 Ollama model** as the backstop. No Anthropic, no reseller gateway, no HuggingFace.

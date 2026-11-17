@@ -1,7 +1,7 @@
 ---
 id: 2026-11-16-locale-7b-veloce
 titolo: Il 7b locale più veloce nel giro di ogni giorno
-stato: approvato
+stato: revisione
 ramo: feat/locale-7b-veloce
 pr: ""
 ticket: ""
@@ -391,6 +391,103 @@ non passa, il punto 1 non entra. Dai numeri, due strade che non ho provato:
 In tutti e due i casi: tetto delle affermazioni corte **non 1.000 ma almeno 1.500**, e il limite
 «citazione massimo 25 parole» non regge sul 7b (si toglie, o si lascia come desiderio).
 
+## Passo 0, seconda prova — coda corta (sviluppatore, 17/11/2026, 08:40-09:04)
+
+Scelta di Giuseppe: strada 1 (coda di ~100 token; via «Ora non fare l'analisi…» e il limite di 25
+parole sulla citazione; resta «testo massimo 20 parole»). Stessi 6 contenuti, 6 chiamate nuove
+(`passo0/run1.py`, `raw1.jsonl`, `run1.log`; coda in `newprompts2.py`, **identica** a
+`ARGUMENTS_TAIL_TEMPLATE` di `prompts.py`). Stessa regola di lucchetto, database in sola lettura,
+niente Groq, `.env` intatto. Differenza di metodo: la testa di ogni contenuto è stata messa in cache
+con la chiamata dell'analisi **ferma a 1 token** (non ho rifatto l'analisi intera: la cache vede lo
+stesso prefisso). Le chiamate di oggi non sono state rifatte: confronto con le misure del 16/11.
+
+| Contenuto | Token | Lettura | Scritti | Tenute (nuove / oggi) | Scartate (nuove / oggi) |
+|---|---|---|---|---|---|
+| articolo Medyca medio | 746 | 9,6 s | 225 | 4 / 6 | 0 / 0 |
+| articolo Medyca lungo | 2.428 | 10,4 s | 528 | 5 / 6 | 1 / 0 |
+| articolo competitor | 1.163 | 9,3 s | 306 | 2 / 0 | 1 / 4 |
+| reel Medyca 1 | 1.279 | 10,3 s | 379 | 5 / 3 | 0 / 3 |
+| reel Medyca 2 | 899 | 9,9 s | 216 | 3 / 3 | 1 / 1 |
+| reel competitor | 1.051 | 10,2 s | 433 | 6 / 6 | 0 / 0 |
+| **totale / media** | | **9,95 s** | max **528** | **25 / 24** | **3 / 8** |
+
+**Passa su tutte le soglie**: lettura 9,95 s (soglia 20; era 21,2 con la coda lunga, 90,8 oggi);
+tenute +0,2 a contenuto (soglia: non più di 1 in meno); scartate 3 contro 8 (soglia: non più di 1 in
+più). Il massimo scritto è 528 token (doppio: 1.056): il tetto 1.500 delle affermazioni regge, con
+margine. Il tetto 800 dell'analisi regge (massimo 202).
+
+**Cosa non va bene, e non lo dice nessuna soglia.** In un reel su sei (`reel-owned-2`, trascrizione
+corta) le affermazioni nuove sono di 1-3 parole («Informazione.», «Protezione.») con citazioni di 3
+parole: passano il controllo (la citazione c'è, è lunga 12+ caratteri) ma valgono poco; il prompt di
+oggi su quel reel ne dava 3 da 11-19 parole. Anche la prima prova (coda lunga) aveva citazioni da 3
+parole sullo stesso reel: dipende dal contenuto, non solo dalla coda. Un campione di sei non lo
+misura. Da guardare nelle prime notti sul 7b (affermazioni con testo sotto 3 parole).
+
+## 3. Sviluppo          (sviluppatore, 17/11/2026)
+
+Ramo `feat/locale-7b-veloce`. Passo 0 e seconda prova: sopra. Implementati i punti 1, 2 e 3 del
+disegno; il punto 4 (7 thread) e le affermazioni sugli articoli fuori tema restano fuori, come deciso.
+
+**Cosa cambia**
+- **Punto 1, stesso inizio e chiamate una dietro l'altra.**
+  `llm/prompts.py`: il messaggio dei reel è spaccato in `ENRICH_HEAD_TEMPLATE` (fino a fine
+  trascrizione) e `ENRICH_RULES`; `ENRICH_USER_TEMPLATE` è la loro somma (uguale a `main`, provato).
+  Nuova `ARGUMENTS_TAIL_TEMPLATE` (~100 token) al posto di `ARGUMENTS_USER_TEMPLATE`, tolto.
+  `knowledge_agent.py`: `KB_ENRICH_HEAD` e `_doc_head`; `build_doc_arguments_prompt` dà sistema
+  dell'analisi + testa + coda. `enrich_agent.py`: `_enrich_head`, e `_extract_arguments` usa
+  `ENRICH_SYSTEM` + testa + coda. Il prompt dell'analisi non cambia di una lettera: test con sha256
+  congelato da `main` per reel (anche «solo didascalia») e articolo.
+  `run()` di tutti e due gli agenti: `_enrich_then_claims` per contenuto (analisi, subito le
+  affermazioni). Analisi fallita: niente affermazioni. Affermazioni fallite: analisi resta `done`,
+  `argument_status` `failed`, non si riprova. Modello non disponibile fra le due: analisi salvata,
+  affermazioni `pending`, il giro si ferma (`deferred` le conta). I testi lunghi non fanno una
+  seconda lettura. Il secondo giro «Affermazioni» resta, solo per gli arretrati, e non parte se il
+  giro si è fermato. Barra: «Analisi e affermazioni».
+- **Punto 2, tetti locali.** `client.chat(local_max_tokens=…)`, passato a `_ollama_chat` e scritto in
+  `llm_calls`; Groq non cambia. `LOCAL_MAX_ANALYSIS=800`, `LOCAL_MAX_CLAIMS=1500`,
+  `LOCAL_MAX_PIECE=1000` (**provvisorio**: non misurato; stima doppia di 3 affermazioni + appunti).
+  Nel prompt dei pezzi: «testo: una frase, massimo 20 parole». **Il limite di 25 parole sulla
+  citazione NON c'è**: il 7b non lo rispetta (26-54 parole), l'ho tolto dalla coda (§ passo 0).
+- **Punto 3, doppie nei testi corti.** `whole_text`: `SAME_CLAIM=0,95`, `SAME_CLAIM_SAME_QUOTE=0,90`,
+  `_quotes_overlap` (uguali, una dentro l'altra, o più di metà delle parole della più corta in
+  comune), `_same_claim`; `merge_claims` li usa per pezzi e testi corti. `write_doc_arguments` e le
+  affermazioni dei reel: `verified_claims` senza tetto, poi `merge_claims([claims], 6, embed)`: tetto
+  dopo il filtro.
+
+**File toccati**: `BEC/llm/prompts.py`, `BEC/llm/client.py`, `BEC/pipeline/whole_text.py`,
+`BEC/pipeline/agents/enrich_agent.py`, `knowledge_agent.py`, test (`core/tests/test_7b_veloce.py`
+nuovo, 33 test; `test_whole_text.py` una riga), documentazione: `03-llm-and-embeddings.md`,
+`02-pipeline.md`, `06-frontend.md`, `architecture-summary.md`, pagina tecnica del drawio, pagina
+`Documentazione` dell'app (`FEC/src/i18n/it.json`: nome della barra e un limite nuovo).
+
+**Test**: `manage.py test core` 490 verdi, `makemigrations --check` pulito; nessuna chiamata vera a
+Groq né a Ollama. Il database di prova è un PostgreSQL 16 usa-e-getta in scratchpad (l'utente di
+produzione non può creare database).
+
+**Scelte e perché**
+- Coda corta e senza limite di parole sulla citazione: lo dice il passo 0.
+- Tetti 800 / 1.500 / 1.000: doppio del massimo scritto dal 7b (202; 742 con la coda lunga, 528 con
+  la corta), mai sotto il calcolo. Quello dei pezzi è l'unico non misurato.
+- `ARGUMENTS_SYSTEM` resta solo per i pezzi; le affermazioni corte usano il sistema dell'analisi
+  (serve per la cache).
+
+**Cosa è rimasto fuori / da sapere**
+- Punto 4 (7 thread) e affermazioni sugli articoli fuori tema (PR a parte, domanda 4).
+- **Il risparmio è zero** se l'analisi la fa Groq e le affermazioni cadono sul 7b, e per i pezzi.
+- **Qualità del 7b sui reel corti**: un caso su sei con affermazioni da 1-3 parole (sopra). Non
+  corretto: da guardare nelle prime notti.
+- Il filtro delle doppie non prende «frasi che si somigliano» (articolo 2214, 0,771): accettato da
+  Giuseppe. Le citazioni molto corte si sovrappongono facilmente (scoperto scrivendo un test: «il
+  farro contiene glutine» / «l'orzo contiene glutine» condividono 2 parole su 3): la regola è pensata
+  per citazioni di una frase. Non misurato su articoli (niente vettori salvati).
+- Provato solo sul 7b e con 6 contenuti; Groq non provato (nessuna chiamata, come deciso): si guarda
+  il primo giro fatto da Groq (affermazioni per contenuto, oggi 5,1 articoli / 5,2 reel, e righe
+  «affermazioni scartate»); se scendono, revert.
+- `queue_eta.py` non toccato: i primi giri dopo il rilascio possono sembrare più lenti del vero.
+- Durante la prova il modello è stato scaricato e ricaricato da qualcuno fuori dalla prova (visto 3
+  volte, 145-190 s): non so da chi.
+- Il drawio: modificato solo il testo della pagina tecnica (stadio `enrich`); non ho rigenerato altro.
+
 ## Registro
 
 - 16/11 — capo: aperto il lavoro, lanciato l'architetto.
@@ -401,3 +498,4 @@ In tutti e due i casi: tetto delle affermazioni corte **non 1.000 ma almeno 1.50
   frasi quasi uguali hanno somiglianza 0,771, nessuna regola le prende, ed è accettato così.
   Giro `knowledge` finito (2.299 documenti con vettore), la macchina è libera.
 - 17/11 00:20 — sviluppatore: passo 0 fatto (18 chiamate sul 7b, 23:04-00:20). Non passa: lettura della seconda chiamata 21,2 s in media (soglia 20; oggi 90,8), scartate 9 contro 8. Fermato, nessun codice. Numeri e strade nella sezione «Passo 0 — risultati».
+- 17/11 09:10 — sviluppatore: Giuseppe sceglie la strada 1 (coda corta). Seconda prova: lettura 9,95 s, tenute 25 contro 24, scartate 3 contro 8: passa. Implementati i punti 1-3, 490 test verdi, documentazione nello stesso commit. Stato: revisione.

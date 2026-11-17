@@ -64,7 +64,12 @@ ENRICH_SYSTEM = (
     "aggiuntivo e senza blocchi di codice."
 )
 
-ENRICH_USER_TEMPLATE = """Analizza questo reel di Instagram.
+# The prompt is two halves, and the first one is a constant of the module: the
+# claims call (ARGUMENTS_TAIL_TEMPLATE) starts with the very same characters, so
+# Ollama reads the text once and finds it in its cache the second time (21 s for
+# the new tail instead of 90 s for the whole prompt, measured 2026-11-16 on the
+# 7b; the cache only works on an identical beginning).
+ENRICH_HEAD_TEMPLATE = """Analizza questo reel di Instagram.
 
 DIDASCALIA:
 {caption}
@@ -72,7 +77,9 @@ DIDASCALIA:
 TRASCRIZIONE AUDIO:
 {transcript}
 
-REGOLE FONDAMENTALI:
+"""
+
+ENRICH_RULES = """REGOLE FONDAMENTALI:
 - Descrivi SOLO ciò che è realmente presente nella didascalia o nella
   trascrizione. Non dedurre, non completare, non immaginare.
 - Se un campo non è determinabile dal materiale, restituisci stringa vuota
@@ -107,6 +114,8 @@ Restituisci un JSON con questi campi:
 }}
 """
 
+ENRICH_USER_TEMPLATE = ENRICH_HEAD_TEMPLATE + ENRICH_RULES
+
 
 ENRICH_CAPTION_ONLY_NOTE = """
 ATTENZIONE: questo reel NON ha parlato (nessuna trascrizione disponibile).
@@ -123,32 +132,30 @@ ARGUMENTS_SYSTEM = (
     "oggetto JSON valido."
 )
 
-# Deliberately example-free: the previous version carried two sample claims,
-# and the model returned them verbatim on reels that never mentioned them
-# (25+ such rows in the database). Grounding is enforced in code instead:
-# every "citazione" must appear in the transcript or the argument is dropped.
-ARGUMENTS_USER_TEMPLATE = """Estrai le affermazioni principali effettivamente
-espresse in questo contenuto.
-
-TRASCRIZIONE:
-{transcript}
-
-DIDASCALIA:
-{caption}
-
-REGOLE:
-- Ogni affermazione deve essere sostenuta da una CITAZIONE TESTUALE copiata
-  parola per parola dalla trascrizione (o dalla didascalia se non c'è audio).
-- Non parafrasare la citazione: deve essere una porzione esatta del testo.
-- Se il contenuto non contiene affermazioni chiare, restituisci lista vuota.
-  La lista vuota è una risposta corretta e preferibile a un'affermazione
-  generica.
-- Massimo 6 affermazioni. Nessun minimo.
+# Deliberately example-free: the first version carried two sample claims, and the
+# model returned them verbatim on reels that never mentioned them (25+ such rows
+# in the database). Grounding is enforced in code instead: every "citazione" must
+# appear in the text or the claim is dropped (whole_text.verified_claims).
+# The claims of a text read whole (up to 8 000 characters): the head of the
+# analysis prompt (system message and text, see ENRICH_HEAD_TEMPLATE and
+# knowledge_agent.KB_ENRICH_HEAD) and this tail. Short on purpose: it is the only
+# part the local model has to read again (~100 tokens, ~10 s; a 260-token tail
+# read in 21 s, over the 20 s the work had set). The sentence that «the quote is
+# the shortest piece that is enough, 25 words» is NOT here: the 7b ignored it
+# (quotes of 26-54 words, 2026-11-16), so it cost tokens and bought nothing. The
+# 20 words of the claim itself it does respect. {fonte} says where a quote comes
+# from: for an article the text, never the title (it is in the head now).
+ARGUMENTS_TAIL_TEMPLATE = """Ora estrai solo le affermazioni principali realmente espresse, mai ciò
+che potrebbe essere stato detto. Ognuna ha una CITAZIONE copiata parola per
+parola {fonte}, senza parafrasare. "testo": una frase, massimo 20 parole.
+Se non ce ne sono di chiare, lista vuota. Massimo 6.
 
 Restituisci un JSON:
-{{"argomenti": [{{"testo": "affermazione riformulata in modo autonomo",
-                 "citazione": "porzione esatta del testo che la sostiene"}}]}}
+{{"argomenti": [{{"testo": "affermazione in modo autonomo",
+                 "citazione": "porzione esatta del testo"}}]}}
 """
+ARGUMENTS_FROM_ARTICLE = "dal TESTO (non dal titolo)"
+ARGUMENTS_FROM_REEL = "dalla TRASCRIZIONE AUDIO (o dalla DIDASCALIA)"
 
 
 # ── Long texts, read in pieces (pipeline/whole_text.py) ───────────────────────
@@ -173,6 +180,7 @@ REGOLE:
   La lista vuota è una risposta corretta e preferibile a un'affermazione
   generica.
 - Massimo 3 affermazioni. Nessun minimo.
+- "testo" di ogni affermazione: una frase, massimo 20 parole.
 - "sintesi": una riga di appunti su di cosa parla questo pezzo, massimo 25 parole.
 
 Restituisci un JSON:
