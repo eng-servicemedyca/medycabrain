@@ -616,7 +616,7 @@ finite alle 09:32, ben prima delle 13:30. Output del giro:
 
 **Qualità del 7b su questi 4 (da leggere, non è un difetto del ramo; 4 contenuti non sono una misura)**
 - Nel database copiato le affermazioni «vecchie» erano di Groq; non è un confronto 7b-contro-7b. Il numero:
-  tenute 10 su 12 vecchie nei reel (6+6) e 7 su 12 (6+6) negli articoli, contro 6+4 e 3+4 nuove.
+  affermazioni salvate, vecchie contro nuove: reel 12 contro 10 (6+6 contro 6+4), articoli 12 contro 7 (6+6 contro 3+4).
 - **Reel 198:** una affermazione ha un testo che non corrisponde alla citazione. Testo «Gli ormoni bioidentici non
   hanno problemi di brevetti», citazione «gli ormoni bioidentici non hanno questo problema». La citazione c'è nel
   testo (il controllo la lascia passare), ma il testo dice un'altra cosa.
