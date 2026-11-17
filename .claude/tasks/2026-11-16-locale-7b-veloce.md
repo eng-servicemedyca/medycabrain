@@ -538,6 +538,98 @@ Non ho eseguito i test (servirebbe un database); ho letto il diff e verificato a
 
 Nessuno dei quattro cambia il verdetto. I numeri 1 e 3 sono due righe.
 
+## 5. Collaudo          (collaudatore, 17/11/2026, giro 1)
+
+**Verdetto: passa.** Nessun difetto del ramo. Due cose sulla qualità del 7b sono da guardare (ultimo punto).
+
+**Comandi eseguiti** (worktree `wt-7b`, ramo `feat/locale-7b-veloce`, PostgreSQL 16 usa-e-getta in scratchpad,
+chiavi di Groq e simili svuotate)
+
+```
+makemigrations --check --dry-run  ->  No changes detected
+manage.py check                   ->  System check identified no issues (0 silenced).
+manage.py test core               ->  Ran 490 tests in 53.268s   OK
+npm run build (FEC, tsc -b)       ->  ✓ built in 24.17s   (solo il solito avviso: pezzi oltre 500 kB)
+```
+
+**Pagina Documentazione nella build** (`FEC/dist/assets/index-*.js`): contiene «Per ogni reel o articolo il
+modello fa prima il riassunto e subito dopo le affermazioni, così legge il testo una prima volta sola: per
+questo c'è una barra sola, «Analisi e affermazioni»» e «Quando a lavorare è il modello sul server, le
+affermazioni sono scritte più corte…». Trovate con grep. Non l'ho guardata a schermo (vedi sotto).
+
+**Prova vera sul 7b, su una copia del database.** `pg_dump` del database di produzione (sola lettura) in un
+PostgreSQL a parte (`copy7b`, porta 55477). Scelti 4 contenuti, riportati a `pending` nella copia (analisi e
+affermazioni vecchie cancellate nella copia) e tutti gli altri messi `is_active=false`, così il giro tocca solo
+loro: reel owned 198, reel competitor 169, articolo owned 2175 (1.383 car.), articolo competitor 543 (1.502 car.).
+Lanciato `run_pipeline --only enrich,knowledge` con `LLM_PROVIDER_ORDER=ollama`, `LLM_ENDPOINTS=` e tutte le
+chiavi vuote (nessuna chiamata a Groq né ad Anthropic), lucchetto `_ollama_slot` di produzione
+(`/tmp/medycabrain-ollama.lock`), lucchetto del giro su un file mio. Qwen 7b, 6 thread. Le chiamate sono
+finite alle 09:32, ben prima delle 13:30. Output del giro:
+
+```
+✓ enrich done in 541.4s — {'enriched': 2, 'enrich_failed': 0, 'arg_reels': 2, 'arguments': 10, 'arg_failed': 0}
+✓ knowledge done in 547.4s — {'enriched': 2, 'enrich_failed': 0, 'arg_docs': 2, 'arguments': 7, 'arg_failed': 0, ...}
+```
+
+`llm_calls` (letto/scritto in secondi, token; tutte `is_local`, `ollama`, `done`, `truncated` falso, attesa 0):
+
+```
+ item        chiamata   lettura  scrittura  token letti  token scritti  tetto
+ reel 169    analisi     78,1 s    62 s      1439         250            800
+ reel 169    affermaz.    9,1 s   161 s       928         439           1500
+ reel 198    analisi     57,3 s    46 s      1022         170            800
+ reel 198    affermaz.    9,3 s    70 s       511         255           1500
+ art. 2175   analisi     46,3 s    52 s       753         164            800
+ art. 2175   affermaz.   11,7 s   130 s       718         313           1500
+ art. 543    analisi     56,7 s   108 s       829         149            800
+ art. 543    affermaz.   18,1 s   114 s       794         196           1500
+```
+
+**Verificato**
+- **Seconda chiamata con lettura breve:** 9,1 / 9,3 / 11,7 / 18,1 s (media 12,05 s), contro 46-78 s della
+  prima sullo stesso contenuto. Tre su quattro come nella seconda prova (9,95 s); l'articolo competitor a 18,1 s è
+  il più alto. Il tetto di scrittura locale arriva a Ollama (800 e 1500 in `llm_calls`); massimo scritto 439
+  (tetto 1500: margine largo).
+- **Analisi e affermazioni salvate:** `Enrichment` per i due reel (`llm_model=ollama:qwen2.5:7b-instruct-q4_K_M`),
+  `summary_it` e `topics` per i due articoli; 6+4 affermazioni dei reel e 3+4 degli articoli. Stati: reel e
+  articoli `enrich_status=done`, `argument_status=done`, `full_text_status=done`, `last_error` vuoto.
+- **Una barra sola:** `stage_runs`, fase 1 «Analisi e affermazioni» (reel: 2 su 2, 541 s; articoli: 2 su 2,
+  547 s, 0 falliti), poi la fase «Affermazioni» con 0 elementi (nessun arretrato). Il secondo giro parte e non
+  trova niente, come progettato.
+- **Owned / competitor:** un contenuto per chiamata; `owner_type` invariato (198 e 2175 owned, 169 e 543
+  competitor); nessun altro reel o articolo toccato (`updated_at` recente: 0 e 0). I testi dei prompt non li
+  ho letti dal vivo (il database non li salva): la riga «concorrente» e la separazione le coprono i test.
+- I vettori delle affermazioni sono vuoti sulle 10 dei reel e sulle 7 degli articoli: è normale, li calcola lo stadio
+  `cluster` (le affermazioni degli articoli non hanno vettori per scelta, già così in `main`).
+
+**Non provato**
+- **Le tre strade di errore dal vivo** (analisi fallita, affermazioni fallite, modello sparito fra le due):
+  in questa prova sono andate tutte bene. Le coprono solo i test con risposte finte (490 verdi).
+- **Groq:** nessuna chiamata, come deciso. Resta il controllo del primo giro fatto da Groq (§3).
+- **UI a schermo, telefono (~380 px) e computer:** non l'ho fatto. `:9093` è produzione e gira `main`, quindi la
+  barra nuova lì non c'è. Per vederla serve avviare il ramo. **Giuseppe, dopo il merge e il deploy:** apri
+  `:9093` → «Avanzamento» durante il primo giro e controlla che la barra si chiami «Analisi e affermazioni»; apri
+  «Documentazione» e leggi i due testi sopra; guarda tutto anche a 380 px di larghezza. Gli stati vuoto/errore della
+  pagina non sono toccati dal ramo.
+- Il giro con più di un lavoro in parallelo e un lavoro del cliente fra le due chiamate.
+- Il caso in cui il modello dei vettori non si carica: non provato dal vivo (qui si è caricato).
+
+**Qualità del 7b su questi 4 (da leggere, non è un difetto del ramo; 4 contenuti non sono una misura)**
+- Nel database copiato le affermazioni «vecchie» erano di Groq; non è un confronto 7b-contro-7b. Il numero:
+  tenute 10 su 12 vecchie nei reel (6+6) e 7 su 12 (6+6) negli articoli, contro 6+4 e 3+4 nuove.
+- **Reel 198:** una affermazione ha un testo che non corrisponde alla citazione. Testo «Gli ormoni bioidentici non
+  hanno problemi di brevetti», citazione «gli ormoni bioidentici non hanno questo problema». La citazione c'è nel
+  testo (il controllo la lascia passare), ma il testo dice un'altra cosa.
+- **Articolo 2175 (owned):** le affermazioni arrivano da un elenco di link in fondo alla pagina («Gli articoli di
+  questo passo», citazione «- 4 articoli», voci dell'indice), non dai contenuti. Sono tenute perché le citazioni
+  esistono. Stessa famiglia del caso «affermazioni da 1-3 parole» del passo 0.
+- **Articolo 543:** la prima affermazione è «La primavera è il periodo dell'anno che amo di più» (poco valore).
+- Ho anche visto, nella copia, testi con caratteri rotti (`Â«normaliÂ»`) già nel testo salvato dell'articolo:
+  non c'entra con il ramo.
+
+Nessuna di queste cose ha un controllo che la fermi oggi (il filtro guarda solo la citazione). Dico solo che il
+verde dei test e della prova non dice che le affermazioni del 7b siano buone.
+
 ## Registro
 
 - 16/11 — capo: aperto il lavoro, lanciato l'architetto.
@@ -550,3 +642,4 @@ Nessuno dei quattro cambia il verdetto. I numeri 1 e 3 sono due righe.
 - 17/11 00:20 — sviluppatore: passo 0 fatto (18 chiamate sul 7b, 23:04-00:20). Non passa: lettura della seconda chiamata 21,2 s in media (soglia 20; oggi 90,8), scartate 9 contro 8. Fermato, nessun codice. Numeri e strade nella sezione «Passo 0 — risultati».
 - 17/11 09:10 — sviluppatore: Giuseppe sceglie la strada 1 (coda corta). Seconda prova: lettura 9,95 s, tenute 25 contro 24, scartate 3 contro 8: passa. Implementati i punti 1-3, 490 test verdi, documentazione nello stesso commit. Stato: revisione.
 - 17/11 — revisore: giro 1, passa. 4 rilievi non bloccanti (tetto 1.500 dei reel più alto di prima, tetto dei pezzi non misurato, frase doppia in 02-pipeline.md, rischio Groq già dichiarato). Prompt dell'analisi identico a `main` verificato costante per costante. `stato` resta `revisione` fino al collaudo.
+- 17/11 09:40 — collaudatore: giro 1, passa. 490 test verdi, nessuna migrazione, build ok. Prova vera sul 7b su una copia del database (4 contenuti, 9 minuti per stadio): seconda chiamata letta in 9-18 s, stati e una sola barra corretti, owned/competitor separati. Qualità del 7b da guardare nelle prime notti.
