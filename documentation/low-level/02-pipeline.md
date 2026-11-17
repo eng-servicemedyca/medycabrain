@@ -901,7 +901,7 @@ speech makes no claims call (as before). On the progress page the two bars becam
 affermazioni»; «Affermazioni» is almost always at 0 of 0 (only leftovers). A client's wait on
 `upload_workflow` / `reprocess` was already back to back: there the saving arrives with no change of order.
 Groq-made analysis followed by claims on the 7b: no saving (nothing in the cache).
-The caption of a reel goes in whole; the caption of a reel goes in whole (Instagram allows 2 200 characters; 197 reels were
+The caption of a reel goes in whole (Instagram allows 2 200 characters; 197 reels were
 over the old 1 500). The prompt of an article up to 6 000 characters is the same to the letter as
 before (`test_knowledge_prompt.py`).
 

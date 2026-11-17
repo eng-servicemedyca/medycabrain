@@ -279,7 +279,8 @@ when Ollama answers**; Groq keeps its own (there the reasoning counts against th
 costs nothing on answers that fit). On the 7b a ceiling is minutes: 2 000 tokens at 3 tok/s is ~11 minutes
 of writing for nothing. Values (`client.LOCAL_MAX_*`), twice the most the 7b wrote in the 2026-11-16/17
 trials, never under: **analysis 800** (most written: 202), **claims of a whole text 1 500** (most: 742
-with the long tail, 528 with the short one), **a piece of a long text 1 000** — *provisional*: not
+with the long tail, 528 with the short one; for reels this *raises* the local ceiling from the old 1 200,
+while the most a reel wrote was 439: the same value is kept for both so one ceiling covers articles), **a piece of a long text 1 000** — *provisional*: not
 measured, it is twice an extrapolation from the 6-claim answers; check it on the first long text read on
 the 7b. An answer cut at the local ceiling is `failed`, never retried (`LLMTruncated`); the ceiling
 written in `llm_calls` is the local one. Groq's: analysis 2 000, articles' claims 2 000, reels' claims

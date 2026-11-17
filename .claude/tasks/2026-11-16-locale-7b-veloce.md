@@ -1,7 +1,7 @@
 ---
 id: 2026-11-16-locale-7b-veloce
 titolo: Il 7b locale più veloce nel giro di ogni giorno
-stato: revisione
+stato: pronto
 ramo: feat/locale-7b-veloce
 pr: ""
 ticket: ""
@@ -643,3 +643,4 @@ verde dei test e della prova non dice che le affermazioni del 7b siano buone.
 - 17/11 09:10 — sviluppatore: Giuseppe sceglie la strada 1 (coda corta). Seconda prova: lettura 9,95 s, tenute 25 contro 24, scartate 3 contro 8: passa. Implementati i punti 1-3, 490 test verdi, documentazione nello stesso commit. Stato: revisione.
 - 17/11 — revisore: giro 1, passa. 4 rilievi non bloccanti (tetto 1.500 dei reel più alto di prima, tetto dei pezzi non misurato, frase doppia in 02-pipeline.md, rischio Groq già dichiarato). Prompt dell'analisi identico a `main` verificato costante per costante. `stato` resta `revisione` fino al collaudo.
 - 17/11 09:40 — collaudatore: giro 1, passa. 490 test verdi, nessuna migrazione, build ok. Prova vera sul 7b su una copia del database (4 contenuti, 9 minuti per stadio): seconda chiamata letta in 9-18 s, stati e una sola barra corretti, owned/competitor separati. Qualità del 7b da guardare nelle prime notti.
+- 17/11 — capo: corretti i rilievi 1 (documentato che per i reel il tetto locale sale da 1.200 a 1.500) e 3 (frase doppia in 02-pipeline). Revisione e collaudo passano: stato pronto.
