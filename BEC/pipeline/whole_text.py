@@ -21,6 +21,9 @@ The rule, shared by reels and articles (`enrich_agent`, `knowledge_agent`):
   out, then chosen in turns from every piece so they cover the whole text, final
   order = order in the text, at most CLAIMS_LONG). One last call writes the
   analysis from the notes. A long text is read ONCE, not twice.
+* A short text (up to SHORT_MAX) goes through the same `merge_claims` with one
+  "piece", after the check of the quotes: doubles out (the exact ones too, which
+  it never did), then the cap of CLAIMS_SHORT — after the filter, not before.
 * ONE size for Groq and the local model: who answers is decided inside
   `client.chat()`, call by call, so the same text can have piece 1 on Groq and
   piece 2 on the 7b. Two thresholds would mean pieces that change mid-text.
@@ -58,9 +61,21 @@ CLAIMS_PER_PIECE = 3
 CLAIMS_SHORT = 6    # up to SHORT_MAX characters, as it always was
 CLAIMS_LONG = 12    # longer texts: six would leave an hour-long episode half bare
 NOTE_WORDS = 25     # asked of the model; the code only clips at twice this
-# Two claims this close (cosine of the vectors the platform already uses) are the
-# same claim. NOT tuned: to be checked on the first contents read this way.
-DEDUP_SIMILARITY = 0.90
+# When two claims are the same claim (cosine of the vectors the platform already
+# uses on their text). One rule for the pieces of a long text and for a short one.
+# Measured 2026-11-16 on the 4 555 claims of the 877 reels in production: a flat
+# 0.90 would drop 31, but between 0.90 and 0.95 sit 32 pairs and 23 of them have
+# DIFFERENT quotes — read by hand, they are different claims («le donne hanno
+# bisogno di 7 ore e mezza di sonno» / «gli uomini di 6 e mezza», «il farro
+# contiene glutine» / «l'orzo contiene glutine»). The real doubles are at 0.95 or
+# more, or at 0.90 and more with the same quote. Read by hand: 9 pairs, a small
+# sample. It does not catch two claims that only RESEMBLE each other (article
+# 2214: its closest pair is at 0.771, no quote in common).
+SAME_CLAIM = 0.95
+SAME_CLAIM_SAME_QUOTE = 0.90
+# More than this share of the words of the shorter quote also in the other = the
+# same quote.
+QUOTE_OVERLAP = 0.5
 
 _SENTENCE_END = re.compile(r"[.!?…][\"'»”)]*\s|\n")
 
@@ -184,12 +199,30 @@ def parse_piece(data, piece: str) -> tuple[str, list[dict]]:
     return note, claims
 
 
+def _quotes_overlap(a: str, b: str) -> bool:
+    """The same piece of the text: equal, one inside the other, or more than half
+    of the words of the shorter one are in the other too. Folded like the check."""
+    a, b = _norm(a), _norm(b)
+    if not a or not b:
+        return False
+    if a in b or b in a:
+        return True
+    wa, wb = set(a.split()), set(b.split())
+    return len(wa & wb) / min(len(wa), len(wb)) > QUOTE_OVERLAP
+
+
+def _same_claim(sim: float, quote_a: str, quote_b: str) -> bool:
+    return sim >= SAME_CLAIM or (sim >= SAME_CLAIM_SAME_QUOTE
+                                 and _quotes_overlap(quote_a, quote_b))
+
+
 def merge_claims(per_piece: list[list[dict]], cap: int, embed=None) -> list[dict]:
     """Stitch the pieces' claims: no doubles, spread over the whole text, in order.
 
     1. Doubles out: same quote, same claim, or (with `embed`, a function from a
-       list of texts to unit vectors) claims closer than DEDUP_SIMILARITY.
+       list of texts to unit vectors) the same claim by `_same_claim`.
        The first in text order is the one kept.
+       A short text is "one piece": `merge_claims([claims], CLAIMS_SHORT, embed)`.
     2. Chosen in turns — the first of every piece, then the second of every
        piece — until `cap`, so the end of the text is as present as the start.
     3. Returned in text order.
@@ -209,8 +242,10 @@ def merge_claims(per_piece: list[list[dict]], cap: int, embed=None) -> list[dict
             vecs = embed([c["testo"] for _, _, c in keep])
             kept_idx: list[int] = []
             for n in range(len(keep)):
-                if all(float(sum(a * b for a, b in zip(vecs[n], vecs[m])))
-                       < DEDUP_SIMILARITY for m in kept_idx):
+                if not any(_same_claim(
+                        float(sum(a * b for a, b in zip(vecs[n], vecs[m]))),
+                        keep[n][2]["citazione"], keep[m][2]["citazione"])
+                        for m in kept_idx):
                     kept_idx.append(n)
             keep = [keep[n] for n in kept_idx]
         except Exception as exc:  # noqa: BLE001

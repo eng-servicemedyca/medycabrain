@@ -33,6 +33,10 @@ makes the document `failed`, never half-saved. `full_text_status` says whether t
 analysis in force read everything (`nota_analisi` of the MCP connector depends on
 it).
 
+Analysis and claims of an article are asked ONE BEHIND THE OTHER (2026-11-17), with
+the same beginning of prompt, so the local model reads the text once (see
+`enrich_agent`'s docstring and `documentation/low-level/03-llm-and-embeddings.md`).
+
 Failures stay FAILED. The old blanket FAILED→PENDING reset at the end of
 every run was an infinite retry loop that also hid the failure; retry is now
 an explicit act (reprocess --stage knowledge).
@@ -83,7 +87,11 @@ Restituisci un JSON:
 }}
 """
 
-KB_ENRICH_USER = """\
+# The analysis prompt is a HEAD (what the text is, the title, the text) and what
+# follows. The claims call starts with the very same head (`build_doc_arguments_prompt`):
+# Ollama keeps the beginning of the last prompt and reads only what differs, so
+# the 7b reads the text once for the two calls (see prompts.ARGUMENTS_TAIL_TEMPLATE).
+KB_ENRICH_HEAD = """\
 {intro}
 
 TITOLO: {title}
@@ -91,6 +99,9 @@ TITOLO: {title}
 TESTO:
 {text}
 
+"""
+
+KB_ENRICH_USER = KB_ENRICH_HEAD + """\
 Il testo può essere in un'altra lingua: analizza comunque IN ITALIANO.
 
 """ + KB_ENRICH_JSON
@@ -135,6 +146,10 @@ def _intro(doc: KnowledgeDocument) -> str:
 
 def _doc_enrich_user(doc: KnowledgeDocument, text: str) -> str:
     return KB_ENRICH_USER.format(intro=_intro(doc), title=doc.title, text=text)
+
+
+def _doc_head(doc: KnowledgeDocument, text: str) -> str:
+    return KB_ENRICH_HEAD.format(intro=_intro(doc), title=doc.title, text=text)
 
 
 def build_doc_enrich_prompt(doc: KnowledgeDocument) -> tuple[str, str]:
@@ -223,11 +238,13 @@ def _read_whole_doc(doc: KnowledgeDocument) -> list[dict]:
 
     def ask_piece(user):
         return client.chat_json(prompts.ARGUMENTS_SYSTEM, user, max_tokens=1200,
+                                local_max_tokens=client.LOCAL_MAX_PIECE,
                                 model=client.model_for("analysis"))
 
     def ask_final(block):
         return client.chat_json(
             KB_SYSTEM, _doc_enrich_user(doc, block), max_tokens=DOC_MAX_TOKENS,
+            local_max_tokens=client.LOCAL_MAX_ANALYSIS,
             model=client.model_for("analysis"))
 
     data, claims = whole_text.read_whole(
@@ -250,6 +267,7 @@ def _enrich_one(doc: KnowledgeDocument) -> None:
         return
     system, user = build_doc_enrich_prompt(doc)
     data = client.chat_json(system, user, max_tokens=DOC_MAX_TOKENS,
+                            local_max_tokens=client.LOCAL_MAX_ANALYSIS,
                             # The same deep-reading tier the reels get: what
                             # an article claims and how specific its subject
                             # is decide the whole thematic layer above it.
@@ -259,19 +277,28 @@ def _enrich_one(doc: KnowledgeDocument) -> None:
 
 def build_doc_arguments_prompt(doc: KnowledgeDocument) -> tuple[str, str] | None:
     """(system, user) for claim extraction on the short road, or None when the
-    article is too short to carry a claim worth quoting."""
+    article is too short to carry a claim worth quoting.
+
+    The system message and the beginning of the user message are the analysis's,
+    character for character (the same function builds both), so the local model
+    finds the text in its cache; only the tail is new. The title is in the head
+    now, hence «non dal titolo» in the tail: a quote taken from it would be
+    dropped by the check below."""
     text = doc.content_text or ""
     if len(text.strip()) < 200:
         return None
-    return prompts.ARGUMENTS_SYSTEM, prompts.ARGUMENTS_USER_TEMPLATE.format(
-        transcript=text, caption="")
+    return KB_SYSTEM, _doc_head(doc, text) + prompts.ARGUMENTS_TAIL_TEMPLATE.format(
+        fonte=prompts.ARGUMENTS_FROM_ARTICLE)
 
 
 def write_doc_arguments(doc: KnowledgeDocument, data) -> int:
     """Store the claims (short road). The quote must appear verbatim in the text
     or the claim is dropped — the grounding contract, identical for reels."""
-    claims, dropped, _ = whole_text.verified_claims(
-        data, doc.content_text or "", limit=whole_text.CLAIMS_SHORT)
+    claims, dropped, _ = whole_text.verified_claims(data, doc.content_text or "")
+    # Doubles out, THEN the cap: the 7b repeats itself, and a cap before the
+    # filter would keep two of the same claim and lose a different one.
+    claims = whole_text.merge_claims([claims], whole_text.CLAIMS_SHORT,
+                                     embed=_embed_texts)
     doc.arguments.all().delete()  # idempotent re-extraction
     for c in claims:
         DocumentArgument.objects.create(document=doc, text_it=c["testo"],
@@ -295,6 +322,7 @@ def _extract_arguments(doc: KnowledgeDocument) -> int:
         return 0
     system, user = built
     data = client.chat_json(system, user, max_tokens=DOC_MAX_TOKENS,
+                            local_max_tokens=client.LOCAL_MAX_CLAIMS,
                             model=client.model_for("analysis"))
     return write_doc_arguments(doc, data)
 
@@ -319,12 +347,48 @@ def _embed_one(doc: KnowledgeDocument) -> None:
     doc.save(update_fields=["embedding", "embedding_model", "embed_status"])
 
 
+def _enrich_then_claims(doc: KnowledgeDocument):
+    """One document, its two calls one behind the other: (claims made or None,
+    the error of the claims or None).
+
+    The analysis comes first and its error is RAISED (the caller marks the document
+    failed). The claims' error is RETURNED: the analysis is already saved and stays
+    `done` whatever happens next. None for the claims means they were not asked:
+    a long text has them from the pieces, and a document whose claims were made
+    before only wanted its analysis redone. Back to back because the local model
+    keeps the beginning of the last prompt: the claims prompt begins like the
+    analysis one, so the text is read once (2026-11-16: 21 s instead of 91)."""
+    _enrich_one(doc)
+    if doc.argument_status != PENDING:
+        return None, None
+    try:
+        return _extract_arguments(doc), None
+    except Exception as exc:  # noqa: BLE001
+        return None, exc
+
+
 def run(ctx) -> dict:
     from pipeline.agents.enrich_agent import _fail_whole, _parallel
 
     enriched = enrich_failed = embedded = embed_failed = 0
     arg_docs = total_args = arg_failed = deferred = 0
     stopped, stop_exc = False, None
+
+    def claims_done(doc, n):
+        nonlocal arg_docs, total_args
+        doc.argument_status = DONE
+        doc.save(update_fields=["argument_status"])
+        arg_docs += 1
+        total_args += n or 0
+
+    def claims_failed(doc, exc):
+        nonlocal arg_failed
+        doc.argument_status = FAILED
+        doc.last_error = repr(exc)[:500]
+        doc.save(update_fields=["argument_status", "last_error"]
+                 + _fail_whole(doc, exc))
+        arg_failed += 1
+        logger.warning("[knowledge] arguments failed %s: %r", doc.source_url, exc)
 
     if client.available():
         qs = KnowledgeDocument.objects.filter(
@@ -334,51 +398,57 @@ def run(ctx) -> dict:
         # The cost of a document is the model's reading time, not CPU:
         # the reel stage's thread pool applies unchanged.
         docs = list(qs)
-        progress.open(len(docs), "articoli", "Analisi")
+        progress.open(len(docs), "articoli", "Analisi e affermazioni")
         done_ids = set()
-        for doc, _res, exc in _parallel(docs, _enrich_one):
+        for doc, res, exc in _parallel(docs, _enrich_then_claims):
             if isinstance(exc, NOT_THE_ITEMS_FAULT):
                 # Not tried, not failed: stays pending for the next round.
                 stopped, stop_exc = True, exc
                 deferred += len(docs) - len(done_ids)
                 break
             done_ids.add(doc.id)
-            if exc is None:
-                enriched += 1
-            else:
+            if exc is not None:
                 doc.enrich_status = FAILED
                 doc.last_error = repr(exc)[:500]
                 doc.save(update_fields=["enrich_status", "last_error"]
                          + _fail_whole(doc, exc))
                 enrich_failed += 1
                 logger.warning("[knowledge] enrich failed %s: %r", doc.source_url, exc)
-
-        qs_a = KnowledgeDocument.objects.filter(
-            argument_status=PENDING, enrich_status=DONE, is_active=True)
-        if ctx.limit:
-            qs_a = qs_a[: ctx.limit]
-        arg_list = list(qs_a)
-        progress.open(len(arg_list), "articoli", "Affermazioni")
-        arg_done = 0
-        for doc, n, exc in _parallel(arg_list, _extract_arguments):
-            if isinstance(exc, NOT_THE_ITEMS_FAULT):
-                stopped, stop_exc = True, exc
-                deferred += len(arg_list) - arg_done
+                continue
+            enriched += 1
+            n, claims_exc = res
+            if claims_exc is None:
+                if n is not None:
+                    claims_done(doc, n)
+            elif isinstance(claims_exc, NOT_THE_ITEMS_FAULT):
+                # The analysis is saved; this document's claims, and everything
+                # after it, wait for the next round (still `pending`).
+                stopped, stop_exc = True, claims_exc
+                deferred += 1 + len(docs) - len(done_ids)
                 break
-            arg_done += 1
-            if exc is None:
-                doc.argument_status = DONE
-                doc.save(update_fields=["argument_status"])
-                arg_docs += 1
-                total_args += n or 0
             else:
-                doc.argument_status = FAILED
-                doc.last_error = repr(exc)[:500]
-                doc.save(update_fields=["argument_status", "last_error"]
-                         + _fail_whole(doc, exc))
-                arg_failed += 1
-                logger.warning("[knowledge] arguments failed %s: %r",
-                               doc.source_url, exc)
+                claims_failed(doc, claims_exc)
+
+        # Only the leftovers of an earlier round (analysis made, claims not) come
+        # here: the documents of this round had both calls in the loop above.
+        if not stopped:
+            qs_a = KnowledgeDocument.objects.filter(
+                argument_status=PENDING, enrich_status=DONE, is_active=True)
+            if ctx.limit:
+                qs_a = qs_a[: ctx.limit]
+            arg_list = list(qs_a)
+            progress.open(len(arg_list), "articoli", "Affermazioni")
+            arg_done = 0
+            for doc, n, exc in _parallel(arg_list, _extract_arguments):
+                if isinstance(exc, NOT_THE_ITEMS_FAULT):
+                    stopped, stop_exc = True, exc
+                    deferred += len(arg_list) - arg_done
+                    break
+                arg_done += 1
+                if exc is None:
+                    claims_done(doc, n)
+                else:
+                    claims_failed(doc, exc)
 
     # Embedding needs no LLM; embed anything enriched (or at least fetched).
     qs2 = KnowledgeDocument.objects.filter(

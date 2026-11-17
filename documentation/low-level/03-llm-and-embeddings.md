@@ -124,6 +124,35 @@ prompt, a scratch database): 905 prompt + 174 answer tokens in **145 s** — mod
 55 s (16.5 tok/s), writing 52 s (3.3 tok/s), JSON complete, nothing cut. The same prompt on Groq
 `gpt-oss-120b`: 1.1 s (912 + 378 tokens). One sample, not a benchmark.
 
+**The 7b read twice and wrote 2-3.5 token/s: measured 2026-11-16/17** (`~/ricerche/banco-7b-2026-11-16/`,
+`risultati.md` and `passo0/`; the machine is shared, so every number moves by ±25%). Analysis prompts:
+15-18 tok/s read, 2.5-4.2 written, ~135 s a call. **The prompt cache of Ollama works only on an
+identical beginning**: a prompt that begins like the one before is not read again (read 84 s → 0.2 s on
+a test prompt). Until 2026-11-17 the analysis and the claims prompts differed from the first
+character, so the cache never worked and the text was read twice. Now (`ENRICH_HEAD_TEMPLATE`,
+`KB_ENRICH_HEAD`, `ARGUMENTS_TAIL_TEMPLATE`) both start with the same system message and the same
+characters up to the end of the text, and the claims have a ~100-token tail of their own; the two calls
+of a content are made one behind the other. Second call, seconds of reading, 6 contents (3 articles
+of 2 000-7 400 characters, 3 reels), before → after:
+
+| | Before (claims prompt of `main`) | A 260-token tail | **The ~100-token tail (in force)** |
+|---|---|---|---|
+| reading, mean (range) | **90.8 s** (56.8-189.4) | 21.2 s (18.5-24.5) | **9.95 s** (9.3-10.4) |
+| claims kept, 6 contents | 24 | 19 | **25** |
+| quotes dropped, 6 contents | 8 | 9 | **3** |
+| most tokens written | 883 | 742 | **528** |
+
+The reading no longer depends on the length of the text (10.4 s at 2 428 tokens, 9.6 s at 746): it
+is the tail that is read. The saving is **~80 s on the second call of a content (−168 s on an article
+near 8 000 characters)**, about a third of the pair. **Zero** when Groq made the analysis and the
+claims land on the 7b (nothing in its cache), and zero for the pieces of a long text (each is one
+call, the final call reads notes). The 260-token tail lost on the 20 s the work had set; the quote
+limit it carried («25 words») the 7b ignored (quotes of 26-54 words), so it was taken out. Sample of
+six, one run each: the differences of 1-2 claims are inside the noise between two calls. **Quality
+caveat, seen in one reel of six** (`reel-owned-2`): the new claims were 1-3 words long («Informazione.»),
+with 3-word quotes — a 7b answer to a very short transcript; the old prompt gave 3 claims of 11-19 words
+there. One case, not a measure: look at the claims of the first nights on the 7b.
+
 What that forces, all in `llm/client.py` and `config/settings/base.py`:
 
 | Setting | Default | Why |
@@ -245,6 +274,18 @@ client wants no Anthropic call at all. The 26 receipts are exported to a file at
 migration (`0027`) drops the table (the command is in the task file, «da fare in produzione»); which model analysed what is already in
 `enrichments.llm_model` (947 Opus 5, 406 Sonnet 5, 138 gpt-oss-120b at the time).
 
+**Local ceilings (2026-11-17).** `chat()` has an optional second ceiling, `local_max_tokens`, used **only
+when Ollama answers**; Groq keeps its own (there the reasoning counts against the ceiling, and a high one
+costs nothing on answers that fit). On the 7b a ceiling is minutes: 2 000 tokens at 3 tok/s is ~11 minutes
+of writing for nothing. Values (`client.LOCAL_MAX_*`), twice the most the 7b wrote in the 2026-11-16/17
+trials, never under: **analysis 800** (most written: 202), **claims of a whole text 1 500** (most: 742
+with the long tail, 528 with the short one; for reels this *raises* the local ceiling from the old 1 200,
+while the most a reel wrote was 439: the same value is kept for both so one ceiling covers articles), **a piece of a long text 1 000** — *provisional*: not
+measured, it is twice an extrapolation from the 6-claim answers; check it on the first long text read on
+the 7b. An answer cut at the local ceiling is `failed`, never retried (`LLMTruncated`); the ceiling
+written in `llm_calls` is the local one. Groq's: analysis 2 000, articles' claims 2 000, reels' claims
+1 200, pieces 1 200, unchanged.
+
 **Token ceilings are a correctness issue, not a cost knob.** A truncated answer is unparseable
 JSON — a *lost* analysis, not a shorter one. Measured on the 2026-09-13 backlog run (Sonnet 5):
 at `max_tokens=700`, 6 of ~150 enrichment answers truncated; at 1200, 2 more still did; claim
@@ -272,7 +313,22 @@ inside `client.chat()`, call by call. It fits the limits that made it necessary:
 text (~8 700 tokens) cannot go in one request (Groq's 8 000 tokens a minute, the 7b's 8 192-token
 window), a piece can. Thresholds (all in `pipeline/whole_text.py`): 8 000 short/long, 6 000 per
 piece, 3 claims per piece, **6 claims** up to 8 000 characters and **12** above, 40 pieces at most,
-0.90 similarity for «the same claim» (not tuned yet).
+the rule for «the same claim» below (**0.95, or 0.90 with the same quote**).
+
+**The same claim (2026-11-17, `whole_text.SAME_CLAIM*`).** Two claims are one if the cosine of their
+texts (the platform's vector model) is **≥ 0.95**, or **≥ 0.90 and their quotes overlap** (equal, one
+inside the other, or more than half of the words of the shorter one in the other). One rule for the
+pieces of a long text and for a short text (`merge_claims([claims], 6, embed)` after the check of the
+quotes; before 2026-11-17 a short text had no filter at all, not even for exact doubles). Why not a
+flat 0.90, measured on the 4 555 claims of the 877 reels in production: it would drop 31, but between
+0.90 and 0.95 sit 32 pairs and **23 have different quotes**, and those read by hand (9) are different
+claims («le donne hanno bisogno di 7 ore e mezza di sonno» / «gli uomini di 6 e mezza»; «il farro
+contiene glutine» / «l'orzo contiene glutine»). The new rule drops ~19 pairs on those reels instead of
+42. **Not covered**: two claims that only resemble each other (article 2214: closest pair 0.771, no
+quote in common) are not caught by any threshold; articles were not measured for similarity (their
+claims have no stored vector); the sample read by hand is 9 pairs. Very short quotes overlap easily
+(«il farro contiene glutine» / «l'orzo contiene glutine» share 2 words of 3): the rule is meant for
+quotes of a sentence.
 
 The old numbers stay as named constants (`DOC_SUMMARY_CHARS_READ = 6000`, `DOC_CLAIMS_CHARS_READ =
 8000`, `TRANSCRIPT_CHARS_READ = 3000`) for one reason: `nota_analisi` of the MCP connector names them

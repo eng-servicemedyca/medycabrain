@@ -30,6 +30,12 @@ each, then one call that writes the analysis from the notes — see
 `pipeline/whole_text.py` for the rule and for why. In that case analysis AND
 claims are saved together at the end, and a failed piece makes the reel `failed`
 (`enrich_status`, `argument_status`, `full_text_status`), never half-saved.
+
+Analysis and claims of a reel are asked ONE BEHIND THE OTHER (2026-11-17), not all
+the analyses and then all the claims: the claims prompt begins with the characters
+of the analysis prompt, so the local model finds the transcript in its cache and
+reads only the new tail (~10 s instead of ~90). The claims' failure does not undo
+the analysis; a model away between the two leaves the claims `pending`.
 """
 
 from __future__ import annotations
@@ -246,9 +252,15 @@ def pick_primary_topic(raw: str, topics: list[str]) -> str:
 ENRICH_MAX_TOKENS = 2000
 
 
-def _enrich_user(caption: str, transcript: str, evidence: str) -> str:
-    user = prompts.ENRICH_USER_TEMPLATE.format(
+def _enrich_head(caption: str, transcript: str) -> str:
+    """The beginning of the analysis prompt, up to the end of the transcript. The
+    claims prompt begins with the same characters (`_extract_arguments`)."""
+    return prompts.ENRICH_HEAD_TEMPLATE.format(
         caption=caption, transcript=transcript or "(nessuna trascrizione)")
+
+
+def _enrich_user(caption: str, transcript: str, evidence: str) -> str:
+    user = _enrich_head(caption, transcript) + prompts.ENRICH_RULES.format()
     if evidence == "caption_only":
         user += prompts.ENRICH_CAPTION_ONLY_NOTE
     return user
@@ -366,12 +378,14 @@ def _read_whole_reel(reel: Reel, transcript: str) -> list[dict]:
 
     def ask_piece(user):
         return client.chat_json(prompts.ARGUMENTS_SYSTEM, user, max_tokens=1200,
+                                local_max_tokens=client.LOCAL_MAX_PIECE,
                                 model=client.model_for("analysis"))
 
     def ask_final(block):
         return client.chat_json(
             prompts.ENRICH_SYSTEM, _enrich_user(caption, block, "transcript"),
-            max_tokens=ENRICH_MAX_TOKENS, model=client.model_for("analysis"))
+            max_tokens=ENRICH_MAX_TOKENS, local_max_tokens=client.LOCAL_MAX_ANALYSIS,
+            model=client.model_for("analysis"))
 
     # Hook and hook analysis speak about the opening: the final call also gets
     # its first words as they are, not only notes about them.
@@ -411,6 +425,7 @@ def _enrich_one(reel: Reel) -> None:
 
     # Reading a transcript well is the whole point of this step.
     data = client.chat_json(system, user, max_tokens=ENRICH_MAX_TOKENS,
+                            local_max_tokens=client.LOCAL_MAX_ANALYSIS,
                             model=client.model_for("analysis"))
     write_enrichment(reel, data, evidence, client.last_model_used())
 
@@ -430,18 +445,23 @@ def _extract_arguments(reel: Reel) -> int:
             return reel.arguments.count()
         return len(_read_whole_reel(reel, transcript_text))
 
-    user = prompts.ARGUMENTS_USER_TEMPLATE.format(
-        caption=reel.caption or "", transcript=transcript_text)
+    # The analysis's system message and head, then a short tail: the local model
+    # finds the transcript in its cache (see prompts.ARGUMENTS_TAIL_TEMPLATE).
+    user = _enrich_head(reel.caption or "", transcript_text) \
+        + prompts.ARGUMENTS_TAIL_TEMPLATE.format(fonte=prompts.ARGUMENTS_FROM_REEL)
     # 1200, not 600: a reel with several claims plus its verbatim quotes does
     # not fit in 600 tokens, and a truncated answer is unparseable JSON, not a
     # shorter list. 74 of 139 extractions failed that way on 2026-09-13.
-    data = client.chat_json(prompts.ARGUMENTS_SYSTEM, user, max_tokens=1200,
+    data = client.chat_json(prompts.ENRICH_SYSTEM, user, max_tokens=1200,
+                            local_max_tokens=client.LOCAL_MAX_CLAIMS,
                             model=client.model_for("analysis"))
     # The claim survives only if its quote really appears in the source — the
     # caption counts too, a reel can say it in writing.
     claims, dropped, _ = whole_text.verified_claims(
-        data, transcript_text + " " + (reel.caption or ""), min_text=8,
-        limit=whole_text.CLAIMS_SHORT)
+        data, transcript_text + " " + (reel.caption or ""), min_text=8)
+    # Doubles out, then the cap (see knowledge_agent.write_doc_arguments).
+    claims = whole_text.merge_claims([claims], whole_text.CLAIMS_SHORT,
+                                     embed=_embed_texts)
     reel.arguments.all().delete()  # re-extraction replaces
     for c in claims:
         ReelArgument.objects.create(reel=reel, text_it=c["testo"],
@@ -461,13 +481,29 @@ def _fail_whole(obj, exc) -> list[str]:
     return ["enrich_status", "argument_status", "full_text_status"]
 
 
+def _enrich_then_claims(reel: Reel):
+    """One reel, its two calls one behind the other: (claims made or None, the
+    error of the claims or None). Same shape and same reasons as
+    `knowledge_agent._enrich_then_claims`: the analysis' error is raised, the
+    claims' is returned and the analysis stays `done`; the local model reads the
+    transcript once for the two. A reel with no speech comes through here too and
+    makes no call: `_extract_arguments` only clears its claims."""
+    _enrich_one(reel)
+    if reel.argument_status != PENDING:
+        return None, None  # a long transcript: its claims were saved with the analysis
+    try:
+        return _extract_arguments(reel), None
+    except Exception as exc:  # noqa: BLE001
+        return None, exc
+
+
 def run(ctx) -> dict:
     if not client.available():
         return {"skipped": True,
                 "note": "nessun modello disponibile (Groq senza chiave, Ollama spento)"}
 
-    # Stage A: enrichment. Include silent reels (transcription SKIPPED) —
-    # they still have captions worth enriching.
+    # Stage A: enrichment, and right after it each reel's claims. Include silent
+    # reels (transcription SKIPPED) — they still have captions worth enriching.
     qs = Reel.objects.filter(
         Q(transcribe_status=DONE) | Q(transcribe_status=SKIPPED),
         enrich_status=PENDING, is_active=True,
@@ -475,12 +511,30 @@ def run(ctx) -> dict:
     if ctx.limit:
         qs = qs[: ctx.limit]
     enriched = failed = deferred = 0
+    arg_reels = total_args = arg_failed = 0
     # Materialise before handing out to threads: a lazy, sliced queryset would
     # be re-evaluated per worker.
     reels = list(qs)
-    progress.open(len(reels), "reel", "Analisi")
+    progress.open(len(reels), "reel", "Analisi e affermazioni")
     stopped, stop_exc = False, None
-    for reel, _res, exc in _parallel(reels, _enrich_one):
+
+    def claims_done(reel, n):
+        nonlocal arg_reels, total_args
+        reel.argument_status = DONE
+        reel.save(update_fields=["argument_status"])
+        arg_reels += 1
+        total_args += n or 0
+
+    def claims_failed(reel, exc):
+        nonlocal arg_failed
+        reel.argument_status = FAILED
+        reel.last_error = repr(exc)[:500]
+        reel.save(update_fields=["argument_status", "last_error"]
+                  + _fail_whole(reel, exc))
+        arg_failed += 1
+        logger.warning("[arguments] %s failed: %r", reel.shortcode, exc)
+
+    for reel, res, exc in _parallel(reels, _enrich_then_claims):
         if isinstance(exc, NOT_THE_ITEMS_FAULT):
             # Left pending on purpose, and the rest of the list with it.
             stopped, stop_exc = True, exc
@@ -493,6 +547,17 @@ def run(ctx) -> dict:
             reel.save(update_fields=["enrich_status", "full_text_status",
                                      "last_error"])
             enriched += 1
+            n, claims_exc = res
+            if claims_exc is None:
+                if n is not None:
+                    claims_done(reel, n)
+            elif isinstance(claims_exc, NOT_THE_ITEMS_FAULT):
+                # The analysis is saved; its claims and the rest wait (`pending`).
+                stopped, stop_exc = True, claims_exc
+                deferred = 1 + sum(1 for r in reels if r.enrich_status == PENDING)
+                break
+            else:
+                claims_failed(reel, claims_exc)
         else:
             reel.enrich_status = FAILED
             reel.last_error = repr(exc)[:500]
@@ -501,30 +566,23 @@ def run(ctx) -> dict:
             failed += 1
             logger.warning("[enrich] %s failed: %r", reel.shortcode, exc)
 
-    # Stage B: argument extraction
-    qs2 = Reel.objects.filter(argument_status=PENDING, enrich_status=DONE, is_active=True)
-    if ctx.limit:
-        qs2 = qs2[: ctx.limit]
-    arg_reels = total_args = arg_failed = 0
-    arg_list = list(qs2)
-    progress.open(len(arg_list), "reel", "Affermazioni")
-    for reel, n, exc in _parallel(arg_list, _extract_arguments):
-        if isinstance(exc, NOT_THE_ITEMS_FAULT):
-            stopped, stop_exc = True, exc
-            deferred += sum(1 for r in arg_list if r.argument_status == PENDING)
-            break
-        if exc is None:
-            reel.argument_status = DONE
-            reel.save(update_fields=["argument_status"])
-            arg_reels += 1
-            total_args += n or 0
-        else:
-            reel.argument_status = FAILED
-            reel.last_error = repr(exc)[:500]
-            reel.save(update_fields=["argument_status", "last_error"]
-                      + _fail_whole(reel, exc))
-            arg_failed += 1
-            logger.warning("[arguments] %s failed: %r", reel.shortcode, exc)
+    # Stage B: only the leftovers of an earlier round (analysis made, claims not):
+    # the reels of this round had both calls above.
+    if not stopped:
+        qs2 = Reel.objects.filter(argument_status=PENDING, enrich_status=DONE, is_active=True)
+        if ctx.limit:
+            qs2 = qs2[: ctx.limit]
+        arg_list = list(qs2)
+        progress.open(len(arg_list), "reel", "Affermazioni")
+        for reel, n, exc in _parallel(arg_list, _extract_arguments):
+            if isinstance(exc, NOT_THE_ITEMS_FAULT):
+                stopped, stop_exc = True, exc
+                deferred += sum(1 for r in arg_list if r.argument_status == PENDING)
+                break
+            if exc is None:
+                claims_done(reel, n)
+            else:
+                claims_failed(reel, exc)
 
     # Retry transient failures next run
     # NOTE: failures are deliberately left as FAILED. Resetting them to

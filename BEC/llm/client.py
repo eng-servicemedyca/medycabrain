@@ -31,6 +31,13 @@ numbers came from is not usable commercially). What that implies, all below:
     Set it above 0 and a round stops at that many (`LLMLocalBudget`), the
     stage leaving what it did not try `pending`. A big round on the 7b then
     lasts hours (141 x ~4 min = ~9 h) and the 14:15 round skips on the lock.
+  * Ceilings of the local answer (`local_max_tokens`, below). The 7b writes 2-3.5
+    tok/s, so a ceiling is minutes: an answer that goes on to the 2 000 tokens
+    Groq is given (its reasoning counts against the ceiling) is ~10 minutes of
+    writing for nothing. Measured 2026-11-16 on the 7b (6 contents): the analysis
+    wrote at most 202 tokens, the claims of a whole text at most 742 (an article of
+    7 400 characters, 6 claims). The ceilings are TWICE the largest seen, never
+    under it: a cut answer is `failed` and is not retried.
   * `remote_only=True` never reaches Ollama (the MCP search reranker, the
     editorial plan, the eval judge): a minute of waiting is worse than an
     answer in plain order, and a 3,600-token plan would take 20+ minutes.
@@ -158,6 +165,15 @@ def _announce(text: str) -> None:
     with contextlib.suppress(Exception):
         from core import progress
         progress.note(text)
+
+
+# Ceilings of the local answer, per kind of call (see the module docstring).
+# The pieces of a long text are NOT measured: 1 000 is twice what 3 claims and a
+# line of notes take by extrapolation from the 6-claim answers (742), so it is
+# provisional until the first long text is read on the 7b.
+LOCAL_MAX_ANALYSIS = 800
+LOCAL_MAX_CLAIMS = 1500
+LOCAL_MAX_PIECE = 1000
 
 
 def _ollama_chat(system: str, user: str, max_tokens: int, temperature: float,
@@ -550,8 +566,12 @@ def _give_back_local_call() -> None:
 def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2,
          retries: int = 2, json_mode: bool = False, timeout: int | None = None,
          on_token=None, priority: bool = False, model: str = "",
-         remote_only: bool = False) -> str:
+         remote_only: bool = False, local_max_tokens: int | None = None) -> str:
     """Return raw assistant text, trying providers in order with retries.
+
+    local_max_tokens: the ceiling when it is Ollama that answers (default: the
+    same as max_tokens). Groq keeps `max_tokens`: there the reasoning counts
+    against the ceiling and a high one costs nothing on answers that fit.
 
     json_mode nudges Ollama to emit valid JSON — set only for extraction
     prompts, never for free-text answers (it degrades prose quality).
@@ -637,12 +657,13 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
         # The budget is checked before the row is born: a refused call is not
         # a call. The row is born BEFORE the wait: "in coda" is a state worth showing.
         counted = _take_local_call()
+        local_max = local_max_tokens or max_tokens
         rec = usage.begin("ollama", settings.OLLAMA_MODEL, is_local=True, waiting=True,
-                          max_tokens=max_tokens, prompt_chars=prompt_chars)
+                          max_tokens=local_max, prompt_chars=prompt_chars)
         try:
             with _ollama_slot(priority=priority):
                 rec.running()
-                text = _ollama_chat(system, user, max_tokens, temperature,
+                text = _ollama_chat(system, user, local_max, temperature,
                                     json_mode=json_mode, timeout=timeout,
                                     on_token=on_token, rec=rec)
         except BaseException as exc:

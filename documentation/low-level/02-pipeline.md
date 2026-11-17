@@ -44,10 +44,10 @@ flowchart LR
 | 1 | **scrape** | `scraper_agent.py` | For each active `TrackedAccount` (Medyca's own first): read the **public embed page** through the residential proxy (`embed_provider.py`, [below](#where-the-list-of-reels-comes-from)) — the last 6 posts, only the videos the account **owns** — dump raw JSON to `data/raw/{account}/{shortcode}.json`, upsert `Reel` rows. 5-10 s between accounts; at most `embed_max_new_per_run` (5) new reels per run; 3 blocked accounts in a row stop the run; **if every account failed the stage is `failed`** with the reason. Apify is **not called any more** (code kept, off). | `media_status=pending` |
 | 2 | **download** | `downloader_agent.py` | For `media_status=pending`: get the mp4 (three sources, cheapest first — [below](#how-a-reels-video-actually-arrives)), ffmpeg-extract audio → `media/audio/{account}/{shortcode}.mp3`, save thumbnail → `media/thumbs/…`, delete the mp4. 3 attempts then `skipped`; a block defers the reel instead of charging it an attempt. | `media_status=done`, `transcribe_status=pending` |
 | 3 | **transcribe** | `transcriber_agent.py` | faster-whisper (local CPU, int8) over each mp3 → `Transcript`. Remote STT (`llm.client.transcribe_audio`) is used instead when `USE_REMOTE_STT`. Also processes `UploadedMedia`. | `transcribe_status=done`, `enrich_status=pending` |
-| 4 | **enrich** | `enrich_agent.py` | One LLM call per `enrich_status=pending` reel → `Enrichment` (summary, topics, hook, target, format, `primary_topic`, `evidence`). The model is Groq first, the local model as backstop (`03-llm-and-embeddings.md`). **One reel at a time** (`ENRICH_WORKERS=1`; it was 5). There is no cap on local calls by default (`PIPELINE_LOCAL_MAX_CALLS=0`): with Groq out the reels queue on the local model, and a big round can last hours (~9 h for 141 calls), so the 14:15 round skips on the round lock (exit 3). If someone sets `PIPELINE_LOCAL_MAX_CALLS` above 0 and the round uses them, the stage stops, writes a note, and leaves the reels it did not try `pending` (not `failed`). **Same if the local model is busy or unreachable** (`NOT_THE_ITEMS_FAULT`): the note says «il modello locale non era disponibile». If Groq is switched off for a refused key the note says that first. Then extracts `ReelArgument`s for `argument_status=pending` — each with a required **verbatim quote**. **Reads the whole transcript and the whole caption** ([below](#reading-the-whole-text-2026-11-16)): up to 8 000 characters in two calls, above in pieces with one save at the end; a failed piece makes the reel `failed`. | `enrich_status=done`, `argument_status` advanced, `full_text_status=done` |
+| 4 | **enrich** | `enrich_agent.py` | One LLM call per `enrich_status=pending` reel → `Enrichment` (summary, topics, hook, target, format, `primary_topic`, `evidence`). The model is Groq first, the local model as backstop (`03-llm-and-embeddings.md`). **One reel at a time** (`ENRICH_WORKERS=1`; it was 5). There is no cap on local calls by default (`PIPELINE_LOCAL_MAX_CALLS=0`): with Groq out the reels queue on the local model, and a big round can last hours (~9 h for 141 calls), so the 14:15 round skips on the round lock (exit 3). If someone sets `PIPELINE_LOCAL_MAX_CALLS` above 0 and the round uses them, the stage stops, writes a note, and leaves the reels it did not try `pending` (not `failed`). **Same if the local model is busy or unreachable** (`NOT_THE_ITEMS_FAULT`): the note says «il modello locale non era disponibile». If Groq is switched off for a refused key the note says that first. Then extracts the reel's `ReelArgument`s **right after its analysis, one behind the other** (2026-11-17: the claims prompt begins like the analysis one, so the local model reads the transcript once, `03-llm-and-embeddings.md`) — each with a required **verbatim quote**. A reel whose analysis was made in an earlier round and whose claims are still `pending` gets them in a second phase. **Reads the whole transcript and the whole caption** ([below](#reading-the-whole-text-2026-11-16)): up to 8 000 characters in two calls, above in pieces with one save at the end; a failed piece makes the reel `failed`. | `enrich_status=done`, `argument_status` advanced, `full_text_status=done` |
 | 5 | **embed** | `embed_agent.py` | Give every enriched reel a `vector` (via `cluster_agent._ensure_reel_embeddings`) and compute `chunk_vectors` passage embeddings for reels **and** documents (`_embed_passages`). Split from `enrich` on purpose so "analysed" and "searchable" can never drift apart. | embeddings written |
 | 6 | **blogscrape** | `blogscrape_agent.py` | For each active `BlogSource`, self-throttling on `crawl_interval_h`: discover article URLs (`blog_discovery.py`) and ingest new ones (`blog_agent.py` — trafilatura → Markdown → `KnowledgeDocument`). Deactivates a source after N consecutive failures. | new `KnowledgeDocument` rows |
-| 7 | **knowledge** | `knowledge_agent.py` | Enrich + embed blog articles (Medyca's and competitors'), using `model_for("analysis")`: `primary_topic`, on-topic verdict, `DocumentArgument` extraction (verbatim quote required). No hook/format — those are video-craft only. **Reads the whole text**, in pieces above 8 000 characters ([below](#reading-the-whole-text-2026-11-16)). | `enrich_status`/`embed_status`/`argument_status`/`full_text_status=done` |
+| 7 | **knowledge** | `knowledge_agent.py` | Enrich + embed blog articles (Medyca's and competitors'), using `model_for("analysis")`: `primary_topic`, on-topic verdict, `DocumentArgument` extraction (verbatim quote required), asked right after each article's analysis, back to back (same reason as `enrich`). No hook/format — those are video-craft only. **Reads the whole text**, in pieces above 8 000 characters ([below](#reading-the-whole-text-2026-11-16)). | `enrich_status`/`embed_status`/`argument_status`/`full_text_status=done` |
 | 8 | **cluster** | `cluster_agent.py` | Two-layer clustering (below). Writes a fresh `ClusterRun` **per scope**, flips `is_current` atomically, then refreshes `CustomTopic` matches (`core/custom_topics.recompute_matches`). | new current `ClusterRun` per scope |
 
 ## One round at a time, and what a round may spend locally (2026-11-15)
@@ -861,10 +861,10 @@ stage (done/total, speed, elapsed, remaining). Mechanism:
 | `scrape` | active accounts | one | the server through the proxy (embed page), no model |
 | `download` | reels taken this round, after the cap | one | no model |
 | `transcribe` | reels to transcribe | one | Whisper remote, local as backstop (per item) |
-| `enrich` | reels to analyse, then reels for claims | Analisi, Affermazioni | read from `llm_calls` |
+| `enrich` | reels to analyse (each with its claims right after), then the leftover claims of earlier rounds | Analisi e affermazioni, Affermazioni (almost always at zero) | read from `llm_calls` |
 | `embed` | **not declared** (v1) | – | local vector model |
 | `blogscrape` | active sources (the note carries «articolo 3 di 12») | one | no model |
-| `knowledge` | articles | Analisi, Affermazioni, Vettori | read from `llm_calls` |
+| `knowledge` | articles (each with its claims right after), the leftover claims, then vectors | Analisi e affermazioni, Affermazioni (almost always at zero), Vettori | read from `llm_calls` |
 | `cluster` | **not declared** (v1) | – | local + a model for the names |
 
 Not covered, on purpose: `embed` and `cluster` show only «in corso da N min»; commands run by
@@ -887,7 +887,21 @@ third was summarised. Nothing is cut any more. The rule lives in **`pipeline/who
 shared by `enrich` (reels) and `knowledge` (documents).
 
 **Up to 8 000 characters — the short road.** Two calls as before (analysis, claims), now both on the
-whole text; the caption of a reel goes in whole (Instagram allows 2 200 characters; 197 reels were
+whole text **and made back to back** for each content (2026-11-17; before, all the analyses first and
+all the claims after, so the 7b's cache of the beginning of a prompt never helped). The claims prompt
+is the analysis prompt up to the end of the text, then a ~100-token tail
+(`ARGUMENTS_TAIL_TEMPLATE`); the analysis prompt itself did not change by a letter
+(`test_7b_veloce.AnalisiAllaLettera`, frozen from `main`), so Groq's analyses are what they were. The
+claims of an article still say «dal TESTO, non dal titolo»: the title is in the head now and a quote
+from it would be dropped by the check. Failure rules of the pair: **analysis failed → no claims asked**
+(`enrich_status` failed); **claims failed → the analysis stays `done`, `argument_status` `failed`** and
+is not retried; **the local model away between the two → the analysis is saved, the claims stay `pending`**
+and the round stops (`deferred` counts them) — the leftover phase picks them up next round. A reel without
+speech makes no claims call (as before). On the progress page the two bars became one, «Analisi e
+affermazioni»; «Affermazioni» is almost always at 0 of 0 (only leftovers). A client's wait on
+`upload_workflow` / `reprocess` was already back to back: there the saving arrives with no change of order.
+Groq-made analysis followed by claims on the 7b: no saving (nothing in the cache).
+The caption of a reel goes in whole (Instagram allows 2 200 characters; 197 reels were
 over the old 1 500). The prompt of an article up to 6 000 characters is the same to the letter as
 before (`test_knowledge_prompt.py`).
 
@@ -901,10 +915,12 @@ before (`test_knowledge_prompt.py`).
    (the model saw only it, so it cannot stitch a quote across two; an invented quote is dropped), and
    a line of notes (≤ 25 words asked; the code clips at 50). The prompt says «pezzo 3 di 7 di …» so
    the model does not take it for the whole text. Answer: `{"sintesi", "argomenti": [{"testo",
-   "citazione"}]}`; ceiling 1 200 tokens.
-3. **Merge (code, no call).** Doubles out (same quote, same claim, or vectors closer than 0.90 with
-   the embedder the platform already uses — the threshold is **not tuned yet**: check it on the first
-   contents); then chosen in turns (first claim of every piece, then the second…) up to **12**, so the
+   "citazione"}]}`; ceiling 1 200 tokens (1 000 when the 7b answers, provisional); the prompt asks the
+   claim «una frase, massimo 20 parole» (the 7b respects it).
+3. **Merge (code, no call).** Doubles out (same quote, same claim, or the same claim by the rule
+   `0.95, or 0.90 with overlapping quotes` with the embedder the platform already uses — measured
+   2026-11-17, numbers in `03-llm-and-embeddings.md`; the short road goes through the same function
+   with one "piece": exact doubles out, then the cap of 6, **after** the filter); then chosen in turns (first claim of every piece, then the second…) up to **12**, so the
    claims cover the whole text, not only its start; final order = order in the text. If the embedder
    cannot load, only the exact doubles are removed (a warning in the log).
 4. **One final call** writes the analysis (the same JSON as the short road: summary, topics,
