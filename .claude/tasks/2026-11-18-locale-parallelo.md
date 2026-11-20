@@ -3,7 +3,7 @@ id: 2026-11-18-locale-parallelo
 titolo: Il modello locale lavora su 3 lavori alla volta
 stato: pronto
 ramo: feat/locale-parallelo
-pr: ""
+pr: "30"
 ticket: ""
 ---
 
@@ -434,3 +434,4 @@ La suite non li tocca più.
 - 20/11 — sviluppatore, giro 2: chiusi R1 (suffisso «pezzo i/n» in uno span non troncato), R2 (niente «doppio»: 1,94× a macchina tranquilla, 1,12× con il banco del CRM), contratto col CRM e fame/attesa scritti (03, docstring `_ollama_slot`, 02), testo «N=1 identico» corretto, `OLLAMA_LOCK_PATH` temporaneo nei test (suite 528 verdi, i file in /tmp non vengono più toccati), riga sulla pagina Documentazione. Build ok.
 - 20/11 — revisore, giro 2: passa. Rilievi dei giri 1 chiusi (CRM scritto, N=1 corretto, test isolati, suffisso non tagliato, numeri onesti). `stato: pronto` (collaudo giro 1 già passato).
 - 20/11 — collaudatore, giro 2: suite 528 verdi, build ok, lucchetti in /tmp invariati durante la suite; «pezzo i/n» visibile a 380 px e righe senza suffisso normali; Documentazione senza «doppio», leggibile a 380 px. **Passa.**
+- 20/11 — capo: aperta la PR #30. In attesa del merge di Giuseppe.
