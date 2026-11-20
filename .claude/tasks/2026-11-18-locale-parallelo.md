@@ -1,7 +1,7 @@
 ---
 id: 2026-11-18-locale-parallelo
 titolo: Il modello locale lavora su 3 lavori alla volta
-stato: revisione
+stato: pronto
 ramo: feat/locale-parallelo
 pr: ""
 ticket: ""
@@ -292,6 +292,21 @@ Invarianti: `owner_type` non toccato, nessun terzo valore; ogni chiamata resta u
 ### Cosa non ho potuto fare
 Non ho eseguito i test (il collaudo ne sta facendo la prova); ho letto il diff, i test relativi al lucchetto e `ollama.ts` del CRM.
 
+### Giro 2 (revisore, 20/11/2026, commit 53c58be)
+
+**Verdetto: PASSA.** Tutti i rilievi dei giri 1 sono chiusi davvero.
+
+- **Rilievo 1 e 2 (CRM)**: scritti nella docstring di `_ollama_slot` e in `03` («Contract with the CRM»): stessi file (posto 0 e `.priority`, esclusivo), «mai rinominare il posto 0», fame fino a 1800 s e `model_busy`, tentativo a 1 s che perde contro il `flock` bloccante. Ripetuto in `02`. Chiusi.
+- **Rilievo 3 («spenta = identica»)**: corretto in 2.0, 2.2e, 3. Chiuso.
+- **Rilievo 5 (test sul file vero)**: `core/tests/__init__.py` mette `OLLAMA_LOCK_PATH` in una cartella temporanea del processo, cancellata a fine corsa. Il file `.priority` deriva da quel percorso, quindi finisce nella stessa cartella. Nessun test o altro codice cita `/tmp/medycabrain-ollama` (solo un commento); i test con `override_settings` ripristinano il valore temporaneo, non quello vero. Non può toccare i file veri e non rompe nulla.
+- **R1 (suffisso «pezzo i/n»)**: la regex `^(.*?)(\s·\spezzo\s\d+\/\d+)$` senza suffisso non combacia e dà `[label, ""]`: la riga resta identica a prima (il suffisso vuoto non si disegna). La chiave React non è cambiata. Con il suffisso, il nome si taglia e «pezzo i/n» resta intero.
+- **R2 (numeri)**: coerenti tra `it.json`, 02 e 03 e con la sezione 5: 1,94× il 18/11, 1,12× il 20/11, articoli 1,40×, pezzi 1,8×, reel nessuno. Il testo al cliente è semplice e senza promesse («non si può promettere un tempo preciso»; «poco più del 10%»). Aggiunta onesta anche la frase sul tetto di Groq.
+
+Rilievi minori, non bloccanti:
+- Il 18/11 è chiamato «macchina tranquilla» in 02 e 03: è una spiegazione plausibile, non provata (la sezione 5 la dà come ipotesi). Meglio «ipotesi» se si rilegge.
+- In 2.0 (righe 2 e 4) il disegno cita ancora «27,9 contro 14,4» e «circa la metà»: è lo storico del disegno, ma non va ripetuto al cliente.
+- Non ho eseguito test né build: ho letto il diff. Il capo riferisce 528 verdi e build ok.
+
 ## 5. Collaudo           (collaudatore, 20/11/2026)
 
 **Verdetto: PASSA** come codice, con la PR spenta (così com'è). Ma tre cose da sapere, due delle quali vanno sistemate **prima di scrivere 3 nel `.env`** (rilievi R1 e R2 sotto). Il codice fa quello che il disegno promette; il guadagno di velocità promesso, oggi, **non si è ripetuto**.
@@ -377,3 +392,4 @@ Fermati e cancellati: Postgres privato (porta 5561), copia e dump del database, 
 - 20/11 — revisore: passa. Rilievi: fame del CRM con precedenza condivisa, contratto col CRM non scritto, «spenta = identica» vero solo in parte. `stato` resta `revisione` in attesa del collaudo.
 - 20/11 — collaudatore: suite 528 verdi, build ok; prova vera sul 7b con 3 posti sulla copia: 14/14 `done`, owned/competitor separati, pezzi in ordine, citazioni scartate 14/13/10 (3 posti, 1 posto, 3 posti), modello che sparisce = `pending` mai `failed`. **Passa** con la PR spenta. Rilievi: R1 «pezzo i/n» tagliato a 380 px, R2 guadagno misurato 1,12× (non 1,94×) contro la frase al cliente, R3 attesa dei lucchetti contro un `flock` bloccante del CRM. Dettaglio in sezione 5.
 - 20/11 — sviluppatore, giro 2: chiusi R1 (suffisso «pezzo i/n» in uno span non troncato), R2 (niente «doppio»: 1,94× a macchina tranquilla, 1,12× con il banco del CRM), contratto col CRM e fame/attesa scritti (03, docstring `_ollama_slot`, 02), testo «N=1 identico» corretto, `OLLAMA_LOCK_PATH` temporaneo nei test (suite 528 verdi, i file in /tmp non vengono più toccati), riga sulla pagina Documentazione. Build ok.
+- 20/11 — revisore, giro 2: passa. Rilievi dei giri 1 chiusi (CRM scritto, N=1 corretto, test isolati, suffisso non tagliato, numeri onesti). `stato: pronto` (collaudo giro 1 già passato).
