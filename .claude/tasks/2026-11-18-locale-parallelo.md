@@ -1,7 +1,7 @@
 ---
 id: 2026-11-18-locale-parallelo
 titolo: Il modello locale lavora su 3 lavori alla volta
-stato: disegno
+stato: approvato
 ramo: feat/locale-parallelo
 pr: ""
 ticket: ""
@@ -206,3 +206,4 @@ Stato: **in attesa dell'OK di Giuseppe.** Nessuna riga di codice è stata scritt
 
 - 18/11 — capo: aperto il lavoro, lanciato l'architetto.
 - 18/11 — architetto: disegno scritto (sezione 2). Scelte proposte: N posti dal `.env` (predefinito 1), corti 3 insieme e lunghi uno alla volta con 3 pezzi insieme, Groq uno alla volta, lavori del cliente con precedenza. Tre domande aperte in 2.7. In attesa dell'OK di Giuseppe.
+- 20/11 — Giuseppe: OK al disegno. Risposte a 2.7: (1) sì, passa il cliente; (2) sì, 3 posti nel `.env` al rilascio, dopo la prova del collaudo su una copia del database; (3) sì, Groq resta uno alla volta. `stato: approvato`.
