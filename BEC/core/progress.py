@@ -26,7 +26,7 @@ Rules, same as `llm/usage.py`:
   stage as "giro interrotto" although it finished well.
 * **Throttled**: one write per stage every 2 s, plus one when a phase opens or
   closes. `note()` is throttled like the counters; the closing write carries
-  the last note anyway. Several threads (ENRICH_WORKERS) count on the same stage, so the
+  the last note anyway. Several threads (`client.local_slots()`) count on the same stage, so the
   counters are behind a lock.
 * **No stage bound = no-op.** A Job or a manual command that calls an agent
   function directly has no bar; `start_item` still labels the model calls so

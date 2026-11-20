@@ -44,10 +44,10 @@ flowchart LR
 | 1 | **scrape** | `scraper_agent.py` | For each active `TrackedAccount` (Medyca's own first): read the **public embed page** through the residential proxy (`embed_provider.py`, [below](#where-the-list-of-reels-comes-from)) — the last 6 posts, only the videos the account **owns** — dump raw JSON to `data/raw/{account}/{shortcode}.json`, upsert `Reel` rows. 5-10 s between accounts; at most `embed_max_new_per_run` (5) new reels per run; 3 blocked accounts in a row stop the run; **if every account failed the stage is `failed`** with the reason. Apify is **not called any more** (code kept, off). | `media_status=pending` |
 | 2 | **download** | `downloader_agent.py` | For `media_status=pending`: get the mp4 (three sources, cheapest first — [below](#how-a-reels-video-actually-arrives)), ffmpeg-extract audio → `media/audio/{account}/{shortcode}.mp3`, save thumbnail → `media/thumbs/…`, delete the mp4. 3 attempts then `skipped`; a block defers the reel instead of charging it an attempt. | `media_status=done`, `transcribe_status=pending` |
 | 3 | **transcribe** | `transcriber_agent.py` | faster-whisper (local CPU, int8) over each mp3 → `Transcript`. Remote STT (`llm.client.transcribe_audio`) is used instead when `USE_REMOTE_STT`. Also processes `UploadedMedia`. | `transcribe_status=done`, `enrich_status=pending` |
-| 4 | **enrich** | `enrich_agent.py` | One LLM call per `enrich_status=pending` reel → `Enrichment` (summary, topics, hook, target, format, `primary_topic`, `evidence`). The model is Groq first, the local model as backstop (`03-llm-and-embeddings.md`). **One reel at a time** (`ENRICH_WORKERS=1`; it was 5). There is no cap on local calls by default (`PIPELINE_LOCAL_MAX_CALLS=0`): with Groq out the reels queue on the local model, and a big round can last hours (~9 h for 141 calls), so the 14:15 round skips on the round lock (exit 3). If someone sets `PIPELINE_LOCAL_MAX_CALLS` above 0 and the round uses them, the stage stops, writes a note, and leaves the reels it did not try `pending` (not `failed`). **Same if the local model is busy or unreachable** (`NOT_THE_ITEMS_FAULT`): the note says «il modello locale non era disponibile». If Groq is switched off for a refused key the note says that first. Then extracts the reel's `ReelArgument`s **right after its analysis, one behind the other** (2026-11-17: the claims prompt begins like the analysis one, so the local model reads the transcript once, `03-llm-and-embeddings.md`) — each with a required **verbatim quote**. A reel whose analysis was made in an earlier round and whose claims are still `pending` gets them in a second phase. **Reads the whole transcript and the whole caption** ([below](#reading-the-whole-text-2026-11-16)): up to 8 000 characters in two calls, above in pieces with one save at the end; a failed piece makes the reel `failed`. | `enrich_status=done`, `argument_status` advanced, `full_text_status=done` |
+| 4 | **enrich** | `enrich_agent.py` | One LLM call per `enrich_status=pending` reel → `Enrichment` (summary, topics, hook, target, format, `primary_topic`, `evidence`). The model is Groq first, the local model as backstop (`03-llm-and-embeddings.md`). **As many reels at once as the local model has seats** (`client.local_slots()`: 1 by default = one at a time, as before; the old `ENRICH_WORKERS` is gone, see [Several at once](#several-at-once-2026-11-20)). There is no cap on local calls by default (`PIPELINE_LOCAL_MAX_CALLS=0`): with Groq out the reels queue on the local model, and a big round can last hours (~9 h for 141 calls), so the 14:15 round skips on the round lock (exit 3). If someone sets `PIPELINE_LOCAL_MAX_CALLS` above 0 and the round uses them, the stage stops, writes a note, and leaves the reels it did not try `pending` (not `failed`). **Same if the local model is busy or unreachable** (`NOT_THE_ITEMS_FAULT`): the note says «il modello locale non era disponibile». With several seats the stop is a flag, not a `break`: reels not yet started do not start (and are counted in `deferred`), reels already running finish and are saved. If Groq is switched off for a refused key the note says that first. Then extracts the reel's `ReelArgument`s **right after its analysis, one behind the other** (2026-11-17: the claims prompt begins like the analysis one, so the local model reads the transcript once, `03-llm-and-embeddings.md`) — each with a required **verbatim quote**. A reel whose analysis was made in an earlier round and whose claims are still `pending` gets them in a second phase. **Reads the whole transcript and the whole caption** ([below](#reading-the-whole-text-2026-11-16)): up to 8 000 characters in two calls, above in pieces with one save at the end; a failed piece makes the reel `failed`. | `enrich_status=done`, `argument_status` advanced, `full_text_status=done` |
 | 5 | **embed** | `embed_agent.py` | Give every enriched reel a `vector` (via `cluster_agent._ensure_reel_embeddings`) and compute `chunk_vectors` passage embeddings for reels **and** documents (`_embed_passages`). Split from `enrich` on purpose so "analysed" and "searchable" can never drift apart. | embeddings written |
 | 6 | **blogscrape** | `blogscrape_agent.py` | For each active `BlogSource`, self-throttling on `crawl_interval_h`: discover article URLs (`blog_discovery.py`) and ingest new ones (`blog_agent.py` — trafilatura → Markdown → `KnowledgeDocument`). Deactivates a source after N consecutive failures. | new `KnowledgeDocument` rows |
-| 7 | **knowledge** | `knowledge_agent.py` | Enrich + embed blog articles (Medyca's and competitors'), using `model_for("analysis")`: `primary_topic`, on-topic verdict, `DocumentArgument` extraction (verbatim quote required), asked right after each article's analysis, back to back (same reason as `enrich`). No hook/format — those are video-craft only. **Reads the whole text**, in pieces above 8 000 characters ([below](#reading-the-whole-text-2026-11-16)). | `enrich_status`/`embed_status`/`argument_status`/`full_text_status=done` |
+| 7 | **knowledge** | `knowledge_agent.py` | Enrich + embed blog articles (Medyca's and competitors'), using `model_for("analysis")`: `primary_topic`, on-topic verdict, `DocumentArgument` extraction (verbatim quote required), asked right after each article's analysis, back to back (same reason as `enrich`). No hook/format — those are video-craft only. **Reads the whole text**, in pieces above 8 000 characters ([below](#reading-the-whole-text-2026-11-16)). Runs through the same `_parallel` as `enrich` (several at once, short ones first, the flag above). | `enrich_status`/`embed_status`/`argument_status`/`full_text_status=done` |
 | 8 | **cluster** | `cluster_agent.py` | Two-layer clustering (below). Writes a fresh `ClusterRun` **per scope**, flips `is_current` atomically, then refreshes `CustomTopic` matches (`core/custom_topics.recompute_matches`). | new current `ClusterRun` per scope |
 
 ## One round at a time, and what a round may spend locally (2026-11-15)
@@ -854,7 +854,7 @@ stage (done/total, speed, elapsed, remaining). Mechanism:
   counters.
 - `enrich` and `knowledge` count **inside the worker thread** (`_tracked` in `enrich_agent.py`,
   once per item, not per rate-limit retry), because their results arrive in submission order
-  and late; the counters are behind a lock (one thread by default since 2026-11-15, `ENRICH_WORKERS`).
+  and late; the counters are behind a lock (one thread by default; up to `client.local_slots()` when the local model has several seats). Items that were never started because of the stop flag are counted `skipped`.
 
 | Stage | Total declared | Phases | Who works |
 |---|---|---|---|
@@ -877,6 +877,85 @@ closes a stage on its `✓` line); fixing that is separate work.
 Retention: `manage.py prune_llm_calls` deletes closed `llm_calls`/`stage_runs` older than
 `LLM_CALL_RETENTION_DAYS` (90). It wants one line in the crontab, once a day (added by the
 release step).
+
+## Several at once (2026-11-20)
+
+The local model (Ollama) can write several answers at the same time. Before this date the
+stages used it one answer at a time, which left most of its power idle. One number now says
+how many: **`client.local_slots()`**, the smaller of `OLLAMA_NUM_PARALLEL` (how many seats
+Ollama itself has: it does not report it, so we write it in `.env`) and `LOCAL_SLOTS` (how many
+we use, 0 = all), never under 1. With nothing written it is **1** and everything works exactly
+as before: the code ships "off", and 3 is written in `.env` only at release.
+
+**Two ways to use the seats, never more than N requests of ours at once:**
+
+1. **Different contents together.** `enrich_agent._parallel` (also used by `knowledge`,
+   `reprocess`): the contents up to 8 000 characters go N at a time, in threads; then the long
+   ones go one at a time. Results are taken as they are ready, not in the order they started.
+2. **Pieces of one long text together.** `whole_text.read_whole` sends the pieces of one long
+   text on N threads and puts notes and claims back **in the order of the text**, whichever
+   piece ends first. Reels, articles, `reprocess` and a long interview uploaded by the client
+   all go through it.
+
+Why the split (short ones together, long ones alone): all together would mean up to 9 requests
+for 3 seats, more waiting, and a lost saving (the model finds the start of the prompt in memory
+only if its seat was not used by someone else in between, `03-llm-and-embeddings.md`).
+
+**What every thread does.** It starts with a copy of the caller's context
+(`contextvars.copy_context()`): without it the call loses the name of the content and the page
+«Avanzamento» shows a row with no name. A piece adds «· pezzo 3/7» to the name, so the client
+does not see three equal rows. It closes its own database connection when it ends (it writes
+only the row of `llm_calls`). Pieces write **nothing** of the content: the one save is the
+caller's, at the end, in a transaction, as before. At most 1 + 3 + 3 database connections.
+
+**When something fails.** A piece that fails raises a flag: pieces not yet started do not start,
+the running ones finish; the error kept is the lowest piece number; a real failure beats «model
+not available», so a failed content stays `failed` («pezzo 3 di 7»). If the model is away and
+nothing failed, the content stays `pending` and the pieces done are thrown away (as before).
+For contents the same flag applies (see the `enrich` row): the ones running are **saved** (they
+used to be lost), the ones not started stay `pending`.
+
+**The client goes first.** A model call made by a job the client started (`job:...`: upload,
+blog draft, idea, strategy) has priority by itself. The nightly round does not START a new
+local answer while a person waits or is served; it finishes the answers it has. The flag is
+shared: two people at once do not queue one behind the other. If the client keeps the model
+busy more than `OLLAMA_LOCK_WAIT` (30 minutes in a row), the round leaves the rest `pending`
+with the note «modello locale non disponibile» and goes on the next round.
+
+**Measured 2026-11-18** (quiet machine; on 2026-11-20 with another program on the same model and CPU the gain was only 1.12×, see below), 6 real contents, analysis + claims, 7b, `OLLAMA_NUM_THREAD=6`:
+
+| threads × seats | contents/hour | against today |
+|---|---|---|
+| 6 × 1 (before) | 14.4 | 1.00× |
+| 6 × 2 | 22.8 | 1.58× |
+| **6 × 3** | **27.9** | **1.94×** |
+| 8 × 3 | 20.7 | 1.43× |
+| 12 × 3 | 20.0 | 1.39× |
+
+Valid JSON every time. Quotes dropped: 8 with 3 seats against 3 with 1, on one round only
+(probably chance; the test redoes the comparison). **A single content gets slower** (up to ~9
+minutes, 1.8 tok/s against 3.2): the total rises, each answer does not.
+That the pieces of one text go as fast as different contents is **not measured**; the sizes
+(~1 750 tokens) are in the measured range.
+
+**Known limits.**
+- With Groq working there is **no gain**: Groq stays ONE call at a time
+  (`LLM_REMOTE_PARALLEL=1`, inside `client.chat()`), because with one at a time it already
+  refused 397 of 823 calls in 7 days. A thread waiting for Groq's per-minute cap holds the gate,
+  so the others wait for it instead of going local. The gain appears when Groq is out.
+- The code cannot check that Ollama really has N seats. If `.env` says 3 and Ollama has 1, the
+  extra requests wait inside Ollama and fail after `OLLAMA_READ_TIMEOUT` (600 s). Before
+  turning it on: `systemctl show ollama -p Environment`.
+- Pieces already done are thrown away if the model disappears mid-text (saving them needs a table).
+- `cluster` (theme names) and `blogscrape` stay one at a time: 0 local calls in 7 days.
+- «Quanto manca» on the progress page is pessimistic for the first rounds (it uses the last 5).
+- With one seat the pieces are not labelled «pezzo i/n» (the thread is the caller's).
+- No fair queue: a waiting caller retries every second, as before. The CRM takes its seat with a
+  blocking `flock` and wins against those retries; with several seats and a long job of the client
+  the night can get longer, with no warning (see the CRM contract in `03-llm-and-embeddings.md`).
+- The gain depends on the machine being free: 1.94× on 2026-11-18 (quiet), 1.12× on 2026-11-20 with
+  the CRM bench on the same model and CPU (articles 1.40×, pieces of a long article 1.8×, reels
+  none). Never promise «double».
 
 ## Reading the whole text (2026-11-16)
 

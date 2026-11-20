@@ -361,6 +361,25 @@ OLLAMA_LOCK_PATH = os.environ.get("OLLAMA_LOCK_PATH", "/tmp/medycabrain-ollama.l
 # The wait must outlast the longest local answer (OLLAMA_PIPELINE_TIMEOUT, 1500 s):
 # with less, a caller gives up its turn while the queue is healthy.
 OLLAMA_LOCK_WAIT = int(os.environ.get("OLLAMA_LOCK_WAIT", "1800"))
+# How many generations the local model runs AT ONCE (2026-11-20). Two numbers:
+#  - OLLAMA_NUM_PARALLEL: how many Ollama itself accepts. Same name as Ollama's own
+#    variable (systemd drop-in `ollama.service.d/parallel.conf`) because Ollama does
+#    not report it over its API: the app can only be TOLD. Default 1.
+#  - LOCAL_SLOTS: how many we use. 0 = all of OLLAMA_NUM_PARALLEL.
+# The code takes the smaller of the two, never under 1 (`client.local_slots()`).
+# With nothing written the answer is 1: exactly the behaviour before this change.
+# If we say 3 and Ollama has 1, the extra requests wait INSIDE Ollama in silence and
+# fail after OLLAMA_READ_TIMEOUT: check `systemctl show ollama -p Environment` first.
+# Measured 2026-11-18 on 6 real contents (analysis + claims, 6 threads of 7b):
+# 14.4 contents/hour with 1 at a time, 22.8 with 2, 27.9 with 3 (1.94x). 8 or 12
+# threads with 3 slots were worse (20.7, 20.0): `OLLAMA_NUM_THREAD` stays 6.
+OLLAMA_NUM_PARALLEL = int(os.environ.get("OLLAMA_NUM_PARALLEL", "1"))
+LOCAL_SLOTS = int(os.environ.get("LOCAL_SLOTS", "0"))
+# Calls to the remote provider (Groq) in flight at once. 1: with ONE job at a time Groq
+# already refused 397 of 823 requests in 7 days (per-minute token cap), and five
+# threads on 2026-11-15 refused 169 of 287. More threads make it refuse more, not go
+# faster. The number is here for the day Groq has a wider plan.
+LLM_REMOTE_PARALLEL = max(1, int(os.environ.get("LLM_REMOTE_PARALLEL", "1")))
 
 # How long the per-call detail (`llm_calls`) and per-stage rows (`stage_runs`)
 # are kept. `manage.py prune_llm_calls` deletes older rows; daily totals older

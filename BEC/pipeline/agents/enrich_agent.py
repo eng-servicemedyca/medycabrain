@@ -8,20 +8,28 @@ Then extracts standalone arguments/claims (layer-2) for reels with
 argument_status='pending'. Both stages are idempotent and skip gracefully
 when no model can answer (pipeline continues).
 
-Both stages run ONE reel at a time by default (ENRICH_WORKERS=1). They used to
-run five (measured 2026-07-27: 17 s -> 3.6 s a reel on Anthropic), but the
-ceiling is Groq's per-minute token cap, not the number of threads, and five
-threads retrying together were what pushed 169 of 287 Groq calls into a refusal
-on 2026-11-15 (and then onto the local model). It also matters for the local
-backstop, which does one generation at a time. The cap is WAITED OUT inside
+How many reels at once is decided by ONE number, `client.local_slots()` (the seats
+of the local model: OLLAMA_NUM_PARALLEL / LOCAL_SLOTS, default 1 = one reel at a
+time). It used to be ENRICH_WORKERS, a second knob for the same thing. Groq stays one
+call at a time whatever this number is (`LLM_REMOTE_PARALLEL`, in `client.chat()`):
+its ceiling is the per-minute token cap, and five threads retrying together pushed
+169 of 287 Groq calls into a refusal on 2026-11-15. So the gain of several seats is
+seen only when the work falls on the local model. The cap is WAITED OUT inside
 `client.chat()` (a 429 says nothing about the content), so a rate limit never
 becomes a failed reel.
 
+With more than one seat (`_parallel`): the SHORT contents (up to 8 000 characters)
+go N at a time, then the LONG ones one at a time, each with N pieces together
+(`whole_text`). So the local model never has more than N requests of ours. Results
+are taken as they are READY, not in the order they started.
+
 By default a round has no limit on local calls: with Groq out the work queues on
 the local model. If PIPELINE_LOCAL_MAX_CALLS is set above 0 (settings.py) and
-runs out (`LLMLocalBudget`) the stage stops, says so in its note, and the reels
-it did not try STAY `pending` for the next round — they are not `failed`.
-Real failures stay `failed`; this is not one.
+runs out (`LLMLocalBudget`), or the local model is busy or off, the stage stops,
+says so in its note, and the reels it did not try STAY `pending` for the next round
+— they are not `failed`. With several seats "stops" means: a flag goes up, the
+reels not yet started do not start, the ones running FINISH and are recorded (they
+used to be thrown away). Real failures stay `failed`; this is not one.
 
 The whole transcript is read (2026-11-16; before, the first 3 000 characters).
 Up to 8 000 characters: one call for the analysis and one for the claims, both on
@@ -40,10 +48,11 @@ the analysis; a model away between the two leaves the claims `pending`.
 
 from __future__ import annotations
 
+import contextvars
 import logging
-import os
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.db.models import Q
 
@@ -70,11 +79,6 @@ VALID_FORMATS = {
 }
 _DELAY = 0.3
 
-# One by default (see the module docstring): the ceiling is Groq's per-minute
-# token cap and the local model's single slot, not the thread count. The rate
-# limit itself is waited out in `client.chat()`; `_with_retry` below only matters
-# if someone raises this above 1 and a limit still escapes.
-_WORKERS = max(1, int(os.environ.get("ENRICH_WORKERS", "1")))
 # A 429 is not a failure of the reel. Marking it FAILED would be permanent —
 # failures are deliberately never auto-retried — so a rate limit has to be
 # waited out rather than recorded as a defect in the content.
@@ -126,22 +130,96 @@ def _with_retry(fn, reel):
         connection.close()
 
 
-def _parallel(reels, fn):
-    """Run fn over reels concurrently, yielding (reel, result, error)."""
-    if _WORKERS == 1:
-        for reel in reels:
+_NOT_STARTED = object()
+
+
+def _is_long_item(item) -> bool:
+    """Will this reel or article be read in pieces (several calls)? Same rule as
+    `_enrich_one` / `_read_whole_doc`: a text over `whole_text.SHORT_MAX`. A reel
+    counts by its transcript (a long caption alone is read whole in one call)."""
+    try:
+        text = getattr(item, "content_text", None)
+        if text is None:  # a reel
+            evidence, text = classify_evidence(item)
+            if evidence != "transcript":
+                return False
+        return whole_text.is_long(text)
+    except Exception:  # noqa: BLE001 — a guess about order must never break the stage
+        return False
+
+
+def _parallel(items, fn):
+    """Run fn over reels or articles, yielding (item, result, error) AS THEY ARE
+    READY — a slow first item does not hold back the saving of the rest.
+
+    `client.local_slots()` = 1: one at a time in the calling thread, in the given
+    order, as it always was. More: the short items N at a time in threads (each
+    thread closes its own database connection), then the long ones one at a time
+    (each uses the N seats through its pieces, `whole_text.read_whole`).
+
+    A NOT_THE_ITEMS_FAULT (model away, budget used, as the error of an item or as the
+    error of its claims) raises a flag: items not yet started do not start and are
+    yielded with that error (so the caller counts them as `deferred`, and they stay
+    `pending`); the ones running finish and are yielded normally, so their work is
+    recorded. Nothing is killed."""
+    workers = client.local_slots()
+    stop = threading.Event()
+    why: list[BaseException] = []
+
+    def raise_flag(exc: BaseException) -> None:
+        if not why:
+            why.append(exc)
+        stop.set()
+
+    def guarded(item, call):
+        if stop.is_set():
+            return _NOT_STARTED
+        try:
+            out = call(item)
+        except NOT_THE_ITEMS_FAULT as exc:
+            raise_flag(exc)
+            raise
+        # `_enrich_then_claims` returns (claims made, error of the claims)
+        if isinstance(out, tuple) and len(out) == 2 \
+                and isinstance(out[1], NOT_THE_ITEMS_FAULT):
+            raise_flag(out[1])
+        return out
+
+    def skipped(item):
+        progress.item_done("skipped")
+        return item, None, why[0]
+
+    def alone(batch):
+        for item in batch:
             try:
-                yield reel, _tracked(lambda: fn(reel), reel), None
+                out = guarded(item, lambda it: _tracked(lambda: fn(it), it))
             except Exception as exc:  # noqa: BLE001
-                yield reel, None, exc
+                yield item, None, exc
+                continue
+            yield skipped(item) if out is _NOT_STARTED else (item, out, None)
+
+    items = list(items)
+    if workers <= 1:
+        yield from alone(items)
         return
-    with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
-        futures = {pool.submit(_with_retry, fn, r): r for r in reels}
-        for fut, reel in futures.items():
+    long_ones = [i for i in items if _is_long_item(i)]
+    long_ids = {id(i) for i in long_ones}
+    short_ones = [i for i in items if id(i) not in long_ids]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # One copy of the context per item: it carries the label of the stage and
+        # the item for the calls, and a Context cannot be entered by two threads.
+        futures = {pool.submit(contextvars.copy_context().run, guarded, item,
+                               lambda it: _with_retry(fn, it)): item
+                   for item in short_ones}
+        for fut in as_completed(futures):
+            item = futures[fut]
             try:
-                yield reel, fut.result(), None
+                out = fut.result()
             except Exception as exc:  # noqa: BLE001
-                yield reel, None, exc
+                yield item, None, exc
+                continue
+            yield skipped(item) if out is _NOT_STARTED else (item, out, None)
+    yield from alone(long_ones)
 
 
 def note_stopped(deferred: int, exc: BaseException | None = None) -> str:
@@ -536,10 +614,11 @@ def run(ctx) -> dict:
 
     for reel, res, exc in _parallel(reels, _enrich_then_claims):
         if isinstance(exc, NOT_THE_ITEMS_FAULT):
-            # Left pending on purpose, and the rest of the list with it.
-            stopped, stop_exc = True, exc
-            deferred = sum(1 for r in reels if r.enrich_status == PENDING)
-            break
+            # Left pending on purpose. `_parallel` hands back every item it did
+            # not start with this same error: one `deferred` each.
+            stopped, stop_exc = True, stop_exc or exc
+            deferred += 1
+            continue
         if exc is None:
             reel.enrich_status = DONE
             reel.full_text_status = DONE  # read whole: short road or pieces
@@ -552,10 +631,10 @@ def run(ctx) -> dict:
                 if n is not None:
                     claims_done(reel, n)
             elif isinstance(claims_exc, NOT_THE_ITEMS_FAULT):
-                # The analysis is saved; its claims and the rest wait (`pending`).
-                stopped, stop_exc = True, claims_exc
-                deferred = 1 + sum(1 for r in reels if r.enrich_status == PENDING)
-                break
+                # The analysis is saved; its claims wait (`pending`). The reels
+                # not started come back from `_parallel` with their own error.
+                stopped, stop_exc = True, stop_exc or claims_exc
+                deferred += 1
             else:
                 claims_failed(reel, claims_exc)
         else:
@@ -576,9 +655,9 @@ def run(ctx) -> dict:
         progress.open(len(arg_list), "reel", "Affermazioni")
         for reel, n, exc in _parallel(arg_list, _extract_arguments):
             if isinstance(exc, NOT_THE_ITEMS_FAULT):
-                stopped, stop_exc = True, exc
-                deferred += sum(1 for r in arg_list if r.argument_status == PENDING)
-                break
+                stopped, stop_exc = True, stop_exc or exc
+                deferred += 1
+                continue
             if exc is None:
                 claims_done(reel, n)
             else:

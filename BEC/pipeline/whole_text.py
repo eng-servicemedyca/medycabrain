@@ -33,6 +33,17 @@ The rule, shared by reels and articles (`enrich_agent`, `knowledge_agent`):
   the error passes through untouched: the content stays `pending`, the pieces
   already done are thrown away and redone next round — saving them would need a
   table, for little gain.
+* The pieces run TOGETHER, as many as the local model has seats
+  (`client.local_slots()`; 1 = one behind the other, as before). Each answer comes
+  back to its own piece number, so notes and claims are put together IN THE ORDER
+  OF THE TEXT whichever piece ends first. Pieces write nothing: the one save is
+  the caller's, at the end, in the calling thread. A piece that fails raises a flag:
+  the pieces not yet started do not start, the ones running finish, and the error
+  kept is the lowest piece number (so the same cause always writes the same
+  message). A real failure wins over «model not available»: a failed content stays
+  failed. Each thread starts with a copy of the caller's context (the name of the
+  content for the page Avanzamento, the label of the call) and closes its database
+  connection when it ends.
 * Known limit: past MAX_PIECES (40, ~240 000 characters) the notes no longer fit
   the final call. The longest text today is 85 699 characters (15 pieces).
 
@@ -42,11 +53,14 @@ documentation/low-level/03-llm-and-embeddings.md has the numbers.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import math
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
-from llm import prompts
+from llm import client, prompts, usage
 from llm.client import NOT_THE_ITEMS_FAULT
 
 logger = logging.getLogger(__name__)
@@ -277,6 +291,63 @@ def notes_block(notes: list[str], claims: list[dict], opening: str = "") -> str:
         claims="\n".join(f"- {c['testo']}" for c in claims) or "(nessuna)")
 
 
+def _read_pieces(pieces: list[str], what: str, ask_piece):
+    """(notes, claims per piece), both in piece order, whichever answer came first.
+
+    One piece at a time when the local model has one seat (or the text has one
+    piece); else `local_slots()` threads. See the module docstring for the rules."""
+    n = len(pieces)
+
+    def one(i: int, piece: str):
+        user = prompts.PIECE_USER_TEMPLATE.format(n=i, total=n, what=what, text=piece)
+        try:
+            return parse_piece(ask_piece(user), piece)
+        except NOT_THE_ITEMS_FAULT:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise WholeTextError(f"pezzo {i} di {n}: {exc!r}") from exc
+
+    workers = min(client.local_slots(), n)
+    if workers <= 1:
+        out = [one(i, p) for i, p in enumerate(pieces, 1)]
+        return [o[0] for o in out], [o[1] for o in out]
+
+    stop = threading.Event()
+
+    def in_thread(i: int, piece: str):
+        from django.db import connection
+        try:
+            if stop.is_set():
+                return None  # not started: the flag was raised by another piece
+            usage.tag_item(f" · pezzo {i}/{n}")
+            return one(i, piece)
+        except BaseException:
+            stop.set()
+            raise
+        finally:
+            # A thread has its own connection (it writes the row of `llm_calls`);
+            # left open it would use up the database's slots.
+            connection.close()
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # One copy of the context per piece: a Context cannot be entered by two
+        # threads at once, and each piece sets its own label.
+        futures = [pool.submit(contextvars.copy_context().run, in_thread, i, p)
+                   for i, p in enumerate(pieces, 1)]
+    results, errors = [], []
+    for fut in futures:  # the pool has joined: every future is finished
+        exc = fut.exception()
+        if exc is not None:
+            errors.append(exc)
+        results.append(None if exc is not None else fut.result())
+    if errors:
+        # `futures` is in piece order: the first error is the lowest piece. A
+        # failure of the content beats the model being away.
+        real = [e for e in errors if not isinstance(e, NOT_THE_ITEMS_FAULT)]
+        raise (real or errors)[0]
+    return [r[0] for r in results], [r[1] for r in results]
+
+
 def read_whole(text: str, what: str, ask_piece, ask_final, *, opening: str = "",
                embed=None):
     """Read a long text in pieces. Returns (the final answer, the claims).
@@ -292,18 +363,7 @@ def read_whole(text: str, what: str, ask_piece, ask_final, *, opening: str = "",
         raise WholeTextError(
             f"testo troppo lungo: {len(text)} caratteri sono {n} pezzi, il "
             f"massimo è {MAX_PIECES}")
-    notes, per_piece = [], []
-    for i, piece in enumerate(pieces, 1):
-        user = prompts.PIECE_USER_TEMPLATE.format(
-            n=i, total=n, what=what, text=piece)
-        try:
-            note, claims = parse_piece(ask_piece(user), piece)
-        except NOT_THE_ITEMS_FAULT:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise WholeTextError(f"pezzo {i} di {n}: {exc!r}") from exc
-        notes.append(note)
-        per_piece.append(claims)
+    notes, per_piece = _read_pieces(pieces, what, ask_piece)
     claims = merge_claims(per_piece, CLAIMS_LONG, embed)
     try:
         final = ask_final(notes_block(notes, claims, opening))

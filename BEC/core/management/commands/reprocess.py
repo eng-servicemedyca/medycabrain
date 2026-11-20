@@ -121,7 +121,8 @@ class Command(BaseCommand):
 
     # ── enrichment ─────────────────────────────────────────────────────
     def _enrich(self, qs, opts, settings):
-        from llm.client import LLMRateLimit
+        from llm import client
+        from llm.client import NOT_THE_ITEMS_FAULT, LLMRateLimit
         from pipeline.agents import enrich_agent as ea
 
         if opts["with_transcript"]:
@@ -149,7 +150,9 @@ class Command(BaseCommand):
                                      "full_text_status"])
             return n
 
-        # Both calls are network waits, so these run several at a time. In
+        # Both calls are network waits, so these run several at a time (as many
+        # as the local model has seats, `client.local_slots()`; `_parallel` puts the
+        # short ones first and the long ones one by one, as in the pipeline). In
         # chunks rather than all at once: a spent daily budget must still be
         # able to stop the command cleanly, and a single submitted batch of
         # hundreds could not be called back.
@@ -157,8 +160,8 @@ class Command(BaseCommand):
         # A per-minute rate limit is retried inside the worker. It used to be
         # slept off here and then fall through to the NEXT reel, which left
         # the current one neither done nor failed — silently skipped.
-        chunk = max(ea._WORKERS * 4, 8)
-        ok = fail = skipped = 0
+        chunk = max(client.local_slots() * 4, 8)
+        ok = fail = skipped = deferred = 0
         done = 0
         stop = False
         for start in range(0, len(todo), chunk):
@@ -174,6 +177,11 @@ class Command(BaseCommand):
                     # Every model's daily budget is gone. Stop cleanly: the
                     # next run picks up where this one left off.
                     stop = True
+                elif isinstance(exc, NOT_THE_ITEMS_FAULT):
+                    # The model is away or the budget is used: not the reel's
+                    # fault, it stays as it was. Stop here, the next run goes on.
+                    stop = True
+                    deferred += 1
                 else:
                     self.stderr.write(f"  {reel.shortcode}: {exc!r}")
                     fail += 1
@@ -187,5 +195,9 @@ class Command(BaseCommand):
         if stop:
             self.stdout.write(self.style.WARNING(
                 f"budget giornaliero esaurito dopo {ok} reel — riprendi domani"))
+        if deferred:
+            self.stdout.write(self.style.WARNING(
+                f"modello locale non disponibile: {deferred} reel non provati, "
+                "restano come sono"))
         self.stdout.write(self.style.SUCCESS(
             f"[enrich] ok={ok} falliti={fail} senza affermazioni={skipped}"))

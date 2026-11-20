@@ -17,14 +17,19 @@ Rules that hold for every function here:
   is `failed`; nothing here re-queues anything.
 
 Who is calling (`process`, `stage`, `job`, `run_id`) lives in a contextvar AND
-in a process-wide fallback. `enrich` and `knowledge` run their calls in a
-thread pool, and a contextvar does not cross into a pool's threads: alone it
-would lose the stage exactly where most calls happen. The pipeline and each
-Job are a process of their own doing one stage at a time, so the fallback is
-always right there. `ENRICH_WORKERS` threads share it read-only.
+in a process-wide fallback. `enrich` and `knowledge` run their calls in threads
+(as many as the local model has seats, `client.local_slots()`), and a contextvar
+does not cross into a thread by itself: alone it would lose the stage exactly
+where most calls happen. So the threads are started with a COPY of the caller's
+context (`contextvars.copy_context()`), which carries both the scope and the item;
+without it a piece of a long text would reach the page «Avanzamento» with no name.
+The pipeline and each Job are a process of their own doing one stage at a time, so
+the fallback is right there too, but it only exists for the main thread: a job
+run by the web server relies on the copy.
 
 Which item (reel, article) is being worked on is a contextvar only, set by
-`core/progress.py` inside each worker thread — each thread owns its item.
+`core/progress.py` inside each worker thread — each thread owns its item (and
+`tag_item` adds «· pezzo 3/7» to the copy of a piece).
 """
 
 from __future__ import annotations
@@ -124,6 +129,17 @@ def scope(process: str, stage: str = "", job_id: int | None = None,
 
 def set_item(kind: str, item_id: int | None, label: str) -> None:
     _item_var.set({"kind": kind[:8], "id": item_id, "label": (label or "")[:80]})
+
+
+def tag_item(suffix: str) -> None:
+    """Add a suffix to the name of the item of THIS context («… · pezzo 3/7»), so
+    three pieces of one text do not show as three identical rows. The name is
+    cut to 80 characters like every label: the suffix is kept, the title gives way."""
+    item = _item_var.get()
+    if not item:
+        return
+    room = max(0, 80 - len(suffix))
+    _item_var.set({**item, "label": (item.get("label") or "")[:room] + suffix})
 
 
 def clear_item() -> None:

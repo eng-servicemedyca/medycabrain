@@ -396,17 +396,17 @@ def run(ctx) -> dict:
         if ctx.limit:
             qs = qs[: ctx.limit]
         # The cost of a document is the model's reading time, not CPU:
-        # the reel stage's thread pool applies unchanged.
+        # the reel stage's `_parallel` (as many at once as the local model has
+        # seats, short ones first) applies unchanged.
         docs = list(qs)
         progress.open(len(docs), "articoli", "Analisi e affermazioni")
-        done_ids = set()
         for doc, res, exc in _parallel(docs, _enrich_then_claims):
             if isinstance(exc, NOT_THE_ITEMS_FAULT):
-                # Not tried, not failed: stays pending for the next round.
-                stopped, stop_exc = True, exc
-                deferred += len(docs) - len(done_ids)
-                break
-            done_ids.add(doc.id)
+                # Not tried, not failed: stays pending for the next round. Every
+                # document `_parallel` did not start comes back with this error.
+                stopped, stop_exc = True, stop_exc or exc
+                deferred += 1
+                continue
             if exc is not None:
                 doc.enrich_status = FAILED
                 doc.last_error = repr(exc)[:500]
@@ -421,11 +421,10 @@ def run(ctx) -> dict:
                 if n is not None:
                     claims_done(doc, n)
             elif isinstance(claims_exc, NOT_THE_ITEMS_FAULT):
-                # The analysis is saved; this document's claims, and everything
-                # after it, wait for the next round (still `pending`).
-                stopped, stop_exc = True, claims_exc
-                deferred += 1 + len(docs) - len(done_ids)
-                break
+                # The analysis is saved; this document's claims wait for the next
+                # round (still `pending`).
+                stopped, stop_exc = True, stop_exc or claims_exc
+                deferred += 1
             else:
                 claims_failed(doc, claims_exc)
 
@@ -438,13 +437,11 @@ def run(ctx) -> dict:
                 qs_a = qs_a[: ctx.limit]
             arg_list = list(qs_a)
             progress.open(len(arg_list), "articoli", "Affermazioni")
-            arg_done = 0
             for doc, n, exc in _parallel(arg_list, _extract_arguments):
                 if isinstance(exc, NOT_THE_ITEMS_FAULT):
-                    stopped, stop_exc = True, exc
-                    deferred += len(arg_list) - arg_done
-                    break
-                arg_done += 1
+                    stopped, stop_exc = True, stop_exc or exc
+                    deferred += 1
+                    continue
                 if exc is None:
                     claims_done(doc, n)
                 else:

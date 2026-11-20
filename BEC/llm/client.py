@@ -38,6 +38,16 @@ numbers came from is not usable commercially). What that implies, all below:
     wrote at most 202 tokens, the claims of a whole text at most 742 (an article of
     7 400 characters, 6 claims). The ceilings are TWICE the largest seen, never
     under it: a cut answer is `failed` and is not retried.
+  * Several local answers AT ONCE (2026-11-20): `local_slots()` seats, from
+    OLLAMA_NUM_PARALLEL and LOCAL_SLOTS (default 1 = one at a time, as before).
+    Measured on 6 real contents, 3 seats gave 27.9 contents/hour against 14.4 with
+    one (1.94x), though each single answer is slower (1.8 tok/s against 3.2). The
+    seats are lock files (`_ollama_slot`). Groq stays ONE at a time
+    (LLM_REMOTE_PARALLEL): it already refused 397 of 823 calls in 7 days with one.
+    So the gain is only seen when Groq is out and the work falls on the local model.
+  * A job the client started (`job:...`) has priority by itself (`_is_client_job`):
+    the nightly round does not START a new local answer while one is waiting or
+    being served. The priority flag is shared among them, not queued.
   * `remote_only=True` never reaches Ollama (the MCP search reranker, the
     editorial plan, the eval judge): a minute of waiting is worse than an
     answer in plain order, and a 3,600-token plan would take 20+ minutes.
@@ -271,46 +281,87 @@ def _record_ollama_stats(rec, data: dict) -> None:
               truncated=data.get("done_reason") == "length")
 
 
+def local_slots() -> int:
+    """How many local generations may run at once: the smaller of what Ollama has
+    (`OLLAMA_NUM_PARALLEL`) and what we choose to use (`LOCAL_SLOTS`, 0 = all),
+    never under 1. The answer to "how many at a time" for every caller (the slot
+    lock, the stages, the pieces of a long text): one number, one place."""
+    have = max(1, settings.OLLAMA_NUM_PARALLEL)
+    want = settings.LOCAL_SLOTS if settings.LOCAL_SLOTS > 0 else have
+    return max(1, min(have, want))
+
+
+def _is_client_job() -> bool:
+    """A job the client started (upload, blog draft, idea, strategy: `job:...`)
+    has priority on its own, so no call site has to remember to ask. The nightly
+    round (`pipeline:...`) and commands by hand (`cmd:...`) do not."""
+    return usage.current()["process"].startswith("job:")
+
+
 @contextlib.contextmanager
 def _ollama_slot(wait: int | None = None, priority: bool = False):
-    """Serialize local generations across every process on the box.
+    """Take one of the local model's seats, across every process on the box.
 
-    The CPU fits exactly one 3B/7B generation at a time. Two concurrent
-    callers (nightly pipeline + a client pressing "Analizza") each run at
-    half speed and BOTH hit their read timeout — the failure mode that made
-    every job fail while burning 700% CPU. An flock turns that collision
-    into a queue.
+    Ollama runs `local_slots()` generations at once (3 in production since
+    2026-11-20, `OLLAMA_NUM_PARALLEL=3`); more than that and every one of them
+    slows down until they all hit their read timeout — the failure mode that made
+    every job fail while burning 700% CPU. A seat is a lock file: the first is
+    `OLLAMA_LOCK_PATH` itself (the one-seat lock of before: a process started with
+    the old code during a release still holds a real seat, so the total never goes
+    over N), then `.1`, `.2`... A caller tries them in turn and keeps the first
+    free one; with none free it tries again every second until `wait`, then says
+    «busy» (the item stays `pending`, never `failed`).
+
+    Priority (a person is waiting) is a SHARED flag: every caller with priority
+    holds it together with the others, and batch work does not START a new
+    generation while anyone holds it. It used to be an exclusive lock, so two
+    people queued one behind the other with no time limit; with the pieces of a
+    long text asking at once that would have blocked an upload on itself.
+
+    The CRM (CRM-worktrees/*/shared/auth/src/ollama.ts) takes the SAME files,
+    seat 0 (`OLLAMA_LOCK_PATH`) and `.priority`, in exclusive mode. The scheme holds
+    because seat 0 stays `OLLAMA_LOCK_PATH`: never rename it. Known limit: with
+    several seats and a long job of the client the CRM can wait up to 1800 s and
+    get «model_busy» (starvation, not a deadlock); and our retry every second
+    loses against its blocking flock, so the night can lengthen with no warning.
     """
     wait = wait if wait is not None else settings.OLLAMA_LOCK_WAIT
     path = settings.OLLAMA_LOCK_PATH
     prio_path = path + ".priority"
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o666)
+    paths = [path] + [f"{path}.{i}" for i in range(1, local_slots())]
     deadline = time.time() + wait
     prio_fd = None
+    fd = None
     try:
         if priority:
             # Announce ourselves so batch work stands aside at its next item.
             prio_fd = os.open(prio_path, os.O_CREAT | os.O_RDWR, 0o666)
-            fcntl.flock(prio_fd, fcntl.LOCK_EX)
+            fcntl.flock(prio_fd, fcntl.LOCK_SH)
         else:
             # Batch work: never start a new generation while a human waits.
             while os.path.exists(prio_path) and _prio_held(prio_path):
                 if time.time() >= deadline:
                     raise LLMBusy("ollama busy: interactive work has priority")
                 time.sleep(2.0)
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
+        while fd is None:
+            for candidate in paths:
+                trial = os.open(candidate, os.O_CREAT | os.O_RDWR, 0o666)
+                try:
+                    fcntl.flock(trial, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fd = trial
+                    break
+                except BlockingIOError:
+                    os.close(trial)
+            if fd is None:
                 if time.time() >= deadline:
                     raise LLMBusy(f"ollama busy: no free slot after {wait}s")
                 time.sleep(1.0)
         yield
     finally:
-        with contextlib.suppress(Exception):
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+        if fd is not None:
+            with contextlib.suppress(Exception):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
         if prio_fd is not None:
             with contextlib.suppress(Exception):
                 fcntl.flock(prio_fd, fcntl.LOCK_UN)
@@ -319,7 +370,8 @@ def _ollama_slot(wait: int | None = None, priority: bool = False):
 
 def _prio_held(prio_path: str) -> bool:
     """True while some interactive caller actually holds the priority flag
-    (a stale file left by a crashed process must not block batch work)."""
+    (a stale file left by a crashed process must not block batch work). The
+    holders take it SHARED, so taking it exclusive fails while any of them lives."""
     try:
         fd = os.open(prio_path, os.O_RDWR)
     except OSError:
@@ -332,6 +384,21 @@ def _prio_held(prio_path: str) -> bool:
         return True
     finally:
         os.close(fd)
+
+
+# The remote provider takes this many calls at once (LLM_REMOTE_PARALLEL, 1). Built
+# on first use from the setting, and rebuilt if the setting changes (tests).
+_remote_gate_state: tuple[int, threading.Semaphore] | None = None
+_remote_gate_lock = threading.Lock()
+
+
+def _remote_gate() -> threading.Semaphore:
+    global _remote_gate_state
+    n = max(1, settings.LLM_REMOTE_PARALLEL)
+    with _remote_gate_lock:
+        if _remote_gate_state is None or _remote_gate_state[0] != n:
+            _remote_gate_state = (n, threading.Semaphore(n))
+        return _remote_gate_state[1]
 
 
 def _fast_chat(system: str, user: str, max_tokens: int, temperature: float,
@@ -603,6 +670,11 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
         return model if endpoint is (settings.FAST_ENDPOINTS or [None])[0] else ""
 
     prompt_chars = len(system) + len(user)
+    # One call at a time to Groq, the wait for its per-minute cap included (see
+    # LLM_REMOTE_PARALLEL). `remote_only` calls (a person waiting on the MCP search,
+    # the plan, the judge) do not queue behind the batch: they skip the gate.
+    gate = (contextlib.nullcontext if remote_only
+            else lambda: _remote_gate())
 
     def _recorded(label: str, model_name: str, fn) -> str:
         """Run one remote attempt and write it down. The row exists while the
@@ -640,20 +712,23 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
 
     def _call_alt(endpoint, alt_model: str) -> str:
         """Same endpoint, a sibling model — used when a daily cap is hit."""
-        return _patient(endpoint["name"], lambda: _recorded(
-            endpoint["name"], alt_model, lambda: _fast_chat(
-                system, user, max_tokens, temperature, json_mode=json_mode,
-                timeout=min(timeout or 240, 300), model=alt_model, endpoint=endpoint)))
+        with gate():
+            return _patient(endpoint["name"], lambda: _recorded(
+                endpoint["name"], alt_model, lambda: _fast_chat(
+                    system, user, max_tokens, temperature, json_mode=json_mode,
+                    timeout=min(timeout or 240, 300), model=alt_model,
+                    endpoint=endpoint)))
 
     def _call(provider, endpoint=None):
         if provider == "fast":
             name = _model_on(endpoint) or endpoint.get("models", {}).get("reasoning", "")
-            return _patient(endpoint["name"], lambda: _recorded(
-                endpoint["name"], name, lambda: _fast_chat(
-                    system, user, max_tokens, temperature,
-                    json_mode=json_mode, timeout=remote_timeout,
-                    model=_model_on(endpoint), endpoint=endpoint)))
-        # Local generation: take the single CPU slot, never run two at once.
+            with gate():
+                return _patient(endpoint["name"], lambda: _recorded(
+                    endpoint["name"], name, lambda: _fast_chat(
+                        system, user, max_tokens, temperature,
+                        json_mode=json_mode, timeout=remote_timeout,
+                        model=_model_on(endpoint), endpoint=endpoint)))
+        # Local generation: take one of the model's seats (`local_slots()`).
         # The budget is checked before the row is born: a refused call is not
         # a call. The row is born BEFORE the wait: "in coda" is a state worth showing.
         counted = _take_local_call()
@@ -661,7 +736,7 @@ def chat(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2
         rec = usage.begin("ollama", settings.OLLAMA_MODEL, is_local=True, waiting=True,
                           max_tokens=local_max, prompt_chars=prompt_chars)
         try:
-            with _ollama_slot(priority=priority):
+            with _ollama_slot(priority=priority or _is_client_job()):
                 rec.running()
                 text = _ollama_chat(system, user, local_max, temperature,
                                     json_mode=json_mode, timeout=timeout,

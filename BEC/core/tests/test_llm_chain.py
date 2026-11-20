@@ -48,6 +48,11 @@ class _ChainCase(TestCase):
         p = mock.patch.object(client.time, "sleep", side_effect=self.sleeps.append)
         p.start()
         self.addCleanup(p.stop)
+        # Never the real lock files of the box: a `job:` call takes the shared
+        # priority flag, and on the live server that would stop the nightly round.
+        lock = override_settings(OLLAMA_LOCK_PATH=tempfile.mktemp(prefix="test-chain-"))
+        lock.enable()
+        self.addCleanup(lock.disable)
 
 
 class EnvExampleChainTests(SimpleTestCase):
@@ -404,9 +409,10 @@ class StageKeepsWhatItDidNotTryPendingTests(TestCase):
         self.assertEqual(out["enrich_failed"], 4)
         self.assertNotIn("deferred", out)
 
-    def test_one_worker_by_default(self):
-        from pipeline.agents import enrich_agent
-        self.assertEqual(enrich_agent._WORKERS, 1)
+    def test_one_at_a_time_by_default(self):
+        """The PR ships with the local model at one seat: nothing is written in
+        `.env.example` that turns the parallel work on."""
+        self.assertEqual(client.local_slots(), 1)
 
 
 class OneRoundAtATimeTests(SimpleTestCase):
