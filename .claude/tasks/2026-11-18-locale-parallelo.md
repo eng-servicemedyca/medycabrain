@@ -50,7 +50,7 @@ Stato: **in attesa dell'OK di Giuseppe.** Nessuna riga di codice è stata scritt
 
 ### 2.0 In sei righe
 
-1. Il lucchetto del modello locale passa da 1 posto a N posti (N = 3 in produzione, 1 se non si scrive niente nel `.env`: così la PR, da sola, non cambia nulla finché non si accende).
+1. Il lucchetto del modello locale passa da 1 posto a N posti (N = 3 in produzione, 1 se non si scrive niente nel `.env`: così la PR, da sola, cambia poco finché non si accende. Con N=1 restano uguali lucchetto, ordine, etichette e `_parallel`; cambiano la precedenza automatica dei `job:` (approvata), il cancello Groq da 1 posto anche fra fili dello stesso processo e la precedenza condivisa).
 2. I contenuti **corti** (fino a 8 000 caratteri) si lavorano 3 alla volta. I contenuti **lunghi** si lavorano uno alla volta, ma con 3 pezzi insieme. Così il modello locale non ha mai più di 3 richieste nostre: è esattamente la situazione misurata (27,9 contenuti l'ora contro 14,4).
 3. **Groq resta uno alla volta.** Non è una scelta di gusto: negli ultimi 7 giorni, con un solo lavoro alla volta, Groq ha già rifiutato 397 richieste su 823 per il tetto al minuto. Mandargliene 3 insieme non lo fa andare più veloce, lo fa rifiutare di più.
 4. Quindi il guadagno si vede **solo quando Groq è fuori** e il lavoro cade sul modello locale: lì il giro dura circa la metà (un giro grosso calcolato a ~9 ore scende a ~4,7 ore). Con Groq che funziona non cambia niente.
@@ -119,7 +119,7 @@ Stato: **in attesa dell'OK di Giuseppe.** Nessuna riga di codice è stata scritt
 
 **e) Groq e i lavori insieme**
 
-- Un cancello da 1 posto, dentro `client.chat()`, attorno al tentativo su Groq (attesa del tetto al minuto compresa). Con 3 fili, verso Groq si va comunque uno alla volta: identico a oggi. Il numero è in una riga di configurazione (`LLM_REMOTE_PARALLEL`, predefinito 1) per il giorno in cui Groq avrà un piano più largo.
+- Un cancello da 1 posto, dentro `client.chat()`, attorno al tentativo su Groq (attesa del tetto al minuto compresa). Con 3 fili, verso Groq si va comunque uno alla volta: come prima per un processo solo. Il numero è in una riga di configurazione (`LLM_REMOTE_PARALLEL`, predefinito 1) per il giorno in cui Groq avrà un piano più largo.
 - Le chiamate «solo remoto» (riordino della ricerca MCP, piano editoriale, giudice delle prove) **non** passano dal cancello: lì una persona aspetta, e oggi non fanno la fila.
 - Niente chiamate vere a Groq nei test: il cancello si prova con un Groq finto.
 
@@ -204,7 +204,7 @@ Stato: **in attesa dell'OK di Giuseppe.** Nessuna riga di codice è stata scritt
 
 ## 3. Sviluppo           (sviluppatore, 20/11/2026)
 
-Ramo `feat/locale-parallelo`, un commit. La PR arriva **spenta**: senza niente nel `.env`, `local_slots()` vale 1 e il comportamento è quello di prima.
+Ramo `feat/locale-parallelo`, un commit. La PR arriva **spenta**: senza niente nel `.env`, `local_slots()` vale 1. Lucchetto, ordine, etichette e `_parallel` sono come prima; cambiano la precedenza automatica dei `job:` (approvata), il cancello Groq da 1 posto anche fra fili dello stesso processo e la precedenza condivisa.
 
 ### Cosa è stato fatto, file per file
 
@@ -228,7 +228,7 @@ I tre punti segnalati dall'architetto: contesto copiato (pezzi **e** contenuti, 
 ### Scelte non ovvie
 
 - **Precedenza condivisa con `LOCK_SH`**: i detentori non si aspettano tra loro, e il codice di chi controlla (`_prio_held`) non cambia di logica. Durante il rilascio un processo ancora col codice vecchio prende `LOCK_EX`: in quel caso i nuovi detentori aspettano che finisca (come prima); nessun danno.
-- **Etichetta «pezzo i/n» solo con più posti**: con 1 posto i pezzi restano nel filo del chiamante e non si tocca la sua etichetta (così con la PR spenta non cambia nulla).
+- **Etichetta «pezzo i/n» solo con più posti**: con 1 posto i pezzi restano nel filo del chiamante e non si tocca la sua etichetta (così con la PR spenta le etichette non cambiano).
 - **La divisione corti/lunghi** guarda `content_text` (articoli) o la trascrizione (reel, solo se `evidence == "transcript"`), la stessa regola di `_enrich_one` / `_read_whole_doc`. Se non riesce a deciderlo (oggetto strano) dice «corto»: sbagliare l'ordine non rompe niente.
 - `_with_retry` (che chiude la connessione) si usa solo nei fili del pool; i lunghi girano nel filo principale con `_tracked`, come il caso N=1.
 
@@ -376,3 +376,4 @@ Fermati e cancellati: Postgres privato (porta 5561), copia e dump del database, 
 - 20/11 — sviluppatore: scritto il codice (un commit sul ramo), 528 test verdi, documentazione aggiornata. `stato: revisione`. Dettaglio e punti da guardare in sezione 3.
 - 20/11 — revisore: passa. Rilievi: fame del CRM con precedenza condivisa, contratto col CRM non scritto, «spenta = identica» vero solo in parte. `stato` resta `revisione` in attesa del collaudo.
 - 20/11 — collaudatore: suite 528 verdi, build ok; prova vera sul 7b con 3 posti sulla copia: 14/14 `done`, owned/competitor separati, pezzi in ordine, citazioni scartate 14/13/10 (3 posti, 1 posto, 3 posti), modello che sparisce = `pending` mai `failed`. **Passa** con la PR spenta. Rilievi: R1 «pezzo i/n» tagliato a 380 px, R2 guadagno misurato 1,12× (non 1,94×) contro la frase al cliente, R3 attesa dei lucchetti contro un `flock` bloccante del CRM. Dettaglio in sezione 5.
+- 20/11 — sviluppatore, giro 2: chiusi R1 (suffisso «pezzo i/n» in uno span non troncato), R2 (niente «doppio»: 1,94× a macchina tranquilla, 1,12× con il banco del CRM), contratto col CRM e fame/attesa scritti (03, docstring `_ollama_slot`, 02), testo «N=1 identico» corretto, `OLLAMA_LOCK_PATH` temporaneo nei test (suite 528 verdi, i file in /tmp non vengono più toccati), riga sulla pagina Documentazione. Build ok.

@@ -922,7 +922,7 @@ shared: two people at once do not queue one behind the other. If the client keep
 busy more than `OLLAMA_LOCK_WAIT` (30 minutes in a row), the round leaves the rest `pending`
 with the note «modello locale non disponibile» and goes on the next round.
 
-**Measured 2026-11-18**, 6 real contents, analysis + claims, 7b, `OLLAMA_NUM_THREAD=6`:
+**Measured 2026-11-18** (quiet machine; on 2026-11-20 with another program on the same model and CPU the gain was only 1.12×, see below), 6 real contents, analysis + claims, 7b, `OLLAMA_NUM_THREAD=6`:
 
 | threads × seats | contents/hour | against today |
 |---|---|---|
@@ -950,7 +950,12 @@ That the pieces of one text go as fast as different contents is **not measured**
 - `cluster` (theme names) and `blogscrape` stay one at a time: 0 local calls in 7 days.
 - «Quanto manca» on the progress page is pessimistic for the first rounds (it uses the last 5).
 - With one seat the pieces are not labelled «pezzo i/n» (the thread is the caller's).
-- No fair queue: a waiting caller retries every second, as before.
+- No fair queue: a waiting caller retries every second, as before. The CRM takes its seat with a
+  blocking `flock` and wins against those retries; with several seats and a long job of the client
+  the night can get longer, with no warning (see the CRM contract in `03-llm-and-embeddings.md`).
+- The gain depends on the machine being free: 1.94× on 2026-11-18 (quiet), 1.12× on 2026-11-20 with
+  the CRM bench on the same model and CPU (articles 1.40×, pieces of a long article 1.8×, reels
+  none). Never promise «double».
 
 ## Reading the whole text (2026-11-16)
 

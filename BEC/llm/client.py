@@ -317,6 +317,13 @@ def _ollama_slot(wait: int | None = None, priority: bool = False):
     generation while anyone holds it. It used to be an exclusive lock, so two
     people queued one behind the other with no time limit; with the pieces of a
     long text asking at once that would have blocked an upload on itself.
+
+    The CRM (CRM-worktrees/*/shared/auth/src/ollama.ts) takes the SAME files,
+    seat 0 (`OLLAMA_LOCK_PATH`) and `.priority`, in exclusive mode. The scheme holds
+    because seat 0 stays `OLLAMA_LOCK_PATH`: never rename it. Known limit: with
+    several seats and a long job of the client the CRM can wait up to 1800 s and
+    get «model_busy» (starvation, not a deadlock); and our retry every second
+    loses against its blocking flock, so the night can lengthen with no warning.
     """
     wait = wait if wait is not None else settings.OLLAMA_LOCK_WAIT
     path = settings.OLLAMA_LOCK_PATH
