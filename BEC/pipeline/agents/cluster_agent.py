@@ -21,6 +21,7 @@ the end. The API only ever serves is_current=True.
 from __future__ import annotations
 
 import logging
+import threading
 
 import numpy as np
 from django.conf import settings
@@ -48,13 +49,21 @@ def _is_fallback_label(label: str) -> bool:
     return bool(re.fullmatch(r"\s*Tema\s+\d+\s*", label or ""))
 
 
+_embedder_lock = threading.Lock()
+
+
 def _get_embedder():
     global _embedder
+    # Under a lock since several reels are read at once (`enrich_agent._parallel`):
+    # each one asks for this model to drop its doubled claims, and three threads
+    # arriving together would each load it (seconds and ~0.5 GB, three times).
     if _embedder is None:
-        from sentence_transformers import SentenceTransformer
+        with _embedder_lock:
+            if _embedder is None:  # another thread may have loaded it while we waited
+                from sentence_transformers import SentenceTransformer
 
-        logger.info("[cluster] loading embedder %s", settings.EMBEDDINGS_MODEL)
-        _embedder = SentenceTransformer(settings.EMBEDDINGS_MODEL)
+                logger.info("[cluster] loading embedder %s", settings.EMBEDDINGS_MODEL)
+                _embedder = SentenceTransformer(settings.EMBEDDINGS_MODEL)
     return _embedder
 
 

@@ -32,7 +32,7 @@ from pipeline.agents import enrich_agent
 
 
 class CounterThreadSafetyTests(SimpleTestCase):
-    """ENRICH_WORKERS=5 threads touch the same counter."""
+    """Five threads touch the same counter."""
 
     def setUp(self):
         self.writes = []
@@ -66,7 +66,7 @@ class CounterThreadSafetyTests(SimpleTestCase):
                 raise ValueError("no")
 
         progress.open(8, "reel", "Analisi")
-        with mock.patch.object(enrich_agent, "_WORKERS", 4), \
+        with mock.patch.object(enrich_agent.client, "local_slots", return_value=4), \
              mock.patch("django.db.connection.close"):
             results = list(enrich_agent._parallel([Item(i) for i in range(8)], fn))
         self.assertEqual(len(results), 8)
@@ -78,7 +78,7 @@ class CounterThreadSafetyTests(SimpleTestCase):
             id, shortcode = 1, "s"
 
         progress.open(1, "reel", "Analisi")
-        with mock.patch.object(enrich_agent, "_WORKERS", 1):
+        with mock.patch.object(enrich_agent.client, "local_slots", return_value=1):
             list(enrich_agent._parallel([Item()], lambda _i: None))
         self.assertEqual(progress.snapshot_counts()["done"], 1)
 
@@ -94,7 +94,7 @@ class CounterThreadSafetyTests(SimpleTestCase):
                 raise enrich_agent.LLMRateLimit(0.0)
 
         progress.open(1, "reel", "Analisi")
-        with mock.patch.object(enrich_agent, "_WORKERS", 2), \
+        with mock.patch.object(enrich_agent.client, "local_slots", return_value=2), \
              mock.patch.object(enrich_agent.time, "sleep"), \
              mock.patch("django.db.connection.close"):
             list(enrich_agent._parallel([Item()], fn))

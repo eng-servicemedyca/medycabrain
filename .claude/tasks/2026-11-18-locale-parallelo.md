@@ -1,7 +1,7 @@
 ---
 id: 2026-11-18-locale-parallelo
 titolo: Il modello locale lavora su 3 lavori alla volta
-stato: approvato
+stato: revisione
 ramo: feat/locale-parallelo
 pr: ""
 ticket: ""
@@ -202,8 +202,65 @@ Stato: **in attesa dell'OK di Giuseppe.** Nessuna riga di codice è stata scritt
 2. **Si accende al rilascio?** La PR arriva spenta (1 lavoro alla volta, come oggi). Propongo di scrivere 3 nel `.env` al rilascio, dopo che il collaudo ha rifatto la prova su una copia del database. L'alternativa è una notte a 2 prima di passare a 3.
 3. **Va bene che Groq resti uno alla volta?** Vuol dire che nei giorni normali non si vede differenza: il guadagno arriva solo quando Groq è fuori. Se vuoi più velocità anche nei giorni normali, la strada è un piano Groq più largo, non questa PR.
 
+## 3. Sviluppo           (sviluppatore, 20/11/2026)
+
+Ramo `feat/locale-parallelo`, un commit. La PR arriva **spenta**: senza niente nel `.env`, `local_slots()` vale 1 e il comportamento è quello di prima.
+
+### Cosa è stato fatto, file per file
+
+| File | Cosa |
+|---|---|
+| `BEC/config/settings/base.py` | `OLLAMA_NUM_PARALLEL` (1), `LOCAL_SLOTS` (0 = tutti), `LLM_REMOTE_PARALLEL` (1), con il commento e i numeri della prova |
+| `BEC/.env.example` | le tre righe nuove; `ENRICH_WORKERS` tolto |
+| `BEC/llm/client.py` | `local_slots()`; `_ollama_slot` a N file (`OLLAMA_LOCK_PATH`, `.1`, `.2`: il file di prima è il posto 0); precedenza **condivisa** (`LOCK_SH` sul file `.priority`; chi è batch prova `LOCK_EX|NB` e fallisce se qualcuno la tiene); `_is_client_job()`: chiamate con processo `job:` hanno la precedenza da sole; cancello di Groq (`Semaphore(LLM_REMOTE_PARALLEL)`) attorno a `_patient`, saltato da `remote_only`; commento in cima |
+| `BEC/pipeline/whole_text.py` | `_read_pieces`: pezzi su N fili, risposte rimesse in ordine di pezzo, bandierina, errore col numero di pezzo più basso, un fallimento vero batte «modello non disponibile»; ogni filo parte con `copy_context()`, aggiunge «· pezzo i/n» e chiude la connessione |
+| `BEC/llm/usage.py` | `tag_item(suffix)` (l'etichetta è tagliata a 80: cede il titolo, non il suffisso); commento sul contesto copiato |
+| `BEC/pipeline/agents/enrich_agent.py` | `_WORKERS` sparisce. `_parallel`: N da `local_slots()`; con 1 è il giro semplice di prima; con più: corti N insieme in filo (con `_with_retry`), poi lunghi uno alla volta; raccolta con `as_completed`; bandierina (anche quando l'errore dei *claims* è `NOT_THE_ITEMS_FAULT`, che `_enrich_then_claims` restituisce e non alza): chi non è partito torna con quell'errore e viene contato `skipped` sulla barra, chi è in corso finisce ed è registrato. I due cicli di `run` contano ogni rimandato (`deferred += 1`, `continue`, niente più `break`) |
+| `BEC/pipeline/agents/knowledge_agent.py` | stessi due cicli di `run` |
+| `BEC/core/management/commands/reprocess.py` | blocchi da `local_slots()`; un `NOT_THE_ITEMS_FAULT` ora ferma il comando e lo dice (prima finiva tra i «falliti» a video, senza toccare lo stato) |
+| `BEC/pipeline/agents/cluster_agent.py` | lucchetto su `_get_embedder` (stessa forma di `core/knowledge.py`) |
+| `BEC/core/progress.py` | solo un commento |
+| Test | nuovo `core/tests/test_parallel.py` (38 prove); `test_progress.py` e `test_llm_chain.py` non nominano più `_WORKERS`; `_ChainCase` ora usa un file-lucchetto temporaneo (vedi sotto) |
+| Documentazione | `02-pipeline.md` (righe enrich/knowledge, sezione nuova «Several at once», contatori), `03-llm-and-embeddings.md` (tabella impostazioni, paragrafo con i numeri), `architecture-summary.md`, `docs/medycabrain-pipeline-cliente.drawio` (due nodi tecnici + uno del cliente), `FEC/src/i18n/it.json` (pagina Documentazione) |
+
+I tre punti segnalati dall'architetto: contesto copiato (pezzi **e** contenuti, c'è un test che apre lo scope in un filo non principale, il caso di un lavoro del cliente sul server web); precedenza condivisa; lucchetto sull'embedder.
+
+### Scelte non ovvie
+
+- **Precedenza condivisa con `LOCK_SH`**: i detentori non si aspettano tra loro, e il codice di chi controlla (`_prio_held`) non cambia di logica. Durante il rilascio un processo ancora col codice vecchio prende `LOCK_EX`: in quel caso i nuovi detentori aspettano che finisca (come prima); nessun danno.
+- **Etichetta «pezzo i/n» solo con più posti**: con 1 posto i pezzi restano nel filo del chiamante e non si tocca la sua etichetta (così con la PR spenta non cambia nulla).
+- **La divisione corti/lunghi** guarda `content_text` (articoli) o la trascrizione (reel, solo se `evidence == "transcript"`), la stessa regola di `_enrich_one` / `_read_whole_doc`. Se non riesce a deciderlo (oggetto strano) dice «corto»: sbagliare l'ordine non rompe niente.
+- `_with_retry` (che chiude la connessione) si usa solo nei fili del pool; i lunghi girano nel filo principale con `_tracked`, come il caso N=1.
+
+### Prove
+
+- `manage.py test core`: **528 verdi** (erano 490 prima dei lavori precedenti; con `test_parallel` 38 nuove). `makemigrations --check`: pulito. `npm run build`: ok.
+- Postgres usato per i test: una istanza **privata** avviata in `/tmp` sulla porta 5544 (non il database di produzione, di cui non ho letto le credenziali). Spenta a fine lavoro.
+- Niente chiamate vere a Groq (`FAST_ENDPOINTS` finti, `_fast_chat` finto) e niente Ollama: il modello locale non è stato avviato per prove.
+- Coperto dai test: N posti e il quarto che aspetta (poi `LLMBusy`), il file di prima come posto 0, precedenza condivisa, `job:` automatica, Groq uno alla volta (e 2 se impostato), `remote_only` non in coda, pezzi in ordine con arrivi rovesciati, pezzo fallito = non partono i successivi, errore col pezzo più basso, fallimento vero > «modello via», solo «modello via» passa intatto, contesto e processo ereditati dal filo, connessione chiusa, `_parallel` (ordine, corti poi lunghi, bandierina anche col N=1, errore dei claims che alza la bandierina), embedder caricato una volta.
+
+### Cosa NON è stato provato (per il collaudo)
+
+- Nessuna prova vera su Ollama con 3 posti e pezzi veri: che 3 **pezzi** dello stesso testo vadano come 3 contenuti diversi resta non misurato. Da fare sulla copia del database, e confronto delle citazioni scartate (8 con 3 posti, 3 con 1 nella prova del 18/11).
+- La pagina Avanzamento dal vero, mobile e desktop, con 3 righe insieme e «pezzo 3/7».
+- Il precedenza-del-cliente su due processi veri (i test la provano nello stesso processo: `flock` tra descrittori diversi si comporta come tra processi, ma non è la stessa cosa).
+- Rilascio: prima di scrivere `OLLAMA_NUM_PARALLEL=3` nel `.env`: `systemctl show ollama -p Environment`; riavviare insieme gunicorn e il connettore MCP.
+
+### Da sapere (per revisore e Giuseppe)
+
+1. **Groq vivo ma al tetto: i fili non vanno sul locale.** Il cancello da 1 posto sta attorno anche all'attesa del tetto al minuto (come da disegno 2.2e): mentre un filo aspetta Groq, gli altri due aspettano il cancello, non vanno sul modello locale. Il guadagno c'è solo con Groq *fuori* (chiave rifiutata, o dopo che ha esaurito le attese). Va nella documentazione come limite; se Giuseppe vuole di più è un'altra decisione (cancello solo attorno alla richiesta, non all'attesa).
+2. **Incidente di prova, già chiuso.** I test della catena (`_ChainCase`) usavano il lucchetto vero della macchina (`/tmp/medycabrain-ollama.lock`). Ora che una chiamata `job:` prende la precedenza, una prova partita mentre il modello era occupato è rimasta ferma a tenere il flag condiviso sul file `.priority` **di produzione** per circa 4-5 minuti (15:15-15:20 del 20/11), poi l'ho fermata io: il giro batch, se stava per iniziare una risposta, ha aspettato. Corretto: `_ChainCase` ora usa un file temporaneo; i miei lanci successivi usano anche `OLLAMA_LOCK_PATH` temporaneo. Il file `/tmp/medycabrain-ollama.lock.priority` esiste ancora (vuoto, nessun detentore: non blocca).
+3. I test di `test_parallel` si appoggiano a tempi reali brevi (0,05-0,4 s) con margini larghi; se su una CI lenta uno fosse instabile, i punti sono i `sleep` dei test di `_parallel` e dei pezzi.
+4. Righe «velocità» e «quanto manca» della pagina Avanzamento: non toccate, dette nella pagina Documentazione.
+5. Cancellazione dei file `/tmp/test-*` lasciati dai test: abitudine già esistente dei test, non toccata.
+
+### Cosa resta fuori (come da disegno 2.6)
+
+Con Groq che funziona non si va più veloci; `cluster` e `blogscrape` restano uno alla volta; faster-whisper non toccato; thread 6 e modello 7b invariati; i pezzi già fatti si buttano se il modello sparisce; il codice non verifica che Ollama abbia davvero N posti; nessuna coda «giusta»; nessuna tabella, migrazione o endpoint nuovo.
+
 ## Registro
 
 - 18/11 — capo: aperto il lavoro, lanciato l'architetto.
 - 18/11 — architetto: disegno scritto (sezione 2). Scelte proposte: N posti dal `.env` (predefinito 1), corti 3 insieme e lunghi uno alla volta con 3 pezzi insieme, Groq uno alla volta, lavori del cliente con precedenza. Tre domande aperte in 2.7. In attesa dell'OK di Giuseppe.
 - 20/11 — Giuseppe: OK al disegno. Risposte a 2.7: (1) sì, passa il cliente; (2) sì, 3 posti nel `.env` al rilascio, dopo la prova del collaudo su una copia del database; (3) sì, Groq resta uno alla volta. `stato: approvato`.
+- 20/11 — sviluppatore: scritto il codice (un commit sul ramo), 528 test verdi, documentazione aggiornata. `stato: revisione`. Dettaglio e punti da guardare in sezione 3.
