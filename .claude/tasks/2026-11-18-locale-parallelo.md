@@ -292,6 +292,82 @@ Invarianti: `owner_type` non toccato, nessun terzo valore; ogni chiamata resta u
 ### Cosa non ho potuto fare
 Non ho eseguito i test (il collaudo ne sta facendo la prova); ho letto il diff, i test relativi al lucchetto e `ollama.ts` del CRM.
 
+## 5. Collaudo           (collaudatore, 20/11/2026)
+
+**Verdetto: PASSA** come codice, con la PR spenta (così com'è). Ma tre cose da sapere, due delle quali vanno sistemate **prima di scrivere 3 nel `.env`** (rilievi R1 e R2 sotto). Il codice fa quello che il disegno promette; il guadagno di velocità promesso, oggi, **non si è ripetuto**.
+
+Commit provato: `ee96212` sul ramo `feat/locale-parallelo`, in un worktree. Python e Node del progetto. Tutto su una **copia** del database (dump di produzione fatto con una connessione normale, le credenziali non lette né stampate; la copia e il dump sono stati cancellati a fine prova).
+
+### 5.1 I comandi, in ordine (output vero)
+
+Postgres privato in `/tmp` sulla porta 5561, `OLLAMA_LOCK_PATH` temporaneo per la suite.
+
+```
+$ python manage.py makemigrations --check --dry-run
+No changes detected
+$ python manage.py check
+System check identified no issues (0 silenced).
+$ python manage.py test core
+Ran 528 tests in 102.180s
+OK
+$ cd FEC && npm run build          # tsc -b + vite
+✓ built in 42.97s                  # (solo l'avviso di sempre: chunk > 500 kB)
+```
+
+### 5.2 Prova vera sul modello locale (7b, Ollama con `OLLAMA_NUM_PARALLEL=3`)
+
+`systemctl show ollama -p Environment` → `Environment=PATH=... OLLAMA_NUM_PARALLEL=3` (verificato).
+Ambiente del processo di prova (non il `.env`): `OLLAMA_NUM_PARALLEL=3 LOCAL_SLOTS=3`, nessuna chiave Groq (`FAST_ENDPOINTS` stampato: `[]`), stadi veri via `manage.py run_pipeline --only enrich,knowledge` sulla copia, **lucchetti veri** `/tmp/medycabrain-ollama.lock` e `.1`, `.2`.
+
+Contenuti usati (14, sempre gli stessi nelle tre prove, tutti da zero): 6 reel corti (3 owned, 3 competitor), 6 articoli corti (3 owned, 3 competitor), 1 reel lungo competitor (11 028 caratteri, 2 pezzi) e 1 articolo lungo owned (15 493 caratteri, 3 pezzi).
+
+**Tre giri, stessi contenuti**
+
+| Giro | Posti | Orologio | Chiamate | Durata media di una chiamata | Token/s di una chiamata | Stato finale |
+|---|---|---|---|---|---|---|
+| A | 3 (ma il posto 0 era quasi sempre del CRM) | 15:41:45 → 17:15:19, **93,5 min** | 31 | 340 s | 1,15 | 14/14 `done`, 0 `failed` |
+| B | **1** (come la PR spenta) | 17:17:19 → 19:01:45, 104 min, di cui **35 min di attesa del lucchetto** tenuto dal CRM; lavoro netto (somma delle durate) **4 039 s = 67 min** | 31 | 130 s | 2,52 | 14/14 `done`, 0 `failed` |
+| A2 | **3 veri** (i tre lucchetti miei, CRM fuori) | 19:02:45 → 20:02:39, **59,9 min** (3 594 s) | 31 | 231 s | 1,27 | 14/14 `done`, 0 `failed` |
+
+Cosa dicono i numeri, senza abbellirli:
+
+- **Guadagno misurato oggi: 1,12×** (B netto 4 039 s contro A2 3 594 s). Per stadio: reel (enrich) A2 2 069 s contro B netto 1 906 s, cioè **nessun guadagno**; articoli (knowledge) A2 1 525 s contro B netto 2 133 s, **1,40×**. Il 18/11 il banco aveva dato 1,94×. Ogni chiamata, con 3 insieme, va 1,8 volte più piano (130 → 231 s; 2,52 → 1,27 token/s), come previsto dal disegno, ma il totale non è salito quanto allora.
+- Perché potrebbe essere diverso dal 18/11 (ipotesi, non provate): il banco del 18/11 teneva sempre 6 richieste nella coda, qui lo stadio lavora a gradini (prima i corti, poi i lunghi uno alla volta: all'inizio di un lungo un posto resta vuoto, la lettura finale gira da sola); la macchina non era tranquilla (nel giro A c'era `banco.py` del CRM con un altro modello a ~500% di CPU; nel giro A2 il CRM era fuori ma Ollama teneva caricato l'altro modello). Il giro A2 è il più pulito che ho potuto avere; per un numero vero serve una notte tranquilla.
+- **Contenuti corti insieme, owned e competitor separati**: tutti `done`; ogni chiamata ha un solo contenuto (tabella `llm_calls`: un'etichetta per chiamata, mai due contenuti). Ho controllato ogni affermazione salvata: tutte le 56 citazioni sono nel testo del **proprio** contenuto (articolo: testo; reel: trascrizione più didascalia, come da regola della strada corta); `owner_type` di ogni contenuto invariato (3 owned + 4 competitor tra i reel, 4 + 3 tra gli articoli).
+- **Testo lungo a pezzi in parallelo**: articolo lungo (3 pezzi), A2: i 3 pezzi partiti insieme alle 19:55:48 e finiti in 266/316/319 s, poi la lettura finale (81 s). Con 1 posto (B): 252 + 174 + 156 s di pezzi uno dopo l'altro (582 s) e la lettura finale 100 s. **Pezzi: 582 → 319 s (1,8×)**. Reel lungo (2 pezzi): A2 210/198 s insieme; B 109 + 122 = 231 s uno dopo l'altro: **nessun guadagno** (ogni pezzo va 1,8 volte più piano). **Ordine giusto**: le affermazioni dell'articolo lungo escono in ordine di pezzo (posizioni nel testo 1 036, 2 030, 4 208 | 5 740, 5 463 | 8 180, 10 367: i pezzi sono ordinati, dentro il pezzo vale l'ordine del modello); reel lungo 3 112, 3 497, 5 466, 6 721, 9 208 (crescente). Le affermazioni salvate sui due lunghi: 7 (articolo) e 5 (reel) in tutti e tre i giri.
+- **Citazioni scartate** (righe «affermazioni scartate» nei log): giro A 14, giro B (1 posto) **13**, giro A2 (3 posti) **10**. Affermazioni salvate: 56, 56, 56. **Nessun peggioramento di qualità con 3 posti**: l'8-contro-3 del 18/11 qui non si ripete (probabile rumore, ma su un solo confronto per parte).
+- **Modello che sparisce a metà** (proxy TCP locale davanti a Ollama che smette di accettare dopo 150 s; copia separata del database): `{'enriched': 2, 'enrich_failed': 0, 'arg_reels': 1, 'deferred': 6, 'stopped': 'modello locale non disponibile'}` e stati: 129 `done/done`; 110 analisi `done`, affermazioni `pending`; 97, 104, 106, 123, 773 ancora `pending/pending`, `last_error` vuoto. **Nessun `failed`.** Testo lungo con la stessa prova (proxy chiuso dopo 60 s, i due pezzi in volo finiscono, la lettura finale trova la porta chiusa): `{'enriched': 0, 'enrich_failed': 0, 'deferred': 1, 'stopped': 'modello locale non disponibile'}`, il reel resta `pending/pending/pending`, **0 righe in `enrichments` e 0 in `reel_arguments`** (niente salvato a metà). Le righe di `llm_calls` delle chiamate rifiutate sono marcate `failed` (`LLMLocalUnavailable`): è il registro della chiamata, il contenuto no. (Una prima prova del lungo era invalida: il mio proxy teneva aperta la porta; rifatta con un proxy corretto.)
+- **Lucchetti con altri utenti veri**: a 15:44 il CRM (`banco.py`) teneva il posto 0 da ore: i miei 2 posti (`.1`, `.2`) hanno lavorato, il terzo contenuto è comparso nella pagina come «in coda per il modello locale da 3 min» e ha preso il posto 0 quando il CRM l'ha lasciato (180 s dopo). Poi il CRM ha aspettato dietro di me (`WRITE*` in `lslocks`): **la mia prova ha rallentato il suo banco**; da dire a chi lo segue. Nel giro B (1 posto sul file vero) un altro script del CRM, in catena, ha tenuto il posto 0 e il mio contenuto è rimasto in attesa fino a 673 s (`wait_seconds`) più volte: vedi R3.
+- **Precedenza del cliente su due processi veri** (solo lucchetti, file privati, nessun modello): un lavoro `job:` tiene posto + precedenza per 25 s; un secondo lavoro `job:` entra subito (`got a seat after 0.0s (priority shared)`); il giro `pipeline:` con attesa 3 s riceve `LLMBusy: ollama busy: interactive work has priority` dopo 4,0 s, e prende il posto 16 s dopo, quando i due hanno finito.
+- L'embedder (`cluster_agent._get_embedder`) con 3 fili: una sola riga «[cluster] loading embedder» nel log del giro, non tre.
+
+### 5.3 La pagina Avanzamento, dal vero (Vite sul ramo contro la copia, Chromium a 380 px e 1280 px)
+
+- **Tre righe insieme**: sì. A 380 px (`a-mobile-1.png`): «@menopausa_insieme · Da7C3-tDvpl — sta leggendo — qwen2.5:7b-instruct-q4_K_M — 3 min», «… Da9nvuFEq1o — in coda per il modello locale da 3 min», «… Da5mIKDOhPG — sta leggendo». Su desktop le tre righe mostrano anche token e velocità («190 token 0,3 token/s»). Nessuno scorrimento orizzontale a 380 px (`scrollWidth > innerWidth` → falso, in tutte le prove).
+- **«pezzo i/n» su desktop**: visibile, `@internationalmenopausesociety · CZ9kBgZo9AS · pezzo 1/2` e `pezzo 2/2`.
+- **«pezzo i/n» su 380 px: NON si vede.** `FEC/src/components/progress/ModelLines.tsx` riga 31 mette `truncate` sul nome: il nome lungo di un account riempie la riga e il suffisso, che sta in fondo, viene tagliato. Il testo letto dalla pagina a 380 px: «@internationalmenopausesociety · CZ…» due volte, **due righe identiche**: proprio quello che l'etichetta doveva evitare (disegno 2.2c, punto 3). Con 1 posto non c'è il suffisso e non cambia niente. È R1.
+- Stato **errore** (backend spento, token finto): «Non riesco a leggere l'avanzamento. Controlla la connessione e riprova.» con «Riprova», e lo stesso per i totali del giorno, a 380 px senza sforamenti. Stato **vuoto** (nulla gira): «Non sta girando niente. Ultimo giro: oggi alle 20:02, 60 min, 2 stadi su 2.» con link a Stato. Stato **in caricamento**: non l'ho potuto fermare per fotografarlo (la risposta arriva in pochi ms dalla copia): **non provato**.
+- Con 1 posto (giro B): una riga sola, «sta scrivendo … 2,3 token/s», senza «pezzo».
+
+### 5.4 Rilievi
+
+- **R1 (UI, da sistemare prima di accendere)**: a 380 px il suffisso «· pezzo i/n» è tagliato da `truncate`; le righe dei pezzi di uno stesso testo sembrano uguali. Una correzione di frontend di due righe (a capo invece di troncare, o il suffisso fuori dal troncamento). Il disegno diceva «nessuna modifica al frontend»: il collaudo dal vero dice che serve.
+- **R2 (numeri nella documentazione)**: `FEC/src/i18n/it.json` riga 379 dice al cliente «i contenuti analizzati in un'ora sono quasi il doppio (27,9 contro 14,4)», e `02-pipeline.md` e il disegno citano 1,94×. Nel giro più pulito di oggi si è avuto **1,12×** (1,0× sui reel, 1,40× sugli articoli, 1,8× sui pezzi di un testo lungo). O si rifà la misura in una notte tranquilla, o la frase per il cliente si riscrive con le due misure e l'avviso.
+- **R3 (lucchetti, già così prima di questo ramo, ma ora si vede)**: chi aspetta un posto lo riprova ogni secondo con `LOCK_NB`; un altro programma che aspetta con un `flock` bloccante (come fa il CRM) viene svegliato dal sistema per primo e vince sempre. Il mio giro a 1 posto è rimasto fermo fino a 673 s più volte mentre il CRM concatenava le sue chiamate; sotto il tetto di 1 800 s, quindi niente è fallito. Con il giro notturno e il CRM insieme, la notte può durare di più senza avvisi. Non è un difetto di questo ramo e non lo blocca: va solo saputo.
+- Piccola nota: il log di un giro con `huggingface_hub` tenta la rete per l'embedder («Connection reset by peer, Retrying in 1s») e costa ~35 s la prima volta. Non è di questo ramo.
+
+### 5.5 Cosa NON ho provato
+
+- Nessuna chiamata vera a Groq (come chiesto): il cancello a 1 posto resta provato solo dai test.
+- Il guadagno vero su una macchina tranquilla (vedi R2); il giro «tutto insieme» con il traffico di un cliente vero (`job:`) sul 7b: solo i lucchetti, non il modello.
+- `reprocess` e il caricamento del cliente (`upload_workflow`) con pezzi in parallelo: coperti dai test, non lanciati.
+- Stato di caricamento della pagina Avanzamento.
+- Il comando `systemctl show` dice 3 posti ora; non ho provato il caso «`.env` dice 3 e Ollama ne ha 1» (rischio già scritto nel disegno).
+
+### 5.6 Pulizia
+
+Fermati e cancellati: Postgres privato (porta 5561), copia e dump del database, server di prova (Django 8710, Vite 5710), proxy, Chromium. Nessun mio processo in vita; `lslocks` non mostra lucchetti miei. Restano i file vuoti `/tmp/medycabrain-ollama.lock.1` e `.2` (creati dai miei giri sui posti veri, come fa il codice) e il vecchio `.priority` dello sviluppatore. Nessun file tracciato è stato toccato; `.env`, crontab, servizi e produzione non sono stati toccati.
+
 ## Registro
 
 - 18/11 — capo: aperto il lavoro, lanciato l'architetto.
@@ -299,3 +375,4 @@ Non ho eseguito i test (il collaudo ne sta facendo la prova); ho letto il diff, 
 - 20/11 — Giuseppe: OK al disegno. Risposte a 2.7: (1) sì, passa il cliente; (2) sì, 3 posti nel `.env` al rilascio, dopo la prova del collaudo su una copia del database; (3) sì, Groq resta uno alla volta. `stato: approvato`.
 - 20/11 — sviluppatore: scritto il codice (un commit sul ramo), 528 test verdi, documentazione aggiornata. `stato: revisione`. Dettaglio e punti da guardare in sezione 3.
 - 20/11 — revisore: passa. Rilievi: fame del CRM con precedenza condivisa, contratto col CRM non scritto, «spenta = identica» vero solo in parte. `stato` resta `revisione` in attesa del collaudo.
+- 20/11 — collaudatore: suite 528 verdi, build ok; prova vera sul 7b con 3 posti sulla copia: 14/14 `done`, owned/competitor separati, pezzi in ordine, citazioni scartate 14/13/10 (3 posti, 1 posto, 3 posti), modello che sparisce = `pending` mai `failed`. **Passa** con la PR spenta. Rilievi: R1 «pezzo i/n» tagliato a 380 px, R2 guadagno misurato 1,12× (non 1,94×) contro la frase al cliente, R3 attesa dei lucchetti contro un `flock` bloccante del CRM. Dettaglio in sezione 5.
