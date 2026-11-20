@@ -383,6 +383,46 @@ Cosa dicono i numeri, senza abbellirli:
 
 Fermati e cancellati: Postgres privato (porta 5561), copia e dump del database, server di prova (Django 8710, Vite 5710), proxy, Chromium. Nessun mio processo in vita; `lslocks` non mostra lucchetti miei. Restano i file vuoti `/tmp/medycabrain-ollama.lock.1` e `.2` (creati dai miei giri sui posti veri, come fa il codice) e il vecchio `.priority` dello sviluppatore. Nessun file tracciato è stato toccato; `.env`, crontab, servizi e produzione non sono stati toccati.
 
+### Giro 2 (collaudatore, 20/11/2026, commit 53c58be)
+
+**Verdetto: PASSA.** R1 e R2 chiusi dal vero. Prova breve, senza modello (niente Ollama, niente Groq).
+
+**Comandi** (Postgres privato su 127.0.0.1:5571, chiavi LLM svuotate):
+
+```
+$ python manage.py makemigrations --check --dry-run
+No changes detected
+$ python manage.py check
+System check identified no issues (0 silenced).
+$ python manage.py test core
+Ran 528 tests in 74.984s
+OK
+$ npm run build            # tsc -b + vite
+✓ built in 26.52s          # solo l'avviso di sempre: chunk > 500 kB
+```
+
+**Lucchetti in /tmp durante la suite**: date di modifica prese prima e dopo, `diff` vuoto.
+```
+/tmp/medycabrain-ollama.lock          2026-11-13 17:50:56
+/tmp/medycabrain-ollama.lock.1        2026-11-20 15:41:46
+/tmp/medycabrain-ollama.lock.2        2026-11-20 15:41:46
+/tmp/medycabrain-ollama.lock.priority 2026-11-20 15:15:24
+```
+La suite non li tocca più.
+
+**Pagina Avanzamento** (Vite sul ramo, Chromium; l'API di avanzamento è un finto server locale con 5 righe: 3 pezzi di un testo con nome lungo `@internationalmenopausesociety_official_global · CZ9kBgZo9AS · pezzo i/3` e 2 righe normali senza suffisso, una «in coda»):
+- 380 px: «· pezzo 1/3», «· pezzo 2/3», «· pezzo 3/3» **si vedono**, il nome è tagliato con i puntini (`@internationalmenopauses…`); le tre righe ora sono distinguibili. Le righe senza suffisso («@menopausa_insieme · Da7C3-tDvpl», «… Da9nvuFEq1o», la seconda «in coda per il modello locale da 3 min») sono normali, nome intero. Nessuno scorrimento orizzontale (`scrollWidth > innerWidth` falso).
+- 1280 px: nome intero, suffisso a fianco, tutte le righe normali; nessuno sforamento.
+- Nota sulla prova: nel finto ho scritto `who: "locale"`, e la scheda ha mostrato la chiave `progress.who.locale` non tradotta. È un valore inventato da me (il vero è un altro), non un difetto del ramo.
+
+**Pagina Documentazione**: il paragrafo nuovo c'è («in una prova a macchina tranquilla è andato quasi due volte più svelto, ma quando sullo stesso server lavorava un altro programma il guadagno è sceso a poco più del 10% (sui reel non c'è stato guadagno)…»); la parola «doppio» non c'è. Leggibile a 380 px, tutto il testo a capo dentro la scheda, nessuno sforamento. (Per questa pagina il finto server dava `/ops/status/` con liste vuote: l'elenco servizi e orari non è stato guardato.)
+
+**Screenshot** (cartella di lavoro `/tmp/claude-1001/-home-medyca-admin-projects-medycabrain/7ebcc0ed-5ca3-4cf8-9600-f40c5d3f8664/scratchpad/g2`): `avanz-380.png`, `avanz-380-fondo.png` (righe in fondo, compresa quella in coda), `avanz-1280.png`, `docs-380.png`, `docs-1280.png`.
+
+**Non provato**: il caricamento reale con il vero backend (l'API era finta); lo stato di caricamento e di errore della pagina Avanzamento (già visti al giro 1, il codice di questo giro non li tocca); il «pezzo i/n» con etichette vere del backend (provato il formato `· pezzo i/n`, che è quello che l'espressione regolare cerca). Un verde qui non dice nulla sul guadagno di velocità: quello resta da misurare in una notte tranquilla.
+
+**Pulizia**: spenti Postgres privato, finto server, Vite e Chromium; tolti il file di config di Vite e il collegamento a `node_modules` messi nel worktree; `git status` pulito prima della lavagna. Nessun mio processo in vita. `.env`, servizi e produzione non toccati.
+
 ## Registro
 
 - 18/11 — capo: aperto il lavoro, lanciato l'architetto.
@@ -393,3 +433,4 @@ Fermati e cancellati: Postgres privato (porta 5561), copia e dump del database, 
 - 20/11 — collaudatore: suite 528 verdi, build ok; prova vera sul 7b con 3 posti sulla copia: 14/14 `done`, owned/competitor separati, pezzi in ordine, citazioni scartate 14/13/10 (3 posti, 1 posto, 3 posti), modello che sparisce = `pending` mai `failed`. **Passa** con la PR spenta. Rilievi: R1 «pezzo i/n» tagliato a 380 px, R2 guadagno misurato 1,12× (non 1,94×) contro la frase al cliente, R3 attesa dei lucchetti contro un `flock` bloccante del CRM. Dettaglio in sezione 5.
 - 20/11 — sviluppatore, giro 2: chiusi R1 (suffisso «pezzo i/n» in uno span non troncato), R2 (niente «doppio»: 1,94× a macchina tranquilla, 1,12× con il banco del CRM), contratto col CRM e fame/attesa scritti (03, docstring `_ollama_slot`, 02), testo «N=1 identico» corretto, `OLLAMA_LOCK_PATH` temporaneo nei test (suite 528 verdi, i file in /tmp non vengono più toccati), riga sulla pagina Documentazione. Build ok.
 - 20/11 — revisore, giro 2: passa. Rilievi dei giri 1 chiusi (CRM scritto, N=1 corretto, test isolati, suffisso non tagliato, numeri onesti). `stato: pronto` (collaudo giro 1 già passato).
+- 20/11 — collaudatore, giro 2: suite 528 verdi, build ok, lucchetti in /tmp invariati durante la suite; «pezzo i/n» visibile a 380 px e righe senza suffisso normali; Documentazione senza «doppio», leggibile a 380 px. **Passa.**
